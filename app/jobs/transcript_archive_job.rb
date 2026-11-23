@@ -6,24 +6,28 @@ require "fileutils"
 # Periodic job that incrementally builds/updates a zip file containing all session transcripts.
 #
 # Runs every 10 minutes. On each run, it:
-# 1. Reclaims the temp files earlier runs were killed before they could delete
+# 1. Takes the build lock, then reclaims the temp files killed runs left behind
 #    (#sweep_orphaned_temp_files)
-# 2. Loads metadata from the previous run to identify already-archived sessions
+# 2. Loads the stamps of what is already archived (the sidecar) and already staged
 # 3. Queries all sessions with transcripts, finding new or changed ones
-# 4. Updates at most MAX_SESSIONS_PER_RUN changed entries in the zip file, one session
-#    resident at a time, stopping early once RUN_DEADLINE has passed, and deferring any
-#    remainder to the next tick
-# 5. Writes the whole archive once, to a temp file, and renames it into place
+# 4. Stages at most MAX_SESSIONS_PER_RUN changed sessions, one resident at a time, each
+#    into its own durable fragment (TranscriptArchiveStaging), stopping early once
+#    RUN_DEADLINE has passed and deferring any remainder to the next tick
+# 5. When a merge is due (#merge_due?), joins the fragments into `latest.zip` in one
+#    sequential copy to a temp file (TranscriptArchiveSplicer) and renames it into place
 #
-# Steps 4 and 5 are load-bearing rather than incidental, and #719 and #1264 are why. A transcript
-# is a single large payload, so the job's peak memory is decided entirely by how many of
-# them it holds at once; it used to hold every changed session simultaneously, which on
-# a corpus that has never been archived means all of them. Every method below that
-# touches a transcript takes session *ids* and loads rows one at a time, and the cap
-# guarantees each run reaches step 5 and records its progress. Handing any of them a
-# collection of Session objects reintroduces the OOM. The deadline does for wall time
-# what the cap does for memory: a run that holds the SingletonSweep slot past the
-# maintenance lane's ceiling stops every tick behind it, and CronFreshness pages (#1264).
+# Steps 4 and 5 are load-bearing rather than incidental.
+#
+# A transcript is a single large payload, so the job's peak memory is decided entirely by
+# how many of them it holds at once (#719). Every method below that touches a transcript
+# takes session *ids* and loads rows one at a time. Handing any of them a collection of
+# Session objects reintroduces the OOM.
+#
+# Progress is made in step 4, per session, and not in step 5. The worker is replaced on
+# every deploy, sometimes every fifteen minutes, so a run that only records its work by
+# rewriting a multi-gigabyte zip loses all of it whenever a deploy lands mid-run, and
+# leaves that much temp file behind. A kill costs the session in flight, and the
+# fragments are still there for the next run.
 #
 # The resulting zip is served by Api::V1::TranscriptArchivesController and located
 # for callers by the get_transcript_archive MCP tool. Both of those readers run in a
@@ -55,21 +59,19 @@ class TranscriptArchiveJob < ApplicationJob
   # SessionAttachmentStorage uses, for the same reason and with the same caveat:
   # override it with AGENT_TRANSCRIPT_ARCHIVE_DIR only onto a path that both roles
   # share, or the reader stops seeing the writer again.
+  #
+  # A local environment (development, test) gets a directory of its own. Agent sessions
+  # run on the production worker with the same HOME, and a development server they start
+  # runs this cron too: pointed at production's directory with a near-empty database, it
+  # reads every archived session as removed and replaces the archive with an empty one.
+  # That is what happened on 2026-11-19 and again on 2026-11-23 (30,132 sessions, 13.9 GB).
   ARCHIVE_SUBDIR = "transcript_archives"
   ARCHIVE_DIR_ENV = "AGENT_TRANSCRIPT_ARCHIVE_DIR"
   BATCH_SIZE = 50
 
-  # How many changed sessions one run will archive before deferring the rest to the
-  # next tick.
-  #
-  # This is what makes the job converge rather than restart. A run archives a slice
-  # and then writes its metadata, so the sessions it did are recorded as archived even
-  # though the corpus is not finished. Without a cap, the first run against a corpus
-  # that has never been archived tries to do all of it, and anything that interrupts it
-  # — an OOM kill, a deploy, a worker restart — throws the whole run away, because
-  # metadata is only written at the end. The next tick then starts from zero and
-  # interrupts at the same place. That loop is #495, and on production it ran every ten
-  # minutes indefinitely.
+  # How many changed sessions one run will stage before deferring the rest to the next
+  # tick. Every staged session is already durable, so this does not protect progress; it
+  # keeps one run from holding the SingletonSweep slot for a whole corpus.
   #
   # Steady state is a handful of changed sessions per tick, so the cap is invisible
   # there; it only binds while catching up.
@@ -81,7 +83,7 @@ class TranscriptArchiveJob < ApplicationJob
   # never drain. Ascending order is what makes the frontier advance monotonically.
   MAX_SESSIONS_PER_RUN = 250
 
-  # How long one run may spend archiving sessions before it stops and defers the rest.
+  # How long one run may spend staging sessions before it stops and defers the rest.
   #
   # The cap above bounds a run's memory but not its time. A transcript can run to
   # hundreds of megabytes, so 250 of them is not a fixed amount of work, and nothing
@@ -91,10 +93,23 @@ class TranscriptArchiveJob < ApplicationJob
   #
   # Checked between sessions, after the first, so every run archives at least one session
   # and the frontier always advances. What it does not bound is the session in flight or
-  # the final rewrite of the archive, which is one sequential copy of the zip; both are
-  # minutes, not hours. One cron interval, so a run that reaches it delays one tick and
-  # stays well inside CronFreshness's 30-minute grace.
+  # the merge, which is one sequential kernel copy of the zip. One cron interval, so a run
+  # that reaches it delays one tick and stays well inside CronFreshness's 30-minute grace.
   RUN_DEADLINE = 10.minutes
+
+  # How often the fragments are joined into `latest.zip`, and the size under which every
+  # run does it. A merge copies the whole archive, so at multi-gigabyte sizes doing it
+  # every ten minutes is terabytes of writes a day and a deploy landing inside it more
+  # often than not. Under STALE_AFTER with room for a killed merge to be retried.
+  MERGE_INTERVAL = 30.minutes
+  MERGE_EVERY_RUN_BELOW = 1.gigabyte
+
+  # How long a run with a merge to do may stage first. Shorter than RUN_DEADLINE so that
+  # through a long catch-up the merge is not always the part a deploy kills.
+  MERGE_RUN_DEADLINE = 3.minutes
+
+  # Free space a merge must leave on the volume, which also holds every clone.
+  MERGE_HEADROOM = 2.gigabytes
 
   # Ids per `IN` list, well under Postgres's 65,535 bind-parameter ceiling.
   BIND_SLICE_SIZE = 5_000
@@ -105,7 +120,9 @@ class TranscriptArchiveJob < ApplicationJob
   # succeeding is visible before anyone acts on the data.
   STALE_AFTER = 1.hour
 
-  # The build's own scratch files, matched for the sweep in #sweep_orphaned_temp_files.
+  # Randomly named scratch files, matched for the sweep in #sweep_orphaned_temp_files. This
+  # job writes to the fixed names in OWN_TEMP_NAMES; the pattern reclaims what workers that
+  # used random names left on the volume.
   #
   # A regex over `Dir.children`, not a glob, and anchored: the two files in this
   # directory that must never be deleted are `latest.zip` and `latest_metadata.json`,
@@ -120,42 +137,28 @@ class TranscriptArchiveJob < ApplicationJob
   # leaks up to TWO files of the same multi-GB size: `latest_<hex>.zip.tmp` and
   # `latest_<hex>.zip.tmp20260910-82-anpqpv`. Of the 219 orphans measured on production
   # on 2026-09-11, 118 were the first form and 101 the second, so a pattern that ends
-  # at `.zip.tmp` leaves about half the leak on disk (#1160). #build_archive writes
-  # through `write_buffer` and never commits, so a kill of this job leaves only the
-  # first form; the pattern reaches the second for any commit temp left on the volume.
-  #
-  # Those two are what a kill leaves in THIS directory. rubyzip also stages every
-  # entry written through `get_output_stream` in its own `Tempfile` under `Dir.tmpdir`
-  # until the archive is written, so a killed run leaves up to MAX_SESSIONS_PER_RUN of
-  # those in the container's /tmp as well. That is the overlay layer, recreated on every deploy,
-  # not the durable volume this sweep covers — it is out of this sweep's reach by
-  # design, not by oversight.
+  # at `.zip.tmp` leaves about half the leak on disk (#1160).
   #
   # `\h+` rather than `\h{16}` so a later change to the `SecureRandom.hex(8)` width
   # does not silently strand a generation of orphans.
   TEMP_FILE_PATTERN = /\Alatest_\h+\.zip\.tmp/
 
-  # How long a temp file has to have sat untouched before the sweep will take it.
-  #
-  # This is the guard against deleting a build's own in-flight temp, and it is
-  # belt-and-braces rather than the primary protection. The sweep runs at the top of
-  # `perform`, before this run has created its temp, and SingletonSweep holds the job
-  # to one copy queued-or-running — so under cron there is no other build whose temp
-  # could be resident. The floor is what covers the paths that bypass that: a manual
-  # `perform_now` racing the cron copy, or a future caller that drops the concurrency
-  # key.
-  #
-  # Read the mtime for what it is. The job's temp is created only after the session
-  # loop, by the single `write_buffer` that streams the archive into it, and its mtime
-  # advances with every write until the rename — so a live temp is never older than the
-  # one sequential copy that is writing it. An hour is six ticks, and it is the same bar
-  # TranscriptArchiveStatus judges the archive stale by (STALE_AFTER). If the floor ever
-  # does bind on a live build, what fails is that tick — the rename or the write raises
-  # ENOENT and `ensure` runs — and `latest.zip`, which is only ever replaced by the final
-  # rename, is left as it was. Erring long costs only reclaim latency: a kill leaks about 8 GiB, so at
-  # one kill per tick an hour defers under 50 GiB of a 309 GiB volume, and at the peak
-  # rate actually measured (82.4 GiB in a day) about 3.5 GiB.
+  # How long a randomly named temp has to have sat untouched before the sweep takes it.
+  # Nothing says which process owns one, so age is the only evidence that no build is
+  # still writing it. OWN_TEMP_NAMES need no floor: the build lock is that evidence.
   TEMP_FILE_MIN_AGE = 1.hour
+
+  # Held with flock for the whole run. The kernel drops it when the holder dies, however it
+  # dies, so whoever has it knows no other build is alive, in this container or in an
+  # outgoing worker sharing the volume, and that any of these files is an orphan.
+  LOCK_NAME = "build.lock"
+  MERGE_TEMP_NAME = "latest.zip.tmp"
+  METADATA_TEMP_NAME = "latest_metadata.json.tmp"
+  MANIFEST_TEMP_NAME = "manifest.zip.tmp"
+  OWN_TEMP_NAMES = [ MERGE_TEMP_NAME, METADATA_TEMP_NAME, MANIFEST_TEMP_NAME ].freeze
+
+  STAGING_SUBDIR = "staged"
+  UNREADABLE_NAME = "latest.unreadable.zip"
 
   class << self
     # Resolved at call time (never memoized) so tests that stub HOME and ops that
@@ -164,7 +167,8 @@ class TranscriptArchiveJob < ApplicationJob
       configured = ENV[ARCHIVE_DIR_ENV].presence
       return Pathname.new(File.expand_path(configured)) if configured
 
-      Pathname.new(File.join(File.dirname(ClonesDirectory.base), ARCHIVE_SUBDIR))
+      subdir = Rails.env.local? ? "#{ARCHIVE_SUBDIR}-#{Rails.env}" : ARCHIVE_SUBDIR
+      Pathname.new(File.join(File.dirname(ClonesDirectory.base), subdir))
     end
 
     def archive_path = archive_dir.join("latest.zip")
@@ -173,10 +177,19 @@ class TranscriptArchiveJob < ApplicationJob
   end
 
   def perform
-    @deadline = monotonic_now + run_deadline.to_f
+    started = monotonic_now
     FileUtils.mkdir_p(archive_dir)
+    unless acquire_build_lock
+      Rails.logger.warn "[TranscriptArchiveJob] another build holds #{LOCK_NAME}; skipping this tick"
+      return
+    end
 
     sweep_orphaned_temp_files
+    staging = TranscriptArchiveStaging.new(archive_dir.join(STAGING_SUBDIR))
+    return unless room_to_merge?(staging)
+
+    @run_budget = merge_due? ? [ run_deadline, MERGE_RUN_DEADLINE ].min : run_deadline
+    @deadline = started + @run_budget.to_f
 
     previous_metadata = load_metadata
 
@@ -189,11 +202,13 @@ class TranscriptArchiveJob < ApplicationJob
     # changed since, while manifest.json goes on reporting the full count. Discarding the
     # sidecar re-detects the corpus instead, which MAX_SESSIONS_PER_RUN is what makes
     # affordable.
-    previous_sessions = if File.exist?(archive_path)
+    previous_sessions = if File.size?(archive_path)
       previous_metadata["sessions"] || {}
     else
       {}
     end
+    # A staged session is as settled as an archived one; only the merge is left.
+    previous_sessions = previous_sessions.merge(staging.stamps)
 
     # The newest subagent write per session, for the whole corpus, in one GROUP BY.
     #
@@ -279,7 +294,7 @@ class TranscriptArchiveJob < ApplicationJob
     deferred_count = [ changed_ids.size - cap, 0 ].max
     changed_ids = changed_ids.first(cap)
 
-    if changed_ids.empty? && removed_session_ids.empty? && File.exist?(archive_path)
+    if changed_ids.empty? && removed_session_ids.empty? && File.exist?(archive_path) && !staging.any?
       Rails.logger.info "[TranscriptArchiveJob] No changes detected, skipping rebuild"
       return
     end
@@ -297,8 +312,10 @@ class TranscriptArchiveJob < ApplicationJob
     # corpus-sized; `changed_ids` is capped at MAX_SESSIONS_PER_RUN, and this is the
     # phase that holds a whole transcript live, so nothing corpus-sized should survive
     # into it.
-    build_archive(changed_ids, previous_sessions, removed_session_ids,
+    build_archive(staging, changed_ids, previous_sessions, removed_session_ids,
       deferred_count: deferred_count, subagent_maxima: subagent_maxima.slice(*changed_ids))
+  ensure
+    release_build_lock
   end
 
   # Path accessors — instance methods so tests can stub them for isolation
@@ -317,12 +334,26 @@ class TranscriptArchiveJob < ApplicationJob
   # without a slow fixture.
   def run_deadline = RUN_DEADLINE
 
+  # Instance method so a test can hold a merge back without a gigabyte of fixtures.
+  def merge_every_run_below = MERGE_EVERY_RUN_BELOW
+
   private
 
   def monotonic_now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
   def deadline_passed?
     @deadline.present? && monotonic_now >= @deadline
+  end
+
+  # Close-on-exec, as every Ruby file is, so a subprocess cannot keep the lock alive.
+  def acquire_build_lock
+    @build_lock = File.open(archive_dir.join(LOCK_NAME), File::RDWR | File::CREAT, 0o644)
+    @build_lock.flock(File::LOCK_EX | File::LOCK_NB)
+  end
+
+  def release_build_lock
+    @build_lock&.close
+    @build_lock = nil
   end
 
   def transcript_session_markers
@@ -366,14 +397,11 @@ class TranscriptArchiveJob < ApplicationJob
 
   # Reclaims the temp files that earlier runs were killed before they could delete.
   #
-  # `build_archive` removes its own temp in an `ensure`, which covers an exception but
-  # not a SIGKILL — and this job is killed routinely: it has an OOM history (#495,
-  # #719) and the worker container is swapped on every deploy. Because each run picks a
-  # fresh random name, nothing ever reclaimed the previous run's file. By 2026-09-11
-  # production held 219 orphans totalling 233.3 GiB, which took the 309 GB root
-  # filesystem to 100% and stopped CloneDiskGuard letting the fleet clone (#1160).
-  # Nothing else sweeps this path: DockerCleanupJob prunes Docker resources and
-  # OrphanTranscriptDirectoryCleanupJob handles transcript *directories*.
+  # The merge removes its own temp in an `ensure`, which covers an exception but not a
+  # SIGKILL, and this job is killed routinely: it has an OOM history (#495, #719) and the
+  # worker container is swapped on every deploy. By 2026-09-11 production held 219 orphans
+  # totalling 233.3 GiB (#1160). The temp has one fixed name, so there is never more than
+  # one, and the run that takes the build lock after a kill deletes it straight away.
   #
   # Here rather than in a maintenance job of its own because this job is the only
   # writer of these files and already runs every ten minutes. The sweep is
@@ -399,11 +427,12 @@ class TranscriptArchiveJob < ApplicationJob
     end
 
     entries.each do |entry|
-      next unless entry.match?(TEMP_FILE_PATTERN)
+      own = OWN_TEMP_NAMES.include?(entry)
+      next unless own || entry.match?(TEMP_FILE_PATTERN)
 
       path = archive_dir.join(entry)
       next unless File.file?(path)
-      next if File.mtime(path) > floor
+      next if !own && File.mtime(path) > floor
 
       size = File.size(path)
       File.delete(path)
@@ -425,36 +454,19 @@ class TranscriptArchiveJob < ApplicationJob
     # and above to VictoriaLogs, and this is the only surface that says the leak is
     # being reclaimed. A run that finds nothing logs nothing, so it is not standing
     # noise — once the backlog is worked off this goes quiet except after a kill.
-    Rails.logger.warn "[TranscriptArchiveJob] swept #{removed} orphaned temp file(s), #{bytes} bytes, " \
-      "last written more than #{TEMP_FILE_MIN_AGE.inspect} ago, from #{archive_dir}"
+    Rails.logger.warn "[TranscriptArchiveJob] swept #{removed} orphaned temp file(s), #{bytes} bytes, from #{archive_dir}"
   end
 
-  # One pass over the archive, and one write of it.
-  #
-  # The old archive is opened read-only and never committed: every change — the changed
-  # sessions, the pruned ones, the manifest — is applied to rubyzip's in-memory central
-  # directory, and `write_buffer` then streams the result into the temp file once.
-  # Unchanged entries go across with `copy_raw_entry`, still compressed. That is the
-  # whole of the fixed cost of a run, and it is paid once. No `FileUtils.cp` of the
-  # archive and no `Zip::File#commit`, each of which is another full copy of it, and no
-  # `get_output_stream` for an unchanged entry, which would inflate and re-deflate it. On
-  # a multi-gigabyte archive those costs are what outlived the lane ceiling (#1264).
-  #
-  # `latest.zip` is only read until the rename, so a run that dies anywhere before it
-  # leaves the live archive exactly as it was.
-  def build_archive(changed_ids, previous_sessions, removed_session_ids, subagent_maxima:, deferred_count: 0)
-    temp_path = archive_dir.join("latest_#{SecureRandom.hex(8)}.zip.tmp")
+  # Stages the changed sessions, then joins everything staged into `latest.zip` if a merge
+  # is due. `zip` is the staging area: it takes entries and prunes sessions, and nothing in
+  # it touches `latest.zip`, which only the merge's rename replaces.
+  def build_archive(zip, changed_ids, previous_sessions, removed_session_ids, subagent_maxima:, deferred_count: 0)
     all_sessions_metadata = previous_sessions.dup
 
     # Remove deleted sessions from tracking
     removed_session_ids.each { |id| all_sessions_metadata.delete(id) }
 
-    zip = nil
     begin
-      # `size?`, not `exist?`: rubyzip refuses to open a zero-byte file, and treating one as
-      # absent rebuilds it rather than failing every tick.
-      zip = Zip::File.new(archive_path, create: !File.size?(archive_path))
-
       attempted = archive_changed_sessions(zip, changed_ids, all_sessions_metadata, subagent_maxima: subagent_maxima)
       cut_short = changed_ids.size - attempted
       deferred_count += cut_short
@@ -463,32 +475,114 @@ class TranscriptArchiveJob < ApplicationJob
         # WARN for the same reason as the cap's deferral line: production ships only WARN
         # and above, and this is the line that says a run hit the deadline rather than hung.
         Rails.logger.warn "[TranscriptArchiveJob] stopped after #{attempted} of #{changed_ids.size} sessions " \
-                          "at the #{run_deadline.inspect} run deadline; #{cut_short} deferred to the next tick"
+                          "at the #{@run_budget.inspect} run deadline; #{cut_short} deferred to the next tick"
       end
 
       vanished_ids = changed_ids.first(attempted).map(&:to_s).reject { |id| all_sessions_metadata.key?(id) }
       prune_session_entries(zip, removed_session_ids.to_set | vanished_ids)
-      write_manifest(zip, all_sessions_metadata)
-
-      # In stream mode rubyzip writes through a dup of the handle and leaves it open; the
-      # block closes ours, and `.close` closes the dup.
-      File.open(temp_path, "wb") { |file| zip.write_buffer(file).close }
-
-      # Atomic rename
-      FileUtils.mv(temp_path, archive_path)
-
-      # Write metadata
-      write_metadata(all_sessions_metadata, deferred_count: deferred_count)
-
-      Rails.logger.info "[TranscriptArchiveJob] Archive updated: #{all_sessions_metadata.size} sessions, " \
-                        "#{attempted} changed, #{removed_session_ids.size} removed, " \
-                        "#{File.size(archive_path)} bytes"
+      merge(zip, all_sessions_metadata, deferred_count: deferred_count) if merge_due?
     ensure
-      # `write_buffer`, unlike `commit`, leaves each new entry's staging Tempfile in
-      # Dir.tmpdir; `clean_up` is what unlinks it.
-      zip&.each(&:clean_up)
-      File.delete(temp_path) if File.exist?(temp_path)
+      zip.discard_open_fragment
     end
+  end
+
+  # Whether this run rewrites `latest.zip`, or leaves what it staged for a later one.
+  # The archive's own mtime is when it was last merged, so this holds no state of its own.
+  def merge_due?
+    return true unless (size = File.size?(archive_path))
+
+    size < merge_every_run_below || File.mtime(archive_path) < MERGE_INTERVAL.ago
+  end
+
+  # Checked before staging, not before merging: staging into a volume that cannot take the
+  # merge would grow a second copy of the corpus on the disk that is already short.
+  def room_to_merge?(staging)
+    needed = (File.size?(archive_path) || 0) + staging.bytes + MERGE_HEADROOM
+    free = CloneDiskGuard.available_bytes(archive_dir)
+    return true if free.nil? || free >= needed
+
+    Rails.logger.warn "[TranscriptArchiveJob] skipping this tick: #{free} bytes free, #{needed} needed to merge"
+    false
+  end
+
+  # Joins `latest.zip` and every fragment into a temp file and renames it into place.
+  #
+  # Safe to be killed anywhere. Before the rename, `latest.zip` and the fragments are as
+  # they were. After it, the fragments are merged again next time, which replaces each
+  # entry with itself.
+  #
+  # `latest.zip` is held open for the whole copy, so the directory that was read and the
+  # bytes that are copied are the same file whatever happens to the name.
+  def merge(staging, all_sessions_metadata, deferred_count:)
+    started = monotonic_now
+    temp_path = archive_dir.join(MERGE_TEMP_NAME)
+
+    merged = staging.fragments.values
+    fragments = merged.filter_map do |fragment|
+      [ fragment.path, TranscriptArchiveSplicer.entries_at(fragment.path) ]
+    rescue TranscriptArchiveSplicer::Invalid => e
+      # Derived data, and re-read from the database now that it is unstamped.
+      Rails.logger.error "[TranscriptArchiveJob] discarding unreadable fragment #{fragment.path}: #{e.message}"
+      all_sessions_metadata.delete(fragment.session_id)
+      deferred_count += 1
+      nil
+    end
+
+    base = File.open(archive_path, "rb") if File.size?(archive_path)
+    begin
+      archived = base ? TranscriptArchiveSplicer.entries(base) : []
+    rescue TranscriptArchiveSplicer::Invalid => e
+      return set_aside_unreadable_archive(e)
+    end
+    archived_ids = archived.filter_map { |entry| extract_session_id_from_path(entry.name) }.to_set
+    gone = staging.pruned_ids | ids_without_a_row(archived_ids - all_sessions_metadata.keys)
+
+    # A stamp with no entry behind it would never be archived again.
+    held = archived.map(&:name).to_set | merged.map { |fragment| "sessions/#{fragment.session_id}.json" }
+    unheld = all_sessions_metadata.keys.reject { |id| held.include?("sessions/#{id}.json") }
+    unheld.each { |id| all_sessions_metadata.delete(id) }
+    deferred_count += unheld.size
+
+    manifest = write_manifest(all_sessions_metadata)
+    additions = fragments << [ manifest, TranscriptArchiveSplicer.entries_at(manifest) ]
+    replaced = additions.flat_map { |_, entries| entries.map(&:name) }.to_set
+    kept = archived.reject do |entry|
+      replaced.include?(entry.name) || gone.include?(extract_session_id_from_path(entry.name))
+    end
+
+    File.open(temp_path, "wb") do |out|
+      TranscriptArchiveSplicer.splice(out, [ [ base, kept ], *additions ])
+      out.fsync
+    end
+    File.rename(temp_path, archive_path)
+    write_metadata(all_sessions_metadata, deferred_count: deferred_count)
+    staging.delete(merged)
+
+    Rails.logger.info "[TranscriptArchiveJob] Archive updated: #{all_sessions_metadata.size} sessions, " \
+                      "#{merged.size} merged, #{staging.pruned_ids.size} removed, " \
+                      "#{File.size(archive_path)} bytes in #{(monotonic_now - started).round(1)}s"
+  ensure
+    base&.close
+    FileUtils.rm_f([ temp_path, manifest_temp_path ].compact)
+  end
+
+  # An archive that cannot be read may hold entries nothing else does, so it is kept, out of
+  # the way. The next run finds no archive and rebuilds one from the database and whatever
+  # is staged. A second unreadable archive is left where it is: two is not bad luck.
+  def set_aside_unreadable_archive(error)
+    aside = archive_dir.join(UNREADABLE_NAME)
+    raise error if File.exist?(aside)
+
+    Rails.logger.error "[TranscriptArchiveJob] #{archive_path} is unreadable (#{error.message}); " \
+                       "keeping it as #{UNREADABLE_NAME} and rebuilding"
+    File.rename(archive_path, aside)
+  end
+
+  # Archived ids the sidecar does not list. Usually it was lost and they are still good, so
+  # only the ones whose session is really gone are dropped.
+  def ids_without_a_row(ids)
+    existing = ids.each_slice(BIND_SLICE_SIZE).flat_map { |slice| with_db_retry { Session.where(id: slice).pluck(:id) } }
+    ids - existing.map(&:to_s)
   end
 
   # Yields each changed session, one resident at a time, until the run's deadline.
@@ -505,8 +599,9 @@ class TranscriptArchiveJob < ApplicationJob
   # Not one copy of it, and the difference is worth stating rather than rounding away —
   # this is exactly the kind of number someone later budgets a memory cap against.
   # `transcript` is a `json` column, so a loaded row holds both the raw database string
-  # and the type-cast value, and `JSON.generate` builds a third copy before the write.
-  # Budget about three times the largest transcript.
+  # and the type-cast value, and `JSON.generate` builds a third copy before the write,
+  # and compressing it in one call adds the compressed copy. Budget about three and a half
+  # times the largest transcript.
   #
   # `uncached` is the other half. Rails runs a job inside the executor's query cache, and
   # each `find_by(id: n)` is a distinct cache key, so without it the result sets stay live
@@ -544,23 +639,20 @@ class TranscriptArchiveJob < ApplicationJob
   def archive_changed_sessions(zip, changed_ids, all_sessions_metadata, subagent_maxima:)
     each_changed_session(changed_ids, all_sessions_metadata) do |session|
       add_session_to_zip(zip, session)
-      all_sessions_metadata[session.id.to_s] = archive_stamp(session.updated_at, subagent_maxima[session.id])
+      all_sessions_metadata[session.id.to_s] =
+        zip.commit(session.id, archive_stamp(session.updated_at, subagent_maxima[session.id]))
     end
   end
 
   # Drops every entry belonging to the given session ids: removed sessions, and rows that
-  # vanished mid-run. Run over the in-memory central directory, so it costs one walk of the
-  # entry list and no I/O; the entries it drops are simply not copied by `write_buffer`.
+  # vanished mid-run. Their fragments go at once, and their entries at the next merge.
   #
   # Keyed on what is known to be gone, not on "absent from the metadata". After a lost or
   # corrupt sidecar every session reads as changed and a capped run stamps only a slice of
   # them; pruning everything unstamped would cut the served archive down to that slice for
   # the whole drain, when the entries it already holds are still good.
   def prune_session_entries(zip, session_ids)
-    return if session_ids.empty?
-
-    doomed = zip.entries.select { |entry| session_ids.include?(extract_session_id_from_path(entry.name)) }
-    doomed.each { |entry| zip.remove(entry) }
+    zip.prune(session_ids)
   end
 
   def add_session_to_zip(zip, session)
@@ -580,18 +672,11 @@ class TranscriptArchiveJob < ApplicationJob
       transcript: session.transcript
     }
 
-    entry_name = "sessions/#{session.id}.json"
-
-    # Remove existing entry if present (for updates)
-    zip.remove(entry_name) if zip.find_entry(entry_name)
-
     # `generate`, not `pretty_generate`. A transcript is machine-read, and pretty-printing
     # one builds a second, larger copy of a payload that can run to hundreds of megabytes
     # purely to indent it. The small, human-read documents — manifest.json and the
     # metadata sidecar — stay pretty.
-    zip.get_output_stream(entry_name) do |os|
-      os.write(JSON.generate(session_data))
-    end
+    zip.put("sessions/#{session.id}.json", JSON.generate(session_data))
 
     add_subagent_transcripts_to_zip(zip, session)
   end
@@ -617,29 +702,29 @@ class TranscriptArchiveJob < ApplicationJob
             updated_at: subagent.updated_at&.iso8601
           }
 
-          subagent_entry = "sessions/#{session.id}/subagent_transcripts/#{subagent.agent_id}.json"
-          zip.remove(subagent_entry) if zip.find_entry(subagent_entry)
-
-          zip.get_output_stream(subagent_entry) do |os|
-            os.write(JSON.generate(subagent_data))
-          end
+          zip.put("sessions/#{session.id}/subagent_transcripts/#{subagent.agent_id}.json", JSON.generate(subagent_data))
         end
       end
     end
   end
 
-  def write_manifest(zip, all_sessions_metadata)
+  # A one-entry zip, so the merge can splice it like any other source.
+  def write_manifest(all_sessions_metadata)
     manifest = {
       session_count: all_sessions_metadata.size,
       generated_at: Time.current.iso8601,
       session_ids: all_sessions_metadata.keys.sort
     }
 
-    zip.remove("manifest.json") if zip.find_entry("manifest.json")
-    zip.get_output_stream("manifest.json") do |os|
-      os.write(JSON.pretty_generate(manifest))
+    manifest_temp_path.to_s.tap do |path|
+      ::Zip::OutputStream.open(path) do |zip|
+        zip.put_next_entry("manifest.json")
+        zip.write(JSON.pretty_generate(manifest))
+      end
     end
   end
+
+  def manifest_temp_path = archive_dir.join(MANIFEST_TEMP_NAME)
 
   # `deferred_count` is recorded, not just logged. A mid-bootstrap archive is a complete,
   # freshly-written zip as far as every reader can tell — `stale?` is false because the file
@@ -658,7 +743,14 @@ class TranscriptArchiveJob < ApplicationJob
       "sessions" => all_sessions_metadata
     }
 
-    File.write(metadata_path, JSON.pretty_generate(metadata))
+    # Renamed into place: a kill part-way through a plain write leaves a sidecar that does
+    # not parse, which reads as "nothing is archived" and re-archives the whole corpus.
+    temp_path = archive_dir.join(METADATA_TEMP_NAME)
+    File.open(temp_path, "w") do |file|
+      file.write(JSON.pretty_generate(metadata))
+      file.fsync
+    end
+    File.rename(temp_path, metadata_path)
   end
 
   def extract_session_id_from_path(path)
