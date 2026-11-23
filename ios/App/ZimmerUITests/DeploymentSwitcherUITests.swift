@@ -112,8 +112,8 @@ final class DeploymentSwitcherUITests: XCTestCase {
 
     /// A deployment behind Cloudflare Access added with the App host left empty: the web origin's
     /// edge refuses the token call (`-ZimmerFixtureEdgeNeedsAppHost`). The banner says an app host
-    /// is likely missing, not "sign in to the edge again", and the collapsed App host row opens
-    /// with its field ready to type into.
+    /// is likely missing, not "sign in to the edge again", and the collapsed App host row opens,
+    /// with the banner still in view: no keyboard comes up over it.
     func test_an_edge_refusal_with_no_app_host_asks_for_one_and_opens_the_app_host_row() throws {
         let app = launch(["-ZimmerFixtureEdgeNeedsAppHost"])
         XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].waitForExistence(timeout: timeout))
@@ -134,10 +134,11 @@ final class DeploymentSwitcherUITests: XCTestCase {
                       "the banner names the missing app host")
         let appHost = app.textFields["signin.apphost"]
         XCTAssertTrue(appHost.waitForExistence(timeout: timeout), "the App host row opens")
-        let focused = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasKeyboardFocus == true"), object: appHost)
-        XCTAssertEqual(XCTWaiter().wait(for: [focused], timeout: timeout), .completed, "its field takes the keyboard")
+        XCTAssertFalse(app.keyboards.firstMatch.exists, "no keyboard over the banner")
+        XCTAssertTrue(banner.isHittable, "the banner is on screen")
         attachScreenshot(app, named: "deployments-add-needs-app-host")
 
+        appHost.tap()
         appHost.typeText("https://third-app.invalid")
         app.buttons["signin.button"].tap()
         XCTAssertTrue(waitForLabel(app.buttons["deployments.open"], "Deployment: third.invalid"), "with an app host the sign-in goes through")

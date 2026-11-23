@@ -27,7 +27,11 @@ struct SignInView: View {
     @State private var appHost = ""
     /// The App host row, opened by hand or by an edge refusal that an app host would fix.
     @State private var showsAppHost = false
-    @FocusState private var appHostFocused: Bool
+    /// Whether an address field holds the keyboard. Let go on Sign in, so the keyboard does not
+    /// sit over an error banner that comes back without a sign-in sheet in between.
+    @FocusState private var editing: AddressField?
+
+    private enum AddressField: Hashable { case server, appHost }
     @State private var isSigningIn = false
     @State private var confirmingRemove = false
 
@@ -52,6 +56,7 @@ struct SignInView: View {
             }
 
             Button {
+                editing = nil
                 Task {
                     isSigningIn = true
                     if case .again = mode {
@@ -59,7 +64,7 @@ struct SignInView: View {
                     } else if await workspaces.add(web: server, api: appHost) {
                         if mode == .add { dismiss() }
                     } else {
-                        await revealAppHostIfRefused()
+                        revealAppHostIfRefused()
                     }
                     isSigningIn = false
                 }
@@ -112,14 +117,12 @@ struct SignInView: View {
     }
 
     /// The web origin's edge refused the app because no app host was given: the field that fixes
-    /// it comes out from under its collapsed row, ready to type into. Run after every failed
-    /// attempt rather than on a change of error, so a second identical refusal opens it again.
-    /// Focus waits for the row to open: a field that is not in the hierarchy yet cannot take it.
-    private func revealAppHostIfRefused() async {
+    /// it comes out from under its collapsed row. Run after every failed attempt rather than on a
+    /// change of error, so a second identical refusal opens it again. Not focused: the keyboard
+    /// would cover the banner that says why the row opened.
+    private func revealAppHostIfRefused() {
         guard workspaces.addError == .edgeNeedsAppHost else { return }
         showsAppHost = true
-        try? await Task.sleep(for: .milliseconds(350))
-        appHostFocused = true
     }
 
     private var asksForAddress: Bool {
@@ -190,6 +193,7 @@ struct SignInView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .modifier(SignInField())
+                .focused($editing, equals: .server)
                 .accessibilityIdentifier("signin.server")
             DisclosureGroup(isExpanded: $showsAppHost) {
                 VStack(alignment: .leading, spacing: 6) {
@@ -199,7 +203,7 @@ struct SignInView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .modifier(SignInField())
-                        .focused($appHostFocused)
+                        .focused($editing, equals: .appHost)
                         .accessibilityIdentifier("signin.apphost")
                     Text("Only for a deployment that serves the app from its own hostname.")
                         .font(.caption)
