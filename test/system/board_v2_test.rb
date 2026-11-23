@@ -161,6 +161,40 @@ class BoardV2Test < ApplicationSystemTestCase
     assert_selector "#board_v2_list_uncategorized #board_v2_row_#{@infra_row.id}"
   end
 
+  # A snoozed or backlogged category is off the board, but it is still somewhere
+  # a session can be filed: the bar offers it, and the card leaves the board
+  # with it.
+  test "a card dropped on a snoozed category in the drop bar leaves the board and is saved there" do
+    parked = BoardCategory.create!(name: "#{TAG} Parked", visibility: "snoozed", snoozed_until: 2.days.from_now)
+    make("parked one", category: parked)
+    visit_board
+    assert_selector "[data-board-v2-tucked-category='#{parked.id}']", text: "1 session"
+
+    drag_to_bar("#board_v2_row_#{@loose.id} [data-board-v2-target='handle']", parked)
+
+    assert_no_selector "#board_v2_row_#{@loose.id}"
+    assert_selector "[data-board-v2-tucked-category='#{parked.id}']", text: "2 sessions"
+    assert wait_for { @loose.reload.board_category_id == parked.id }, "the drop on the snoozed category was not saved"
+    visit_board
+    assert_no_selector "#board_v2_row_#{@loose.id}"
+    assert_selector "[data-board-v2-tucked-category='#{parked.id}']", text: "2 sessions"
+  end
+
+  test "a card dropped on an empty backlogged category leaves Uncategorized, and the category counts it" do
+    later = BoardCategory.create!(name: "#{TAG} Later", visibility: "backlogged")
+    visit_board
+    assert_selector "[data-board-v2-drop-zone][data-category-id='#{later.id}']", text: "Backlogged", visible: :all
+    assert_selector "[data-board-v2-tucked-category='#{later.id}']", text: "0 sessions"
+    assert_selector "[data-board-v2-target='total']", text: "3"
+
+    drag_to_bar("#board_v2_row_#{@loose.id} [data-board-v2-target='handle']", later)
+
+    assert_no_selector "#board_v2_row_#{@loose.id}"
+    assert_selector "[data-board-v2-tucked-category='#{later.id}']", text: "1 session"
+    assert_selector "[data-board-v2-target='total']", text: "2"
+    assert wait_for { @loose.reload.board_category_id == later.id }, "the drop on the backlogged category was not saved"
+  end
+
   # On the way down to the bar the card passes over other categories' lists.
   # Letting go on the bar but off every target must not file it in whichever
   # of those it last crossed; nor does dropping it on its own category.

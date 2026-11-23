@@ -18,6 +18,8 @@
 # - If no channel is configured, monitors ALL channels the bot is a member of for @mentions
 # - Always monitors DM channels with allowed users for any messages
 # - Also monitors thread replies for @mentions (so replying to a thread with @bot works)
+# - A channel met for the first time only sets a baseline, unless the bot has just joined
+#   it: then the mention that got it invited fires too (see #join_catch_up)
 # - Only processes messages from allowed users: the condition's own allowed_user_ids if
 #   set, else the SLACK_BOT_MENTION_ALLOWED_USER_IDS allow-list, else EVERYONE (see
 #   TriggerCondition#allow_all_users?). The bot's own messages never trigger anything.
@@ -153,6 +155,27 @@ class SlackTriggerPollerJob < ApplicationJob
     huddle_thread pinned_item reminder_add
     message_changed message_deleted tombstone
   ].freeze
+
+  # How recently the bot must have joined a channel for a bot_mention condition meeting
+  # that channel for the first time to look back rather than only baseline.
+  #
+  # Long enough to outlast one whole deferral chain (about 16 minutes, see
+  # #defer_poll), so a Slack outage between the join and the poll that meets the
+  # channel does not cost the mention. Short enough that a channel the bot has been in
+  # for any length of time baselines and replays nothing.
+  JOIN_FRESHNESS = 30.minutes
+
+  # How far before the bot's own join that look back reaches. The mention it is for is
+  # the one that made somebody invite the bot, posted moments before they did.
+  JOIN_LOOKBACK = 10.minutes
+
+  # The message Slack posts in a channel when a member joins it, whose `user` is the
+  # member. `group_join` is the older spelling for a private channel.
+  JOIN_SUBTYPES = %w[channel_join group_join].freeze
+
+  # What a first poll of a just-joined channel reads instead of a baseline: its
+  # top-level messages newer than `since_ts`, oldest first. See #join_catch_up.
+  JoinCatchUp = Struct.new(:messages, :since_ts)
 
   # Lightweight stand-in for a thread parent synthesized from a tracked
   # thread_timestamps key: we know the thread_ts but not its latest_reply or its
@@ -601,6 +624,8 @@ class SlackTriggerPollerJob < ApplicationJob
   def process_channel_mentions(condition, bot_id:)
     channel_id = condition.channel_id
     all_messages = fetch_new_messages(channel_id, condition.last_message_ts)
+    catch_up = join_catch_up(condition, channel_id, all_messages, bot_id: bot_id) if condition.last_message_ts.blank?
+    all_messages = catch_up.messages if catch_up
     note_channel_read(condition, channel_id)
 
     # ONE baseline, read before last_message_ts moves and used by both halves of the
@@ -608,27 +633,30 @@ class SlackTriggerPollerJob < ApplicationJob
     # Re-reading it after the write would hand a first-sight thread the cursor this
     # poll just advanced, and every reply older than that cursor would be skipped
     # unread: #522's mechanism, reached without any Slack failure at all.
-    baseline_ts = channel_baseline_ts_for(condition, channel_id)
+    baseline_ts = catch_up&.since_ts || channel_baseline_ts_for(condition, channel_id)
 
     # Deciding which threads to visit reads the channel's recent history, and that
     # read can fail — so it happens before anything fires. See #discover_thread_parents.
-    thread_parents = discover_thread_parents(condition, channel_id, all_messages, baseline_ts)
+    thread_parents = discover_thread_parents(condition, channel_id, all_messages, baseline_ts, wide: catch_up.present?)
 
     if all_messages.any?
       # Filter to messages that mention the bot AND are from allowed users
       mentions = all_messages.select { |msg| mention_for?(condition, msg, bot_id) }
 
-      process_messages(condition, mentions, channel_id: channel_id)
-
-      # Always advance last_message_ts to avoid reprocessing, even if no mentions matched
-      newest_ts = all_messages.map { |m| m.ts }.max
-      condition.update!(last_message_ts: newest_ts)
+      process_messages(condition, mentions, channel_id: channel_id, prior_ts: catch_up&.since_ts, unfired_only: catch_up.present?)
     end
 
     # Check thread replies for @mentions (even when no new top-level messages,
     # since replies to old threads won't appear in conversations.history)
-    check_thread_replies_for_mentions(condition, channel_id, thread_parents,
-                                      bot_id: bot_id, channel_baseline_ts: baseline_ts)
+    threads_read = check_thread_replies_for_mentions(condition, channel_id, thread_parents,
+                                                     bot_id: bot_id, channel_baseline_ts: baseline_ts,
+                                                     unfired_only: catch_up.present?)
+
+    # Always advance last_message_ts to avoid reprocessing, even if no mentions matched —
+    # except past a catch-up that could not read a thread: see #join_catch_up.
+    if all_messages.any? && (threads_read || catch_up.nil?)
+      condition.update!(last_message_ts: all_messages.map { |m| m.ts }.max)
+    end
   rescue => e
     note_unit_failure(e, "polling channel #{condition.channel_id} for mentions",
                       condition: condition, channel_id: condition.channel_id)
@@ -645,19 +673,22 @@ class SlackTriggerPollerJob < ApplicationJob
       last_ts = condition.channel_timestamps[channel.id]
 
       all_messages = fetch_new_messages(channel.id, last_ts)
+      catch_up = join_catch_up(condition, channel.id, all_messages, bot_id: bot_id) if last_ts.blank?
+      all_messages = catch_up.messages if catch_up
       note_channel_read(condition, channel.id)
 
       # One baseline for both halves of the thread scan, read before this channel's
       # cursor is collected — and deciding which threads to visit reads the channel's
       # recent history, which can fail. See #discover_thread_parents.
-      baseline_ts = channel_baseline_ts_for(condition, channel.id)
-      thread_parents = discover_thread_parents(condition, channel.id, all_messages, baseline_ts)
+      baseline_ts = catch_up&.since_ts || channel_baseline_ts_for(condition, channel.id)
+      thread_parents = discover_thread_parents(condition, channel.id, all_messages, baseline_ts, wide: catch_up.present?)
 
       if all_messages.any?
         # Filter to messages that mention the bot AND are from allowed users
         mentions = all_messages.select { |msg| mention_for?(condition, msg, bot_id) }
 
-        process_messages(condition, mentions, channel_id: channel.id, prior_ts: last_ts)
+        process_messages(condition, mentions, channel_id: channel.id,
+                         prior_ts: catch_up&.since_ts || last_ts, unfired_only: catch_up.present?)
 
         # Collect timestamp update (written in batch below)
         updated_timestamps[channel.id] = all_messages.map { |m| m.ts }.max
@@ -665,8 +696,12 @@ class SlackTriggerPollerJob < ApplicationJob
 
       # Check thread replies for @mentions (even when no new top-level messages,
       # since replies to old threads won't appear in conversations.history)
-      check_thread_replies_for_mentions(condition, channel.id, thread_parents,
-                                        bot_id: bot_id, channel_baseline_ts: baseline_ts)
+      threads_read = check_thread_replies_for_mentions(condition, channel.id, thread_parents,
+                                                       bot_id: bot_id, channel_baseline_ts: baseline_ts,
+                                                       unfired_only: catch_up.present?)
+
+      # A catch-up that could not read a thread is repeated: see #join_catch_up.
+      updated_timestamps.delete(channel.id) if catch_up && !threads_read
     rescue => e
       note_unit_failure(e, "polling channel #{channel.id} for mentions", condition: condition, channel_id: channel.id)
     end
@@ -677,6 +712,58 @@ class SlackTriggerPollerJob < ApplicationJob
       new_config = condition.configuration.merge("channel_timestamps" => new_timestamps)
       condition.update!(configuration: new_config)
     end
+  end
+
+  # What a bot_mention condition reads the first time it meets a channel the bot was
+  # JUST added to, or nil when the first poll should only baseline.
+  #
+  # Mentioning the bot and accepting Slack's offer to invite it is the ordinary way it
+  # lands in a channel, and it puts the mention in the channel's history BEFORE the
+  # first poll that can see it. The baseline would be the join notice or whatever came
+  # after it, and the mention would never fire.
+  #
+  # Everything that is history stays history:
+  #
+  # - Only the bot's own join notice, at most JOIN_FRESHNESS old, opens the window. A
+  #   channel the bot has been in longer — a lost cursor, a long gap in polling — has
+  #   none and baselines. So does a channel with no join notice to read, in a workspace
+  #   that hides them.
+  # - The window starts JOIN_LOOKBACK before that join, and never before this condition
+  #   existed or before its last_message_ts (the moment of the edit, on one
+  #   #rebaseline_on_thread_change moved). A condition newer than the join, or one that
+  #   has never polled, baselines.
+  # - The callers fire only what this condition has no claim on yet (`unfired_only`),
+  #   so a cursor lost inside JOIN_FRESHNESS does not fire the same mention twice.
+  #
+  # The callers also leave the channel's cursor unset when a thread could not be read,
+  # so the next poll catches up again. Ordinarily a thread that fails keeps its place,
+  # but a thread met here has no cursor of its own: it would fall back to the channel's,
+  # which the join notice has just moved past the reply.
+  #
+  # Reads nothing extra unless the baseline message is itself inside JOIN_FRESHNESS —
+  # nothing older can have a fresh join behind it. The thread reads a catch-up makes are
+  # the ones the next poll would otherwise make.
+  def join_catch_up(condition, channel_id, baseline, bot_id:)
+    return nil if condition.last_polled_at.blank?
+
+    fresh_since = JOIN_FRESHNESS.ago.to_f
+    return nil unless baseline.any? { |message| message.ts.to_f >= fresh_since }
+
+    history = SlackService.get_messages_since(channel_id, since_ts: format("%.6f", fresh_since - JOIN_LOOKBACK))
+    joined_at = history
+      .select { |message| message.user == bot_id && JOIN_SUBTYPES.include?(message.subtype) }
+      .map { |message| message.ts.to_f }.max
+    return nil if joined_at.nil? || joined_at < fresh_since
+
+    floor = [ condition.created_at.to_f, condition.last_message_ts.to_f ].max
+    return nil if joined_at <= floor
+
+    since_ts = format("%.6f", [ joined_at - JOIN_LOOKBACK, floor ].max)
+    messages = history.reject { |message| slack_reply?(message) || message.ts <= since_ts }
+
+    Rails.logger.info "[SlackTriggerPollerJob] Condition #{condition.id} meets #{channel_id}, which the bot joined at " \
+                      "#{slack_ts_to_time(joined_at).utc.iso8601} — checking #{messages.size} message(s) since #{since_ts} for mentions"
+    JoinCatchUp.new(messages, since_ts)
   end
 
   # The thread parents a poll should visit in a channel: the ones among the
@@ -693,8 +780,9 @@ class SlackTriggerPollerJob < ApplicationJob
   # deferred poll re-reads the whole channel.
   #
   # Returns [] for a channel with no baseline, so a first poll only establishes the
-  # cursor — and costs no thread call at all.
-  def discover_thread_parents(condition, channel_id, recent_messages, channel_baseline_ts)
+  # cursor — and costs no thread call at all. `wide` reads the recent history whatever
+  # the two conditions below say.
+  def discover_thread_parents(condition, channel_id, recent_messages, channel_baseline_ts, wide: false)
     return [] if channel_baseline_ts.blank?
 
     # Find thread parents from the messages we already have
@@ -705,7 +793,7 @@ class SlackTriggerPollerJob < ApplicationJob
     # won't appear in fetch_new_messages since it predates last_message_ts).
     # Only fetch wider window when we have tracked threads or recent_messages is
     # empty/small (avoids redundant API calls when we already have recent data).
-    if recent_messages.length < 10 || condition.thread_timestamps.keys.any? { |k| k.start_with?("#{channel_id}:") }
+    if wide || recent_messages.length < 10 || condition.thread_timestamps.keys.any? { |k| k.start_with?("#{channel_id}:") }
       wider_messages = fetch_recent_thread_parents(channel_id)
       existing_ts = thread_parents.map(&:ts).to_set
       wider_messages.each do |msg|
@@ -738,11 +826,15 @@ class SlackTriggerPollerJob < ApplicationJob
   # @param bot_id [String] the bot's user ID
   # @param channel_baseline_ts [String, nil] the channel cursor as it stood before this
   #   poll, which is what a thread with no cursor of its own falls back to
-  def check_thread_replies_for_mentions(condition, channel_id, thread_parents, bot_id:, channel_baseline_ts:)
+  # @param unfired_only [Boolean] see #process_messages
+  # @return [Boolean] whether every thread was checked
+  def check_thread_replies_for_mentions(condition, channel_id, thread_parents, bot_id:, channel_baseline_ts:,
+                                        unfired_only: false)
     # Skip thread checking on first poll for a channel (no baseline established yet).
-    return if channel_baseline_ts.blank?
+    return true if channel_baseline_ts.blank?
 
     thread_ts_updates = {}
+    all_checked = true
 
     thread_parents.each do |parent|
       thread_key = "#{channel_id}:#{parent.ts}"
@@ -771,12 +863,14 @@ class SlackTriggerPollerJob < ApplicationJob
       # Only process replies newer than our effective baseline.
       new_mention_replies = mention_replies.reject { |reply| reply.ts <= effective_prior_ts }
 
-      process_messages(condition, new_mention_replies, channel_id: channel_id, prior_ts: effective_prior_ts)
+      process_messages(condition, new_mention_replies, channel_id: channel_id,
+                       prior_ts: effective_prior_ts, unfired_only: unfired_only)
 
       # Track the newest reply timestamp for this thread
       newest_reply_ts = replies.map { |r| r.ts }.max
       thread_ts_updates[thread_key] = newest_reply_ts
     rescue => e
+      all_checked = false
       note_unit_failure(e, "checking thread #{parent.ts} in #{channel_id}", condition: condition, channel_id: channel_id)
     end
 
@@ -786,6 +880,8 @@ class SlackTriggerPollerJob < ApplicationJob
       new_config = condition.configuration.merge("thread_timestamps" => new_thread_ts)
       condition.update!(configuration: new_config)
     end
+
+    all_checked
   end
 
   # ── Passive listening ───────────────────────────────────────────────────────
@@ -1254,7 +1350,9 @@ class SlackTriggerPollerJob < ApplicationJob
   # Returns messages oldest-first, excluding thread replies.
   def fetch_new_messages(channel_id, last_ts)
     # If no previous poll, just get the most recent message to establish a baseline
-    # This prevents creating sessions for historical messages on first enable
+    # This prevents creating sessions for historical messages on first enable.
+    # (A bot_mention condition looks further back itself when the bot has only just
+    # joined the channel — see #join_catch_up.)
     if last_ts.blank?
       messages = SlackService.get_channel_history(channel_id, limit: 1)
       return messages.presence || []
@@ -1308,7 +1406,20 @@ class SlackTriggerPollerJob < ApplicationJob
   # the caller, which is what makes the group's identity meaningful: a burst is
   # "several messages, one channel, close together", and messages in two channels
   # are never each other's duplicates however close together they land.
-  def process_messages(condition, messages, channel_id:, dm: false, prior_ts: nil)
+  #
+  # `unfired_only` drops the messages this condition already holds a claim on — every
+  # message it fired, whichever path fired it. An ordinary poll needs no such check,
+  # because its cursor is past them; a catch-up on a just-joined channel has no cursor
+  # to trust. See #join_catch_up.
+  def process_messages(condition, messages, channel_id:, dm: false, prior_ts: nil, unfired_only: false)
+    if unfired_only && messages.any?
+      fired = TriggerEventClaim.where(
+        trigger_condition_id: condition.id,
+        event_key: messages.map { |message| TriggerEventClaim.slack_event_key(channel_id, message.ts) }
+      ).pluck(:event_key).to_set
+      messages = messages.reject { |message| fired.include?(TriggerEventClaim.slack_event_key(channel_id, message.ts)) }
+    end
+
     coalesced_groups(condition.trigger, messages).each do |group|
       process_message(
         condition, group.first,

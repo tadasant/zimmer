@@ -35,14 +35,7 @@ class TriggerEventClaim < ApplicationRecord
   # webhook runs, so nothing is decided by it. It is its own value so the webhook health counts
   # (Webhooks::IngestSummary), which read a `poll` claim as a message the webhook missed, never
   # count one — not even in the day after the webhook is switched on.
-  #
-  # `email_record` is EmailTriggerPollerJob's record of a message it fired a session for. The poller
-  # deduplicates on its own seen-set, so nothing reads this to decide anything; it is what
-  # compare_trigger_fires lines up against an `mcp_event` trigger shadowing the email one.
-  #
-  # `whatsapp_record` is the same record for WhatsappTriggerPollerJob, which also decides on its own
-  # seen-set.
-  VIA = %w[webhook poll poll_record email_record whatsapp_record mcp_event mcp_event_webhook].freeze
+  VIA = %w[webhook poll poll_record mcp_event mcp_event_webhook].freeze
 
   # How long a claim must outlive the message it covers. In webhook_with_poll_fallback mode the
   # poller sees a message within a poll or two — a few minutes across Slack deferrals, about
@@ -69,21 +62,6 @@ class TriggerEventClaim < ApplicationRecord
   # within a channel. The same string whichever path saw it, which is the whole point.
   def self.slack_event_key(channel_id, ts)
     "slack:#{channel_id}:#{ts}"
-  end
-
-  # The identity of one Gmail message: its Gmail API id, the one an email condition renders as
-  # {{message_id}}. A strad Gmail event whose eventId is `gmail:<id>` joins to it through
-  # #natural_key.
-  def self.email_event_key(message_id)
-    "gmail:#{message_id}"
-  end
-
-  # The identity of one WhatsApp message: its chat's JID and its id, which WhatsApp makes unique
-  # within a chat, not across chats. The chat is the one the bridge stored the message under (its
-  # `chat_id` in whatsapp_get_messages), which is the chat strad's `message_received` event names in
-  # its eventId, `whatsapp:<chat_jid>:<message_id>`; #natural_key joins the two.
-  def self.whatsapp_event_key(chat_id, message_id)
-    "whatsapp:#{chat_id}:#{message_id}"
   end
 
   # The identity of an event an MCP server published: the server's catalog name and the event's

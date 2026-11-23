@@ -45,7 +45,7 @@ when it names none), and only when the token's grant belongs to the built-in cli
 | `/api/v1/sessions/:id/logs`, `/api/v1/sessions/:id/subagent_transcripts` | list and show only |
 | `DELETE /api/v1/sessions/:id/uncle_links/:uncle_id` | detach an "also senior" link |
 | `/api/v1/notifications` | list, show, badge, mark read, dismiss — not `push` |
-| `/api/v1/triggers` | everything the triggers pages offer: list, show, create, edit, delete, toggle, the two re-use switches, invoke, and the Slack channel and WhatsApp chat pickers the form fetches — except the two re-use switches, which have no API route until #1318 |
+| `/api/v1/triggers` | everything the triggers pages offer: list, show, create, edit, delete, toggle, the two re-use switches, invoke, and the Slack channel picker the form fetches — except the two re-use switches, which have no API route until #1318 |
 | `GET /api/v1/costs`, `GET /api/v1/costs/records` | read — not `backfill`, the one action there that costs the box a sweep of every transcript; the cron runs it on its own |
 | `/api/v1/health` and its actions | the read and every operator action the web health page offers: cleanup, retries, archiving, queue recovery, the queued-job levers, re-arming the post-deploy tasks |
 | `/api/v1/work_backlog_items` | list, show, hold; `start_now`, `pin`, `unpin` and `remove` — the human-only levers — only on a grant that acts as you (403 otherwise) — not `create` or `pull`, which are the gate's and the groomer's |
@@ -1043,9 +1043,7 @@ There is no REST route for managing them.
 limit 10) · `POST` · `PATCH` · `DELETE` · `POST /triggers/:id/toggle` ·
 `POST /triggers/:id/toggle_enqueue_messages` · `POST /triggers/:id/toggle_resuscitate_archived` ·
 `POST /triggers/:id/invoke` · `GET /triggers/channels` (Slack; 503 when Slack is unconfigured) ·
-`GET /triggers/whatsapp_chats` (the chats the WhatsApp bridge's account is in, with the `chat_id` a
-[`whatsapp` condition](/sessions/triggers/#whatsapp) takes; 503 when `WHATSAPP_MCP_URL` is unset or
-the bridge cannot be reached) · `GET /triggers/mcp_event_sources` (the catalog servers that publish
+`GET /triggers/mcp_event_sources` (the catalog servers that publish
 events and their event types, as of the last six-hourly sweep; with `?server=<name>`, that one server
 asked now, 503 when it cannot be asked. For an [`mcp_event` condition](/sessions/triggers/#mcp_event)).
 

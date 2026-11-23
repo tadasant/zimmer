@@ -126,47 +126,6 @@ class TriggerPollerLivenessCheckJob < ApplicationJob
       diagnosis: -> { nil }
     ),
     Poller.new(
-      key: :whatsapp,
-      # WhatsappTriggerPollerJob stamps only when the bridge says it is logged in to WhatsApp
-      # AND at least one watched chat was read (a chat that fails on its own reports through
-      # ErrorReporter on every tick). So this pages for the bridge being unlinked — the
-      # phone was offline for 14 days, someone removed the linked device, the account was
-      # banned — as well as for the poller not running, and those are the failures a
-      # WhatsApp listener has that nothing else would notice: the chat simply goes quiet.
-      threshold: 30.minutes,
-      watched: -> { TriggerCondition.whatsapp.joins(:trigger).where(triggers: { status: "enabled" }).exists? },
-      seedable: -> { WhatsappService.configured? },
-      title: "WhatsApp trigger polling stalled",
-      details: lambda do |minutes, last_at|
-        "No WhatsApp trigger poll has completed cleanly in ~#{minutes} minutes (last success " \
-          "#{last_at}). WhatsApp triggers are not firing. Likely causes: the WhatsApp bridge is no " \
-          "longer linked to the account (the phone was offline for 14+ days, or the linked device " \
-          "was removed — call the bridge's whatsapp_status, then whatsapp_pair to re-link), the " \
-          "bridge is down, or the `pollers` GoodJob worker is down. Check the GoodJob dashboard (/jobs)."
-      end,
-      diagnosis: -> { nil }
-    ),
-    Poller.new(
-      key: :email,
-      # EmailTriggerPollerJob stamps only when at least one email condition's mailbox search
-      # answered. A mailbox that refuses every call — the Google token was never consented, was
-      # revoked, or expired — stops the sweep without a stamp, so this is what pages for it: an
-      # inbox trigger otherwise just goes quiet.
-      threshold: 30.minutes,
-      watched: -> { TriggerCondition.email.joins(:trigger).where(triggers: { status: "enabled" }).exists? },
-      seedable: -> { EmailService.configured? },
-      title: "Email trigger polling stalled",
-      details: lambda do |minutes, last_at|
-        "No email trigger poll has completed cleanly in ~#{minutes} minutes (last success " \
-          "#{last_at}). Email triggers are not firing. Likely causes: the mailbox server refuses " \
-          "Zimmer (its Google OAuth token was never consented, was revoked, or expired — reconnect " \
-          "the mailbox's slug and check EMAIL_MCP_URL / EMAIL_MCP_TOKEN), the mailbox server is down, " \
-          "or the `pollers` GoodJob worker is down. The poller's WARN log line names the error. " \
-          "Check the GoodJob dashboard (/jobs)."
-      end,
-      diagnosis: -> { nil }
-    ),
-    Poller.new(
       key: :mcp_event,
       # McpEventTriggerPollerJob stamps only when at least one mcp_event condition's server
       # answered a poll. A server that refuses every poll — strad down, the catalog credential gone,

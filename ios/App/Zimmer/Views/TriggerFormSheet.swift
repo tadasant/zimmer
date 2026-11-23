@@ -2,9 +2,8 @@ import SwiftUI
 import ZimmerKit
 
 /// The web UI's trigger form (new and edit pages alike), as a sheet: the name, the conditions
-/// (each card's fields by its type, with the Slack channel and WhatsApp chat pickers the web
-/// form fetches), then the session template — agent root, the four catalog lists, goal,
-/// session re-use, scheduling class, precedence, the burst cap, the coalescing window, skip
+/// (each card's fields by its type, with the Slack channel picker the web form fetches), then
+/// the session template — agent root, the four catalog lists, goal, session re-use, scheduling class, precedence, the burst cap, the coalescing window, skip
 /// while pending, and the prompt template — in the web form's order and words. The server's
 /// refusal is listed at the top, as the web form lists it, and the form scrolls up to it: Save
 /// is usually tapped from the prompt, the last field, a long way below. The two re-use switches
@@ -25,7 +24,6 @@ struct TriggerFormSheet: View {
     /// Counts the refusals, so a second refusal in the same words scrolls again.
     @State private var refusals = 0
     @State private var channels: PickerLoad<SlackChannel> = .idle
-    @State private var chats: PickerLoad<WhatsAppChat> = .idle
     @State private var goalIsCustom = false
 
     init(editing: TriggerSummary?, saved: @escaping (TriggerWrite) -> Void) {
@@ -134,9 +132,7 @@ struct TriggerFormSheet: View {
                 index: draft.conditions.firstIndex(where: { $0.id == condition.id }) ?? 0,
                 condition: $condition,
                 channels: channels,
-                chats: chats,
                 loadChannels: { Task { await loadChannels() } },
-                loadChats: { Task { await loadChats() } },
                 remove: { remove(condition) }
             )
         }
@@ -374,16 +370,6 @@ struct TriggerFormSheet: View {
         }
     }
 
-    private func loadChats() async {
-        guard case .idle = chats else { return }
-        chats = .loading
-        do {
-            chats = .loaded(try await app.api.whatsappChats())
-        } catch {
-            chats = .failed((error as? ZimmerError ?? .transport(error)).userMessage)
-        }
-    }
-
     private func save() async {
         saving = true
         defer { saving = false }
@@ -428,9 +414,7 @@ private struct ConditionSection: View {
     let index: Int
     @Binding var condition: ConditionDraft
     let channels: PickerLoad<SlackChannel>
-    let chats: PickerLoad<WhatsAppChat>
     let loadChannels: () -> Void
-    let loadChats: () -> Void
     let remove: () -> Void
     /// The web form's "Enter channel ID manually", which the form also opens itself when the
     /// list cannot be had.
@@ -454,8 +438,6 @@ private struct ConditionSection: View {
             .onChange(of: condition.type) { _, _ in loadLists() }
             switch condition.type {
             case "slack": slackFields
-            case "whatsapp": whatsappFields
-            case "email": emailFields
             case "schedule": scheduleFields
             case "ao_event": eventFields(ConditionDraft.zimmerEvents, note: "Session events fire when an autonomous session transitions to the selected state; sessions created by this trigger are excluded to prevent loops. \"Account needs re-authentication\" is about a runtime account, not a session — it fires when one can no longer refresh its token, at most once every 12 hours per account.")
             case "system_event": eventFields(ConditionDraft.systemEvents, note: "Deployment-wide events, each fired once on the edge rather than on every check. \"Quota available again\" fires when the Claude Code account pool goes from serving nothing to serving something, and is what wakes quota-parked spot sessions. \"Fleet has room for more work\" fires when the deployment has been running fewer sessions than its configured ceiling for the whole of its configured stretch, with nothing parked on a quota outage and a pool that can serve. All three numbers are set on the Backlog top-up card on /inference.")
@@ -472,7 +454,6 @@ private struct ConditionSection: View {
 
     private func loadLists() {
         if condition.type == "slack" { loadChannels() }
-        if condition.type == "whatsapp" { loadChats() }
     }
 
     // MARK: Slack
@@ -583,108 +564,6 @@ private struct ConditionSection: View {
             return ("\(items.count) channel\(items.count == 1 ? "" : "s") available.", false)
         case let .failed(message): return ("Couldn't load channels: \(message). Enter a channel ID manually.", true)
         }
-    }
-
-    // MARK: WhatsApp
-
-    @ViewBuilder
-    private var whatsappFields: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            required("Chat")
-            Picker("Chat", selection: chatSelection) {
-                Text("— Select a chat —").tag("")
-                ForEach(chatOptions, id: \.0) { option in Text(option.1).tag(option.0) }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .accessibilityIdentifier("\(prefix).chat")
-            if let status = chatStatus {
-                Text(status.text).font(.caption).foregroundStyle(status.isError ? Theme.danger : Theme.inkMute)
-                    .accessibilityIdentifier("\(prefix).chatStatus")
-            }
-            TextField("Chat ID (e.g., 120363012345678901@g.us)", text: $condition.configuration.chatID)
-                .font(Theme.mono)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .accessibilityIdentifier("\(prefix).chatID")
-            help("The chat the WhatsApp bridge's account is in. Pick it from the list, or paste its id. Groups end in @g.us.")
-        }
-        VStack(alignment: .leading, spacing: 4) {
-            required("Fire on")
-            Picker("Fire on", selection: $condition.configuration.mode) {
-                ForEach(ConditionDraft.whatsappModes, id: \.id) { mode in Text(mode.label).tag(mode.id) }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .accessibilityIdentifier("\(prefix).mode")
-            help("Messages that arrive within one poll (a minute) fire once, together. \"Listen\" hands every batch to the session, which decides whether to say anything. \"Addressed\" skips a batch unless one of its messages is for Zimmer, and still includes the rest of that batch as context.")
-        }
-        VStack(alignment: .leading, spacing: 4) {
-            optional("Keywords", "(optional, for \"Addressed\")")
-            LinesField(placeholder: "zimmer", lines: $condition.configuration.keywords)
-                .accessibilityIdentifier("\(prefix).keywords")
-            help("One per line. A message containing any of them, as a whole word, counts as addressing Zimmer. Blank means \"zimmer\".")
-        }
-        Toggle(isOn: $condition.configuration.includeFromMe) {
-            Text("Also fire on messages the linked account sends from its own phone. Leave off for a dedicated Zimmer number. Turn on if the bridge is linked to your personal number and your own messages should count. Messages Zimmer posts through the bridge never fire.")
-                .font(.caption)
-                .foregroundStyle(Theme.inkSoft)
-        }
-        .tint(Theme.accent)
-        .accessibilityIdentifier("\(prefix).includeFromMe")
-    }
-
-    private var chatOptions: [(String, String)] {
-        var options = chats.items.map { ($0.id, $0.label) }
-        let stored = condition.configuration.chatID
-        if !stored.isEmpty, !options.contains(where: { $0.0 == stored }) {
-            let name = condition.configuration.chatName
-            options.insert((stored, name.isEmpty ? stored : name), at: 0)
-        }
-        return options
-    }
-
-    private var chatSelection: Binding<String> {
-        Binding(
-            get: { condition.configuration.chatID },
-            set: { id in
-                guard !id.isEmpty else { return }
-                condition.configuration.chatID = id
-                condition.configuration.chatName = chats.items.first(where: { $0.id == id })?.name ?? condition.configuration.chatName
-            }
-        )
-    }
-
-    private var chatStatus: (text: String, isError: Bool)? {
-        switch chats {
-        case .idle: return nil
-        case .loading: return ("Loading chats…", false)
-        case let .loaded(items): return items.isEmpty ? ("The WhatsApp account is in no chats yet. Paste a chat ID instead.", false) : nil
-        case let .failed(message): return ("Could not load WhatsApp chats (\(message)). Paste the chat ID below.", true)
-        }
-    }
-
-    // MARK: Email
-
-    @ViewBuilder
-    private var emailFields: some View {
-        help("Fires one session per mail thread with new mail, about a minute after it arrives. The template must fence what the sender wrote: {{text|untrusted}}, {{author|untrusted}}, {{title|untrusted}}. {{message_id}} and {{thread_id}} are safe to write bare.")
-        VStack(alignment: .leading, spacing: 4) {
-            optional("Search")
-            TextField("in:inbox", text: $condition.configuration.query)
-                .font(Theme.mono)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .accessibilityIdentifier("\(prefix).query")
-            help("A Gmail search, ANDed with the poller's own terms. Blank means in:inbox. Narrow it with, say, to:zimmer+bugs@example.com or from:(a@example.com OR b@example.com). The mailbox is the one EMAIL_MCP_URL reads; its own mail never fires.")
-        }
-        Toggle(isOn: $condition.configuration.includeAutomated) {
-            Text("Also fire on automated mail: Gmail's promotions, social, forums and updates categories, bounces, no-reply senders and auto-replies. Leave off unless the mailbox exists to receive notifications. An agent that answers an auto-reply is how two mailboxes end up writing to each other forever.")
-                .font(.caption)
-                .foregroundStyle(Theme.inkSoft)
-        }
-        .tint(Theme.accent)
-        .accessibilityIdentifier("\(prefix).includeAutomated")
     }
 
     // MARK: Schedule

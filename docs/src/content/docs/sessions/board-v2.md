@@ -23,7 +23,7 @@ Deleting a category moves its sessions to Uncategorized. Nothing else about them
 
 | Do | How |
 | --- | --- |
-| Put a session in a category | Drag the card by its grip, the grey tab down its left edge. While you drag, a **Drop on a category** bar appears at the bottom of the screen with every category and Uncategorized in it: drop the card on one. You can also drop it straight onto a category's own list. Drop it on Uncategorized to take it out. |
+| Put a session in a category | Drag the card by its grip, the grey tab down its left edge. While you drag, a **Drop on a category** bar appears at the bottom of the screen with Uncategorized and every category in it, snoozed and backlogged ones included: drop the card on one. You can also drop it straight onto a category's own list. Drop it on Uncategorized to take it out. |
 | Reorder categories | Drag a category by the handle in its header. |
 | Collapse a category | The chevron in its header. Stored on the category, so it stays collapsed across reloads and devices. |
 | Snooze or backlog a category | The **Snooze** button in its header. See below. |
@@ -41,8 +41,12 @@ Cards are tall, and Uncategorized is drawn first, so on a busy board most catego
 several screens below the card you want to move. Carrying a card that far means holding it at the
 edge of the screen while the page scrolls, which on a phone is close to impossible. The bar puts
 every category within one short drag of wherever the card started. It is shown only while a card
-is in hand, and lists the categories that are on the board: a snoozed or backlogged category is not
-in it until you wake it.
+is in hand, and lists every category, the snoozed and backlogged ones after the rest. A card
+dropped on a snoozed or backlogged category is filed there and leaves the board with its category;
+the count beside that category in *Snoozed & backlogged categories* goes up by one, and the card
+comes back with the category. The bar is a scrolling box capped at 40% of the screen, and the
+snoozed and backlogged targets come last in it, so on a board with many categories they can sit
+below its fold while a card is in hand.
 
 The grip takes the touch for the drag rather than for scrolling, so on a phone or tablet: press the
 grip, hold for a moment, then drag. Anywhere else on the card scrolls the page as usual.

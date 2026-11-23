@@ -218,12 +218,6 @@ class NativeAppAccessTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_equal [ "C1" ], JSON.parse(response.body)["channels"].map { |c| c["id"] }
 
-    WhatsappService.stubs(:configured?).returns(true)
-    WhatsappService.any_instance.stubs(:list_chats).returns([ { "id" => "1@g.us", "name" => "Family", "is_group" => true } ])
-    get "/api/v1/triggers/whatsapp_chats", headers: headers
-    assert_response :success
-    assert_equal [ "1@g.us" ], JSON.parse(response.body)["chats"].map { |c| c["id"] }
-
     delete "/api/v1/triggers/#{trigger.id}", headers: headers
     assert_response :no_content
     assert_not Trigger.exists?(trigger.id)

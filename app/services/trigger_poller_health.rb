@@ -13,7 +13,7 @@
 # `seedable` (which, for GitHub, runs `gh auth status`) is never consulted.
 module TriggerPollerHealth
   NAMES = {
-    github: "GitHub", slack: "Slack", whatsapp: "WhatsApp", email: "Email", mcp_event: "MCP event"
+    github: "GitHub", slack: "Slack", mcp_event: "MCP event"
   }.freeze
 
   module_function

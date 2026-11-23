@@ -346,6 +346,19 @@ the link-menu tests in `TranscriptParityUITests` and `InAppLinksUITests` use it.
 place still have one try, so the same loss there still fails its test, and a menu that never came
 behind a press that succeeded means a re-run first.
 
+### A wait in the iOS UI tests slows the app it waits on
+
+`waitForExistence` queries the app's accessibility tree again and again until it finds its element,
+and the app's own timers run late while a query is answered. On a loaded runner one query can take
+seconds. On [run 45092022457](https://github.com/tadasant/zimmer/actions/runs/45092022457) (board
+shard), queries in `test_a_flap_lands_once_for_the_last_disconnect` averaged 2.3 seconds, against
+0.7 to 1.3 on most runs, and the phone landed on the call about two seconds after the 20-second wait
+ran out. So in `LiveHandoverUITests`, the tests that wait out a car script with the app in front and
+nothing to do in it leave it alone until the landing is due (`letTheScriptPlay`), and only then look. The script also times every move from
+launch, so one late move does not push back the rest. Other tests that wait on an app timer still
+query throughout, so a timeout there with slow queries in the log can mean the app was late only
+because it was being asked.
+
 ### Dragging the iOS trigger form back up can stall
 
 In the iOS trigger form, a drag toward the top of the form can move the whole sheet instead of the list, with the rows above still out of reach. On [run 42138907862](https://github.com/tadasant/zimmer/actions/runs/42138907862), 115 climbs from the prompt to the top on the simulator took a median of 9 drags and as many as 21, where about 8 is what the distance needs, and one used 30, with the list stalled for over a minute before it moved on. Why is not known: the runs were not instrumented to read the list's scroll position, and nothing was measured on a real device. It may not need a refusal at all, since only that climb was measured.
@@ -5755,6 +5768,22 @@ makes it before anything fires — so **a channel whose recent history a poll ca
 whole for that poll**, including top-level @mentions it had already fetched. Those fire on the
 deferred poll. Later, rather than never.
 
+### The mention that invites the bot can still be missed
+
+The Slack poller [looks back](/sessions/triggers/#a-channel-the-bot-was-just-added-to) when it meets a
+channel the bot has just joined, so the @mention that got it invited fires. Four cases remain:
+
+- **No join notice.** The join is read off the channel's own `channel_join` message. A workspace that
+  hides join notices gives the poller nothing to tell a new channel from an old one, so it baselines.
+- **Nothing polled for 30 minutes after the join**, or the mention came more than 10 minutes before
+  the invite. Those are past the window on purpose.
+- **A reply in an old thread.** Threads are found through the channel's last 50 top-level messages. An
+  inviting mention left in a thread older than that is not seen.
+- **An `mcp_event` trigger on its own.** It fires on what the server publishes. Slack sends the
+  inviting mention as an `app_mention`, not a `message` event, because the bot was not yet a member
+  when it was posted. A server that publishes only `message` events never sees it, and Zimmer has no
+  poll of Slack behind that trigger to catch it.
+
 ### Coalescing groups a burst within one poll pass, so a burst can straddle a tick
 
 Slack messages that land close together are folded into [one
@@ -5845,86 +5874,6 @@ or when the two carry different `allowed_user_ids` (that list is per-condition).
 is a `bot_mention` condition at least as wide as the passive ones; nothing enforces it. Each drop
 logs one `info` line naming the message and the condition that declined it, which is the only signal
 you get.
-
-### WhatsApp rides an unofficial client, and a ban lands on the linked number
-
-The [`whatsapp` trigger](/sessions/triggers/#whatsapp) reads and posts through a WhatsApp
-linked-device client (a bridge MCP server), not Meta's WhatsApp Business Cloud API. That was a
-choice, not an oversight. The Cloud API's groups support cannot put a business number into a group
-someone else created: groups are created through the API, people join by invite link, and they cap
-at eight participants. It also has no way to read history. Joining an existing chat with real people
-in it needs a linked device.
-
-The cost is that WhatsApp's terms do not allow unofficial clients, so the number the bridge is linked
-to can be banned. Link a number you can afford to lose, not your personal one. A protocol change on
-WhatsApp's side can also break the bridge until its library catches up.
-
-### An all-chats WhatsApp condition reads the 100 most active chats
-
-A [`whatsapp` condition with `chat_id` `*`](/sessions/triggers/#all-chats) lists the account's chats
-each tick, newest activity first, and reads at most 100 of them. If more than 100 chats have activity
-inside one minute, the rest are read on a later tick. Its per-chat cursors live in the condition's
-configuration and are never pruned, so the row grows with every chat the number has ever been in.
-That is fine for a personal assistant's number and would not be for a busy business line.
-
-### A WhatsApp session sees only what the bridge has buffered
-
-WhatsApp has no server-side history. The bridge knows the history the phone synced to it when it was
-linked, plus what it has seen live since. A number added to a group sees only messages from after it
-joined. `whatsapp_get_messages` cannot reach past that.
-
-### WhatsApp authors are not recorded as human messages
-
-A Slack fire records the words of a mapped human on the roster as a human message on the session.
-A WhatsApp fire records nothing: there is no roster mapping from a phone number to a person yet. The
-batch is in the prompt, fenced as untrusted, and that is all.
-
-### A WhatsApp link that breaks is paged 30 minutes late, and fixed by hand
-
-The poller cannot tell a quiet chat from a dead one, so a broken link (phone offline for 14 days,
-linked device removed, number banned) shows up only as the WhatsApp liveness heartbeat going stale.
-Re-linking needs a person with the phone: call the bridge's `whatsapp_pair` and enter the code under
-*Linked devices*.
-
-### Email: who sent it is a claim, and automated mail is recognised by approximation
-
-The [`email` trigger](/sessions/triggers/#email) reads mail through a Gmail-tool MCP server. That
-server prints Subject, From, To, Cc, Date, labels, body and attachment names, and strad's slugs also
-list a fixed set of raw headers verbatim (`Received`, `Authentication-Results`, `Auto-Submitted`,
-`List-Id`, …). Two things follow:
-
-- **The poller does not verify the sender.** `From:` is spoofable. Gmail sends mail that fails SPF,
-  DKIM or DMARC to spam, and spam never fires, but anything that passes is still only a claim about
-  who sent it. The template must fence the mail as untrusted (it is refused otherwise), and a session
-  must not act on a mail's instructions because of who it says it is from. Checking
-  `Authentication-Results` is the session's job.
-- **Automated mail is recognised by approximation.** The poller reads `Auto-Submitted` and `List-Id`
-  when the server lists them, Gmail's promotions, social and forums categories, a sender pattern
-  (`mailer-daemon@`, `no-reply@`, `notifications@`, …) and an auto-reply subject pattern. It does not read
-  `List-Unsubscribe` or `Precedence: bulk`, and a server without the header section leaves only
-  the labels and patterns. An out-of-office reply with an unusual subject from an ordinary address
-  gets through, so a session that answers mail should not answer an auto-reply. The other way
-  round, a person's mail Gmail files under Promotions, Social or Forums is skipped unless the
-  condition sets `include_automated`. It is not skipped silently: every skip is a WARN line naming
-  the message id and the rule. Transactional mail Gmail files under Updates, such as receipts and
-  shipping notices, fires unless one of those signals catches it.
-
-### Email: one mailbox, one session per thread, and attachments by name only
-
-- Every `email` condition reads the one mailbox `EMAIL_MCP_URL` names. Two mailboxes need two
-  deployments, or a change to make the URL per condition.
-- A reply that arrives later in a thread starts a new session, unless the trigger sets
-  `reuse_session`, and then every thread shares one session. Nothing routes a thread back to the
-  session that answered it before.
-- The prompt names attachments but does not carry them. The session reads them with
-  `download_email_attachments` if its MCP servers include the mailbox.
-- The mailbox server's search returns at most 100 messages, newest first, and has no pagination. The
-  poller searches from ten minutes before its cursor, and the cursor stays still while a thread is
-  held or failing. So if more than 100 matching messages arrive between the cursor and now, the
-  oldest are never seen. That is ten minutes on a healthy poller, and longer while something holds
-  the cursor.
-- A message the mailbox server will not return five ticks running (a body past the MCP client's
-  2 MB response cap, say) is given up on: marked seen, reported once, and never fired.
 
 ### MCP event triggers follow an unmerged draft, with poll and webhook but no push
 

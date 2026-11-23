@@ -148,20 +148,6 @@ final class TriggerEditorTests: XCTestCase {
         XCTAssertEqual(dmConfig["channel_id"] as? String, "", "a DM condition's channel is blanked, as the web form blanks it")
         XCTAssertEqual(dmConfig["channel_name"] as? String, "")
 
-        var whatsapp = ConditionDraft(type: "whatsapp")
-        whatsapp.configuration.chatID = "120363012345678901@g.us"
-        whatsapp.configuration.mode = "addressed"
-        whatsapp.configuration.keywords = ["zimmer", "bot"]
-        whatsapp.configuration.includeFromMe = true
-        let whatsappConfig = whatsapp.body["configuration"] as? [String: Any] ?? [:]
-        XCTAssertEqual(Set(whatsappConfig.keys), ["chat_id", "chat_name", "mode", "keywords", "include_from_me"])
-        XCTAssertEqual(whatsappConfig["keywords"] as? [String], ["zimmer", "bot"])
-        XCTAssertEqual(whatsappConfig["include_from_me"] as? Bool, true)
-
-        var email = ConditionDraft(type: "email")
-        email.configuration.query = "to:zimmer+bugs@example.com"
-        XCTAssertEqual(Set((email.body["configuration"] as? [String: Any] ?? [:]).keys), ["query", "include_automated"])
-
         var event = ConditionDraft(type: "ao_event")
         event.configuration.eventName = "session_failed"
         XCTAssertEqual(Set((event.body["configuration"] as? [String: Any] ?? [:]).keys), ["event_name"])
@@ -218,26 +204,18 @@ final class TriggerEditorTests: XCTestCase {
                 ["id": "C1", "name": "zimmer", "is_private": false, "num_members": 12],
                 ["id": "C2", "name": "ops", "is_private": true, "num_members": NSNull()],
             ]]) },
-            { _ in Fixtures.json(200, ["chats": [
-                ["id": "120363012345678901@g.us", "name": "Ops on call", "is_group": true, "last_message_at": "2026-10-11T01:00:00Z", "participant_count": 5],
-                ["id": "15551234567@s.whatsapp.net", "name": "15551234567@s.whatsapp.net", "is_group": false, "last_message_at": NSNull(), "participant_count": NSNull()],
-            ]]) },
             { _ in Fixtures.json(503, ["error": "Slack is not configured", "message": "Slack is not configured"]) },
         ])
 
         try await api.deleteTrigger(6)
         let channels = try await api.triggerChannels()
-        let chats = try await api.whatsappChats()
 
         XCTAssertEqual(transport.sent.map { "\($0.method) \($0.url.path)" }, [
-            "DELETE /api/v1/triggers/6", "GET /api/v1/triggers/channels", "GET /api/v1/triggers/whatsapp_chats",
+            "DELETE /api/v1/triggers/6", "GET /api/v1/triggers/channels",
         ])
         XCTAssertEqual(channels.map(\.label), ["#zimmer", "🔒 ops"])
         XCTAssertEqual(channels[0].memberCount, 12)
         XCTAssertNil(channels[1].memberCount)
-        XCTAssertEqual(chats.map(\.label), ["Ops on call (group)", "15551234567@s.whatsapp.net"])
-        XCTAssertNotNil(chats[0].lastMessageAt)
-        XCTAssertEqual(chats[0].participantCount, 5)
         do {
             _ = try await api.triggerChannels()
             XCTFail("a 503 is an error")
@@ -247,15 +225,14 @@ final class TriggerEditorTests: XCTestCase {
     }
 
     func testAStoredConditionReadsBackIntoTheFormHoweverItWasWritten() throws {
-        // What the web form posted: strings for numbers, "1" for a flag, a textarea for a list.
+        // What the web form posted: a textarea for a list, beside the poller's own state.
         let web = try JSONDecoder().decode(TriggerSummary.Condition.self, from: Data("""
-        {"id": 51, "condition_type": "whatsapp", "description": "WhatsApp: every message in Ops",
-         "configuration": {"chat_id": "120363012345678901@g.us", "chat_name": "Ops", "mode": "listen", "keywords": "zimmer\\nbot\\n", "include_from_me": "1", "seen_messages": {"a": 1}}}
+        {"id": 51, "condition_type": "github_issue", "description": "GitHub: new issues in tadasant/zimmer",
+         "configuration": {"repos": "tadasant/zimmer\\ntadasant/strad\\n", "exclude_labels": "hold issue work gate", "seen_issue_keys": {"a": 1}}}
         """.utf8))
         XCTAssertEqual(web.id, 51)
-        XCTAssertEqual(web.configuration.chatID, "120363012345678901@g.us")
-        XCTAssertEqual(web.configuration.keywords, ["zimmer", "bot"])
-        XCTAssertTrue(web.configuration.includeFromMe)
+        XCTAssertEqual(web.configuration.repos, ["tadasant/zimmer", "tadasant/strad"])
+        XCTAssertEqual(web.configuration.excludeLabels, ["hold issue work gate"])
 
         // What an API caller posted: real numbers, booleans and arrays.
         let api = try JSONDecoder().decode(TriggerSummary.Condition.self, from: Data("""
@@ -373,9 +350,7 @@ final class TriggerEditorTests: XCTestCase {
         let after = try await api.triggers()
         XCTAssertEqual(after.count, before)
         let channels = try await api.triggerChannels()
-        let chats = try await api.whatsappChats()
         XCTAssertEqual(channels.map(\.name), ["zimmer", "support", "ops-private", "general"])
-        XCTAssertEqual(chats.first?.label, "Ops on call (group)")
         let unknownRoot = TriggerDraft(name: "x", agentRootName: "ghost", promptTemplate: "p", conditions: [schedule()])
         let saved = try await api.createTrigger(unknownRoot)
         XCTAssertTrue(saved.trigger.agentRootMissing)
