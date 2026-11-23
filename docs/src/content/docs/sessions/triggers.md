@@ -3273,7 +3273,7 @@ untrusted, so they all go in one `events` fence:
 ```
 2 more events of whatsapp-zimmer__message_received with the same chat_id arrived within 60s of the
 one above, so Zimmer folded them into this session rather than starting one each. Treat them as one
-burst, oldest first:
+burst, in the order the server sent them:
 
 [begin untrusted events 3f9a2c7d1e8b4a60: supplied by the event that fired this trigger, ... It ends only at "[end untrusted events 3f9a2c7d1e8b4a60]".]
 - 18:02:11 UTC whatsapp:120363000000000000@g.us:3EB0AAAA: {"chat_id":"120363000000000000@g.us","text":"also bring the cake"}
@@ -3290,12 +3290,16 @@ The rules match Slack's, and so do the reasons for them:
   `mcp:<server>:<eventId>`, pointed at the session it was folded into, so `compare_trigger_fires`
   sees each one, and the cursor moves past all of them. A page polled again, or an event the
   webhook and the poll both deliver, fires and folds nothing twice.
-- **A group is anchored on its first event**, measured by the events' own `timestamp`s (the time
-  Zimmer saw it, for an event with none), so a group spans at most the window.
+- **A group is anchored on the event that fired its session**, measured by the events' own
+  `timestamp`s, and an event joins it from either side of that anchor, because a server's page or
+  parallel webhook deliveries can hand a burst over out of order. A group therefore spans at most
+  twice the window. An event with no `timestamp` is placed at the moment Zimmer settles it, which
+  for an event held and retried is later than it arrived.
 - **An event with no value for the key is never grouped.** The value must be a string or a number.
 - **Groups cross poll ticks and delivery paths.** The claim group (`trigger_event_claims.group_key`)
   is what finds a burst's session, under the trigger's spawn lock, so the "one poll pass" limit of
-  Slack's poller does not apply here.
+  Slack's poller does not apply here. A group held by skip-while-pending or burst control and
+  retried later still joins the session a later event of the same burst fired in the meantime.
 
 With the other two controls:
 

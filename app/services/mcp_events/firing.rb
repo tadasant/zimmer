@@ -43,7 +43,8 @@ module McpEvents
         value = condition.mcp_event_coalesce_value(occurrence.data) if condition.mcp_event_payload_allowed?(occurrence.data)
         group = open_groups[value] if value
 
-        if group && (anchor_ts(occurrence) - anchor_ts(group.first)).between?(0, window)
+        # Either side of the anchor: a server may hand over a burst's events out of order.
+        if group && (anchor_ts(occurrence) - anchor_ts(group.first)).abs <= window
           group << occurrence
         else
           group = [ occurrence ]
@@ -67,7 +68,7 @@ module McpEvents
     # With a coalesce key, an event whose group already started a session that can still take a
     # follow-up is folded into it instead, as a queued message: the way a burst arriving one event
     # per webhook delivery, or across two polls, still ends up in one session. The claim group
-    # (TriggerEventClaim.open_group) is what finds that session, under the trigger's spawn lock.
+    # (#open_group) is what finds that session, under the trigger's spawn lock.
     #
     # +subscription+ is the condition's mcp_event_subscription when the event was read; +cursor+ the
     # poll cursor it was read from, or ANY_CURSOR. Either having moved under the lock rolls back.
@@ -103,11 +104,13 @@ module McpEvents
         fresh = keyed.values_at(*keyed.keys.select { |key| won.include?(key) })
 
         if group_key
-          group = TriggerEventClaim.open_group(condition, group_key, anchor_ts(fresh.first), window)
+          group = open_group(condition, group_key, anchor_ts(fresh.first), window)
           target = Session.find_by(id: group.session_id) if group
           # A session that cannot take a follow-up cannot take the event, so the event opens a group
-          # of its own instead of vanishing into a queue nothing will drain.
-          if target&.accepts_follow_up?
+          # of its own instead of vanishing into a queue nothing will drain. Checked under the
+          # session's row lock, so a session archived a moment ago is not folded into.
+          if target&.lock! && target.accepts_follow_up?
+            # The fold spawns nothing, so it does not stamp last_triggered_at: that records fires.
             fold_into_session!(condition, target, fresh, window: window)
             TriggerEventClaim.where(trigger_condition_id: condition.id, event_key: won)
               .update_all(session_id: target.id, anchor_ts: group.anchor_ts)
@@ -132,7 +135,7 @@ module McpEvents
 
       unless outcome == :duplicate
         extra = won.length > 1 ? " (+#{won.length - 1} coalesced)" : ""
-        Rails.logger.info "[#{log_tag}] Condition #{condition.id}: event #{keyed.keys.first}#{extra} #{describe(outcome)}"
+        Rails.logger.info "[#{log_tag}] Condition #{condition.id}: event #{won.first}#{extra} #{describe(outcome)}"
       end
       outcome
     rescue => e
@@ -179,6 +182,23 @@ module McpEvents
       key.length > 200 ? "mcp:#{condition.mcp_event_coalesce_key}:sha256:#{Digest::SHA256.hexdigest(value)}" : key
     end
 
+    # The claim group a burst's earlier (or later) event already opened for +group_key+, holding a
+    # session to fold into: the nearest one anchored within +window+ seconds of +ts+, on EITHER side.
+    #
+    # TriggerEventClaim.open_group, which Slack's webhook uses, looks only backwards. Here that
+    # would split a burst whenever its events are settled out of order — McpEventWebhookJob runs
+    # deliveries on parallel threads, and a group held by skip_if_pending_session or burst control is
+    # retried after later events may have fired — and two sessions in one chat is the harm this
+    # exists to prevent. Every group still spans at most twice the window around its anchor.
+    def open_group(condition, group_key, ts, window)
+      TriggerEventClaim
+        .where(trigger_condition_id: condition.id, group_key: group_key)
+        .where(anchor_ts: (ts - window)..(ts + window))
+        .where.not(session_id: nil)
+        .order(Arel.sql(TriggerEventClaim.sanitize_sql_array([ "ABS(anchor_ts - ?) ASC", ts ])))
+        .first
+    end
+
     # Where an event sits on the coalescing clock: the server's `timestamp`, in epoch seconds, or
     # now for an event that carries none.
     def anchor_ts(occurrence)
@@ -190,8 +210,8 @@ module McpEvents
     # prompt: the session may already be running, and the queue is the one sanctioned way to hand
     # it something new. Sessions::ArchiveGuard refuses to archive a session over a message still in
     # it, so the session cannot finish without reading this.
+    # The caller holds +session+'s row lock.
     def fold_into_session!(condition, session, occurrences, window:)
-      session.lock!
       session.enqueued_messages.create!(
         content: folded_events_note(condition, occurrences, window: window, follow_up: true),
         position: Sessions::QueueTail.next_position!(session),
@@ -237,7 +257,7 @@ module McpEvents
       else
         "#{occurrences.length} more #{occurrences.length == 1 ? 'event' : 'events'} of #{name} with the same #{key} " \
           "arrived within #{window}s of the one above, so Zimmer folded #{occurrences.length == 1 ? 'it' : 'them'} into " \
-          "this session rather than starting one each. Treat them as one burst, oldest first:"
+          "this session rather than starting one each. Treat them as one burst, in the order the server sent them:"
       end
 
       [ intro, *body ].join("\n\n")

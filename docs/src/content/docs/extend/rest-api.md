@@ -1147,10 +1147,14 @@ applies again on a fire that has to spawn.
 window](/sessions/triggers/#coalescing-a-burst-of-slack-messages): messages that land in the same
 channel, thread or DM within that many seconds of each other are one event and spawn one session,
 with the rest folded into its prompt. `null` — the default — inherits 60 seconds; `0` turns
-coalescing off so every message spawns its own session. The payload reports the stored value beside
-`effective_coalesce_window_seconds` (the one actually in force), so a caller can tell "inherits 60s"
-from "set to 60s", and `coalesce_window_inert` (boolean), true when a window is stored on a trigger
-with no Slack condition to read it.
+coalescing off so every message spawns its own session. An `mcp_event` condition reads the same
+window when its `configuration` sets `coalesce_key` (a payload field such as `chat_id`): events with
+the same value for it are one burst and spawn one session (see
+[Coalescing a burst of MCP events](/sessions/triggers/#coalescing-a-burst-of-mcp-events)). The payload
+reports the stored value beside `effective_coalesce_window_seconds` (the one actually in force), so a
+caller can tell "inherits 60s" from "set to 60s", and `coalesce_window_inert` (boolean), true when a
+window is stored on a trigger with no Slack condition and no `mcp_event` condition with a
+`coalesce_key` to read it.
 
 `missed_fire_count` (integer) and `first_missed_fire_at` (ISO 8601, nullable) report consecutive
 scheduled runs that did **not** happen because the reused session had not consumed the previous
