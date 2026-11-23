@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "mocha/minitest"
 require_relative "../support/health_diagnostics_helpers"
 
 class HealthDiagnosticsTest < ActiveSupport::TestCase
