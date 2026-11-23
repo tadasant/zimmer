@@ -139,6 +139,32 @@ channels it is invited to, but it is a real grant. Set the allowlist on any depl
 workspace is larger than the circle of trust.
 :::
 
+#### A channel the bot was just added to
+
+A `bot_mention` condition that meets a channel for the first time normally only records where the
+channel is, so nothing already in it fires. The exception is a channel the bot has **just joined**.
+Mentioning the bot and accepting Slack's offer to invite it puts the mention in the channel's history
+before any poll can see it, so on that first poll the condition looks back for it.
+
+The look back opens only on the bot's own join notice (`channel_join`, or the older `group_join`), and
+only if the notice is at most 30 minutes old (`JOIN_FRESHNESS`). It reaches from 10 minutes before the
+join (`JOIN_LOOKBACK`) up to now, over top-level messages and the replies in recent threads. The
+filters are the usual ones: an @mention, from a user the allow-list admits. If the allow-list cannot be
+resolved, or Slack refuses a read, the channel is left for the next poll.
+
+Everything else still baselines:
+
+- a channel the bot joined more than 30 minutes ago, including one whose cursor was lost;
+- a condition's own first poll, and a condition created after the join. The look back never reaches
+  past the condition's creation. It can reach past an edit or a re-enable: a condition switched to
+  `bot_mention` from another event type, or a trigger turned back on, fires on mentions in the window
+  like any other;
+- a message the condition already holds a claim on in `trigger_event_claims`, whichever path fired it.
+
+It applies to an unscoped `bot_mention`, with or without a `channel_id`. A thread-scoped one,
+`new_message`, `dm_message` and the passive types baseline as before. See
+[what it cannot see](/limitations/#the-mention-that-invites-the-bot-can-still-be-missed).
+
 #### One thread's @mentions: `bot_mention` + `thread_ts`
 
 Give a `bot_mention` condition a `thread_ts` — the thread's parent timestamp, alongside the
@@ -545,7 +571,9 @@ thread's replies), `bot_mention` (one channel, every channel the bot is in, one 
 `dm_message`. It ignores edits, deletes and hidden events, and group DMs, none of which the poller
 fires on either. It never moves a condition's cursor, and it has no baseline to establish: a
 condition fires on the first message Slack delivers after it exists, where the poller's first poll
-only records where it is.
+only records where it is. The exception is the @mention that gets the bot invited to a channel. It was posted
+before the bot was a member, so Slack sends it as an `app_mention` only, which this job ignores. The
+poller [catches it](#a-channel-the-bot-was-just-added-to).
 
 Passive listening is not served. Those conditions stay on the poller in every mode, because whether
 a reply continues a conversation Zimmer is in depends on state only the poller learns.
@@ -587,7 +615,7 @@ a `url_verification` request when it is saved and a switched-off endpoint answer
 to the bot events `message.channels`, `message.groups` and `message.im`. The `*:history` scopes they
 need are the ones the poller already uses. `app_mention` deliveries are acknowledged and ignored:
 they carry no channel type, so a mention in a group DM would be indistinguishable from one in a
-channel, and every mention also arrives as a `message` event.
+channel, and every mention in a channel the bot is already in also arrives as a `message` event.
 
 `InboundEventRetentionJob` deletes `webhook_deliveries` rows after 7 days and `trigger_event_claims`
 rows after 30 — far past the few minutes it takes the poller to see a message the webhook already
