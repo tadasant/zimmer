@@ -9,8 +9,8 @@ final class LiveHandoverUITests: XCTestCase {
     private let timeout: TimeInterval = 20
     /// Long enough for any landing to have happened: the settle, a turn of the watch, and a sheet.
     private let wellPastTheSettle: TimeInterval = 7
-    /// A landing that `letTheScriptPlay` has left time for is there already, so what is left is the
-    /// looking.
+    /// After `letTheScriptPlay` the landing is due. Half the usual wait, so a landing that comes
+    /// long after it was due still fails.
     private let lookTimeout: TimeInterval = 10
 
     override func setUpWithError() throws {
@@ -77,7 +77,7 @@ final class LiveHandoverUITests: XCTestCase {
     func test_closing_live_on_another_thread_does_not_bring_it_back_up() {
         let app = launch(["-ZimmerFixtureLiveConversation", "21", "-ZimmerFixtureCarScript", "other@0,left@8"])
         XCTAssertTrue(app.navigationBars["Live Mode"].waitForExistence(timeout: timeout))
-        Thread.sleep(forTimeInterval: 8 + wellPastTheSettle)
+        letTheScriptPlay(through: 8)
         XCTAssertFalse(callState(app).exists, "another thread is left alone")
         app.swipeDown(velocity: .fast)
         XCTAssertTrue(board(app).waitForExistence(timeout: timeout))
@@ -99,7 +99,7 @@ final class LiveHandoverUITests: XCTestCase {
         let app = launch(["-ZimmerFixtureOpenSession", "2", "-ZimmerFixtureCustomSnooze", "-ZimmerFixtureCarScript", "left@8"])
         let picker = app.descendants(matching: .any)["snooze.custom.picker"].firstMatch
         XCTAssertTrue(picker.waitForExistence(timeout: timeout))
-        Thread.sleep(forTimeInterval: 8 + wellPastTheSettle)
+        letTheScriptPlay(through: 8)
         XCTAssertTrue(picker.exists, "the session page's own sheet stays up")
         XCTAssertFalse(callState(app).exists)
     }

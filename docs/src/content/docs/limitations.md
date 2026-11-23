@@ -352,9 +352,9 @@ behind a press that succeeded means a re-run first.
 and the app's own timers run late while a query is answered. On a loaded runner one query can take
 seconds. On [run 45092022457](https://github.com/tadasant/zimmer/actions/runs/45092022457) (board
 shard), queries in `test_a_flap_lands_once_for_the_last_disconnect` averaged 2.3 seconds, against
-about 0.8 on most runs, and the phone landed on the call about two seconds after the 20-second wait
-ran out. So in `LiveHandoverUITests`, the tests that wait out a car script leave the app alone until
-the landing is due (`letTheScriptPlay`), and only then look. The script also times every move from
+0.7 to 1.3 on most runs, and the phone landed on the call about two seconds after the 20-second wait
+ran out. So in `LiveHandoverUITests`, the tests that wait out a car script with the app in front and
+nothing to do in it leave it alone until the landing is due (`letTheScriptPlay`), and only then look. The script also times every move from
 launch, so one late move does not push back the rest. Other tests that wait on an app timer still
 query throughout, so a timeout there with slow queries in the log can mean the app was late only
 because it was being asked.

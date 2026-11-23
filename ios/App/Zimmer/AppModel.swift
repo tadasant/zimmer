@@ -697,7 +697,7 @@ final class AppModel: ObservableObject {
     /// before `thread` opens, so the thread reads as ended from its first read; any later and it
     /// ends with the thread on screen, with no call at all until then. Moves are in time order.
     /// Each waits for its own time on one clock, so a main thread that is late to one move does not
-    /// make every move after it later.
+    /// make every move after it later; moves that are due together run back to back.
     private func runFixtureCarScript(_ script: String, thread: Int?) {
         let moves = script.split(separator: ",").compactMap { move -> (name: Substring, at: Double)? in
             let parts = move.split(separator: "@")
