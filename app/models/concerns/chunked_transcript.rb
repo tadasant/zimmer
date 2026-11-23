@@ -389,6 +389,11 @@ module ChunkedTranscript
     digest ||= self.class.where(id: id).pick(:transcript_digest)
     TranscriptOffloadStore.read(id, digest: digest)
   rescue TranscriptOffloadStore::Error, SystemCallError => e
+    # A release that predates the marker can write chunks without clearing it. If they
+    # are what the row vouches for, they are the transcript.
+    chunks = SessionTranscriptChunk.where(session_id: id).order(:seq).pluck(:content).join
+    return chunks if digest.present? && chunks.present? && Digest::SHA256.hexdigest(chunks) == digest
+
     Rails.logger.error("[ChunkedTranscript] session #{id}: offloaded transcript unreadable: #{e.class}: #{e.message}")
     nil
   end

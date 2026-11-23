@@ -46,7 +46,7 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
         database_size_health: {
           total_bytes: 60.gigabytes,
           largest_tables: [ { name: "session_transcript_chunks", total_bytes: 40.gigabytes, index_bytes: 0, estimated_rows: 1 } ],
-          transcript_retention: { retention_days: 30, offloaded_sessions: 12, awaiting_offload: 3 },
+          transcript_retention: { retention_days: 30, offloaded_sessions: 12, awaiting_offload: 3, refusal: "no volume" },
           status: HealthMonitorService::HealthStatus.new(status: :healthy, message: "Database is 60 GB")
         } }
     )
@@ -55,6 +55,7 @@ class Mcp::Tools::GetSystemHealthTest < ActiveSupport::TestCase
     assert_includes result, "- **Database size:** Database is 60 GB"
     assert_includes result, "`session_transcript_chunks`: 40 GB"
     assert_includes result, "30 days after archive: 12 session(s) offloaded, 3 awaiting offload"
+    assert_includes result, "refused: no volume"
   end
 
   test "names each pooled warm clone key and the claim counts" do

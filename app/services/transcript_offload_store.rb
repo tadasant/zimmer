@@ -4,12 +4,12 @@ require "zlib"
 require "fileutils"
 
 # Where a session's transcript lives once TranscriptRetentionJob has moved it out of
-# Postgres: one gzip file per session,
+# Postgres: one gzip file per version of a session's transcript,
 # `<base>/<store id>/<database location>/<id % 1000>/<id>-<sha256>.jsonl.gz`. The digest
 # is in the name, so a write can only ever replace identical bytes: an overlapping run, a
 # re-offload or a database restored to an earlier point cannot overwrite another version.
 #
-# WHY ONE FILE PER SESSION, AND NOT THE TRANSCRIPT ARCHIVE ZIP
+# WHY SEPARATE FILES, AND NOT THE TRANSCRIPT ARCHIVE ZIP
 #
 # TranscriptArchiveJob's `latest.zip` is rebuilt from the database every run, holds the
 # whole corpus in one file, and is discarded and rebuilt from scratch when its sidecar
@@ -94,18 +94,14 @@ class TranscriptOffloadStore
     # Claims and returns this process's own directory. Raises Refused when this process may
     # not write here. Call outside a transaction: the id has to outlive a rollback.
     def prepare!
-      refuse_foreign_environment!
-      if Session.where.not(transcript_offloaded_at: nil).exists?
-        raise Refused, "sessions are marked offloaded but this database has no transcript store id" unless store_id
-        raise Refused, "sessions are marked offloaded but #{store_dir} is absent; is the volume mounted?" unless File.directory?(store_dir)
-      end
+      refuse!
       create_store_id unless store_id
       root.tap { |dir| FileUtils.mkdir_p(dir) }
     end
 
     # Why this process may not write, or nil. For the health report.
     def refusal
-      refuse_foreign_environment!
+      refuse!
       nil
     rescue Refused => e
       e.message
@@ -165,7 +161,7 @@ class TranscriptOffloadStore
       File.size(path)
     end
 
-    # Removes a destroyed session's file. Called from Session#reclaim_session_directories
+    # Removes a destroyed session's files. Called from Session#reclaim_session_directories
     # and from the job for a session destroyed mid-copy: while the row exists its file may
     # be the only copy. Never touches a directory other than this process's own.
     # Files an earlier database location left are not reached, and stay.
@@ -175,12 +171,16 @@ class TranscriptOffloadStore
 
       refuse_foreign_environment!
       id = Integer(session_id)
-      Dir.glob(File.join(shard_dir(own, id), "#{id}-*.jsonl.gz")).each { |path| FileUtils.rm_f(path) }
+      Dir.glob(File.join(shard_dir(own, id), "#{id}-*.jsonl.gz")).each do |path|
+        File.delete(path)
+      rescue Errno::ENOENT
+        nil
+      end
       nil
     end
 
     # Reclaims temps a SIGKILL left behind; `ensure` does not survive one. The pattern
-    # cannot match a finished `<id>.jsonl.gz`. Returns how many it removed.
+    # cannot match a finished `<id>-<sha256>.jsonl.gz`. Returns how many it removed.
     def sweep_orphaned_temps(now: Time.current)
       own = root
       return 0 unless own && File.directory?(own)
@@ -268,6 +268,14 @@ class TranscriptOffloadStore
     def database_location
       config = ActiveRecord::Base.connection_db_config.configuration_hash
       Digest::SHA256.hexdigest(config.values_at(:host, :port, :database).join("|").downcase).first(16)
+    end
+
+    def refuse!
+      refuse_foreign_environment!
+      return unless Session.where.not(transcript_offloaded_at: nil).exists?
+
+      raise Refused, "sessions are marked offloaded but this database has no transcript store id" unless store_id
+      raise Refused, "sessions are marked offloaded but their store directory is absent; is the volume mounted?" unless File.directory?(store_dir)
     end
 
     # The environment that created the store, or before there is one, the one Rails

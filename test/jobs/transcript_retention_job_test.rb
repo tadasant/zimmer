@@ -340,4 +340,29 @@ class TranscriptRetentionJobTest < ActiveJob::TestCase
 
     assert_empty Dir.children(@root)
   end
+
+  test "the offloaded transcript is removed even when reclaiming another directory raises" do
+    session = archived_session(content: jsonl(5))
+    TranscriptRetentionJob.perform_now
+    SessionScratchDirectory.stubs(:cleanup_for).raises("boom")
+
+    Session.find(session.id).send(:reclaim_session_directories)
+
+    assert_not TranscriptOffloadStore.exist?(session.id)
+  end
+
+  # A rolled-back release appends through its own code, which knows nothing of the marker.
+  test "chunks written by a release without the marker are still read and restored" do
+    session = archived_session(content: jsonl(5))
+    TranscriptRetentionJob.perform_now
+    newer = jsonl(8)
+    SessionTranscriptChunk.insert_all!(SessionTranscriptChunk.rows_for(session_id: session.id, content: newer))
+    Session.where(id: session.id).update_all(
+      transcript_digest: Digest::SHA256.hexdigest(newer), transcript_byte_size: newer.bytesize, transcript_line_count: 8
+    )
+
+    assert_equal newer, Session.find(session.id).transcript
+    assert Session.find(session.id).restore_offloaded_transcript!
+    assert_equal newer, Session.find(session.id).transcript
+  end
 end

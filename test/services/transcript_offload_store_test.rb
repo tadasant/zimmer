@@ -209,4 +209,11 @@ class TranscriptOffloadStoreTest < ActiveSupport::TestCase
   ensure
     metadata[:environment] = "test"
   end
+
+  test "losing the race to create the store id keeps the winner's" do
+    first = TranscriptOffloadStore.prepare!
+    TranscriptOffloadStore.send(:create_store_id)
+
+    assert_equal first, TranscriptOffloadStore.root
+  end
 end

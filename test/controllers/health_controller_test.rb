@@ -23,6 +23,15 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     Rails.cache = @original_cache
   end
 
+  test "the Database Size panel says why transcripts are not being offloaded" do
+    TranscriptOffloadStore.stubs(:refusal).returns("store directory is absent")
+
+    get "/health"
+
+    assert_response :success
+    assert_includes response.body, "Not offloading: store directory is absent"
+  end
+
   # === Deep health check (GET /up/deep) ===
 
   # Whether a Redis happens to be reachable from the test runner must not decide

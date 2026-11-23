@@ -368,7 +368,7 @@ Postgres. On production that took the managed cluster from about 32 GB of live d
 sessions in trash, which are archived. Running, waiting, needs-input and failed sessions are never
 touched, and neither is a session being unarchived at that moment (`Session.reap_protected?`).
 
-**Where it goes.** `TranscriptOffloadStore`: one file per session,
+**Where it goes.** `TranscriptOffloadStore`: one file per version of a session's transcript,
 `~/.zimmer/transcript_offload/<store id>/<database location>/<id % 1000>/<id>-<sha256>.jsonl.gz`, on
 the `zimmer_data` volume both roles mount. The digest in the name means a write can only replace
 identical bytes. Override the root with `AGENT_TRANSCRIPT_OFFLOAD_DIR`, onto a path both roles share. Not the
@@ -385,8 +385,8 @@ deletes and sweeps touch only the process's own directory. Reads fall back to ot
 same store id, always checked against the row's digest, so moving the database to a new host does not
 strand its files. A full restore needs the volume and that metadata row.
 
-The store refuses to act (`TranscriptOffloadStore::Refused`, shown on `/health` when it is the
-environment) in a process whose `Rails.env` is not the one that created the store, when sessions are
+The store refuses to act (`TranscriptOffloadStore::Refused`, with the reason on `/health` and
+`get_system_health`) in a process whose `Rails.env` is not the one that created the store, when sessions are
 marked offloaded but the store id is gone, and when they are but the store's directory is absent. A
 refusal leaves the chunks where they are.
 
@@ -397,8 +397,8 @@ refusal leaves the chunks where they are.
    logged, and is never offloaded. The digest it was skipped at is recorded in
    `metadata.transcript_offload_skipped_digest`, so the job does not re-read that session every tick.
    A later rewrite changes the digest and makes the session a candidate again.
-2. fsync the temp file and rename it into place, then decompress what is on disk and check the
-   digest again.
+2. fsync the temp file, decompress what is on disk and check the digest again, then rename it into
+   place.
 3. In one transaction with the session row locked, re-check eligibility and that the digest has not
    moved, then delete the chunks and set `sessions.transcript_offloaded_at`.
 
@@ -421,7 +421,7 @@ session is destroyed (`Session#reclaim_session_directories`), and then every ver
 re-offload adds a version and leaves the old one. Files at an earlier database location stay. `TranscriptArchiveJob` keeps a session's existing
 zip entry when its offload file cannot be read, rather than replacing it with `null`.
 
-**The host's disk.** The job does nothing while the store's volume has less than
+**The host's disk.** The job offloads nothing while the store's volume has less than
 `TRANSCRIPT_OFFLOAD_MINIMUM_FREE_BYTES` free (default 20 GiB), because that volume also holds every
 clone. A tick with work first removes temp files more than an hour old, which a killed run leaves behind, and
 ends after three failures in a row, because that means the store is broken rather than one session.
