@@ -32,12 +32,18 @@ module WebSignInFlow
   # Set the sign-in cookie and send the browser where it was going. The Rails
   # session is reset first, so nothing a signed-out browser put in it survives
   # (session fixation), except where it was going.
-  def finish_sign_in(identity, factor:, trust_device: false)
+  #
+  # This is where a sign-in is counted as completed: every way in ends here, and
+  # Google alone, with the second factor still owed, does not. `new_sign_in` is
+  # false when a signed-in browser sets up a new authenticator without having
+  # passed Google for it, so there is no `started` to match.
+  def finish_sign_in(identity, factor:, trust_device: false, new_sign_in: true)
     return_to = safe_return_to(session[WebSignInRequired::RETURN_TO_KEY])
     reset_session
     WebAuth::Cookies.sign_in(cookies, identity, web_auth_configuration, factor: factor)
     WebAuth::Cookies.trust_device(cookies, identity, web_auth_configuration) if trust_device
     Rails.logger.info("[web_auth] signed in #{identity.email} (web_identity_id=#{identity.id}, factor=#{factor}, trusted_device=#{trust_device})")
+    SecurityTelemetry.record_web_sign_in(:completed) if new_sign_in
     return_to
   end
 

@@ -377,7 +377,8 @@ then, because only Google can tell the value is wrong, and a browser that cannot
 cookie to refuse. So when Google's token endpoint answers `invalid_client` or
 `unauthorized_client`, `[web_auth] Google sign-in failed` is logged at ERROR. Any other failed
 exchange (a reused code, Google or the network down) stays a WARN. A wrong client *id* is refused on
-Google's own page before the browser comes back, so Zimmer logs nothing for it.
+Google's own page before the browser comes back, so Zimmer logs nothing for it. It shows as
+[sign-ins started and none completed](#web-sign-ins-started-and-completed).
 
 ### A lifecycle state the session has not reached yet is logged at INFO, not ERROR
 
@@ -858,7 +859,7 @@ Most authentication refusals log at INFO, which never leaves the container, and 
 single lines with an address in them. Neither is a rate. So `HealthMonitorService#security_health`
 carries one: the `security_health` section of `/health/export_diagnostics`, `GET /api/v1/health`
 and `get_system_health`'s JSON. It is what an alert rule thresholds for "someone is guessing
-credentials" or "something is creating sessions a thousand at a time".
+credentials", "something is creating sessions a thousand at a time" or "nobody can sign in".
 
 Every count is over the same trailing hour (`window_seconds: 3600`). Recorded counts
 (`SecurityTelemetry`) live in Redis as one counter per label set per five-minute bucket, and the
@@ -875,6 +876,7 @@ seconds late.
 | --- | --- | --- |
 | `auth_failures_by_kind` | kind | refusals per kind (the sum of the reasons below) |
 | `auth_failures_by_kind_and_reason` | kind, reason | refusals, by why |
+| `web_sign_ins_by_stage` | `started`/`completed` | web sign-ins, [by how far they got](#web-sign-ins-started-and-completed) |
 | `responses_by_surface_and_status_class` | surface, `2xx`/`3xx`/`4xx`/`5xx` | controller responses |
 | `client_errors_by_surface_and_status` | surface, `400`/`401`/`403`/`404`/`422`/`429`/`other` | 4xx responses |
 | `sessions_created_by_genesis` | genesis (every `SessionGenesis` key, plus `other`) | sessions created |
@@ -928,6 +930,34 @@ Recording never raises, never waits on Redis, and never changes an auth decision
 fails is logged and its counts are lost. The section carries no status and is not part of `overall_status`, because a
 threshold on these is a judgement for the alert rule, not the report. See
 [the limitation](/limitations/#security-counts-undercount-rather-than-block).
+
+### Web sign-ins, started and completed
+
+Some sign-in outages leave no error in Zimmer. A wrong Google client id or redirect URI is refused on
+Google's own page. Something that drops the sign-in cookie leaves only `no_cookie` refusals, which a
+forgotten signed-out tab makes too. `web_sign_ins_by_stage` moves only when a client submits the login
+form, which no polling or reconnecting page does:
+
+- **`started`** is a `POST /auth/google` that sent the browser to Google. A post refused before that
+  (no CSRF token, the sign-in wall off, a configuration that cannot sign anyone in) is not counted.
+- **`completed`** is a sign-in that finished: Google, then the second factor if one is required.
+  It is counted in `WebSignInFlow#finish_sign_in`, which sets the sign-in cookie, so it covers a
+  code, a recovery code, a first authenticator setup, a trusted browser and a Google-only deployment.
+
+A browser that has passed Google and still owes its code is started and not completed. So is a failed
+token exchange, a refused account, and a person who gave up. Neither count moves when a signed-out page
+polls or retries its WebSocket, when the sign-in cookie is re-issued (at most daily, by
+`Cookies.refresh_if_due`), when someone signs out, or when a signed-in browser replaces its
+authenticator from Settings, which writes a new sign-in cookie without going to Google.
+
+Several started and none completed means people are trying and nobody is getting in. The cause can be
+Google's page, the exchange, or the second factor; the refusal counts and `[web_auth]` lines tell them
+apart. One started and none completed means nothing: it is also a sign-in still in progress, which has
+up to 30 minutes (15 at Google, 15 at the second factor), or one that was cancelled.
+
+A sign-in lasts 90 days by default, so several completed is unusual. It can be a cookie that is not
+sticking, or one person signing in on several browsers after signing out everywhere. `completed` counts
+a cookie sent, not a cookie kept.
 
 ## TestFlight crash reports
 
