@@ -157,6 +157,15 @@ class ApplicationCable::ConnectionTest < ActionCable::Connection::TestCase
     refute_includes assert_refused(:error, "unreadable_cookie"), "bm90LW91cnM"
   end
 
+  test "a cookie that is not valid UTF-8 is refused like any other unreadable one" do
+    enable_web_auth
+    use_real_cookie_jar(WebAuth::Cookies::SIGN_IN.to_s => "\xFF")
+    assert_refused(:error, "unreadable_cookie")
+
+    use_real_cookie_jar(WebAuth::Cookies::SIGN_IN.to_s => " ")
+    assert_refused(:warn, "no_cookie")
+  end
+
   test "a cookie sealed under another key is an ERROR" do
     configuration = enable_web_auth
     use_real_cookie_jar

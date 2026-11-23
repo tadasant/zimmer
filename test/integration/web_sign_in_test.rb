@@ -545,6 +545,17 @@ class WebSignInTest < ActionDispatch::IntegrationTest
     end
   end
 
+  test "a sign-in cookie that cannot be read is signed out, not a 500" do
+    enable_web_auth
+    [ "%FF", "garbage", "bm90LW91cnM%3D--aXY%3D--dGFn" ].each do |raw|
+      get settings_path, headers: { "Cookie" => "#{WebAuth::Cookies::SIGN_IN}=#{raw}" }
+      assert_redirected_to login_path
+
+      get login_path, headers: { "Cookie" => "#{WebAuth::Cookies::SIGN_IN}=#{raw}" }
+      assert_response :success
+    end
+  end
+
   # --- security telemetry ----------------------------------------------------
 
   test "refused sign-ins and keys are counted for the monitoring plane, without labels from the request" do

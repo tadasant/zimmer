@@ -37,14 +37,19 @@ module WebAuth
 
     # @return [WebIdentity, nil]
     def signed_in_identity(cookies, configuration, at: Time.current)
-      check_sign_in(cookies, configuration, at: at).identity
+      data = read(cookies, SIGN_IN)
+      data && check_payload(data, configuration, at).identity
     end
 
+    # The same decision as `signed_in_identity`, with the reason for a refusal.
+    #
     # @return [SignInCheck]
     def check_sign_in(cookies, configuration, at: Time.current)
       data = read(cookies, SIGN_IN)
-      return refused(unread_reason(cookies, SIGN_IN)) unless data
+      data ? check_payload(data, configuration, at) : refused(unread_reason(cookies, SIGN_IN))
+    end
 
+    def check_payload(data, configuration, at)
       refreshed_at = Time.at(data["r"].to_i)
       return refused("expired") if refreshed_at + configuration.session_ttl <= at
       return refused("second_factor_missing") if configuration.totp_required? && data["f"] != "totp"
@@ -100,7 +105,9 @@ module WebAuth
     # cookie past the expiry sealed into it and for one this deployment cannot
     # read, and only the second (a rotated secret_key_base, say) is a fault.
     def unread_reason(cookies, name)
-      return "no_cookie" if cookies[name].blank?
+      # Bytes, because Rack does not check that a cookie is valid UTF-8 and
+      # `blank?` raises on one that is not.
+      return "no_cookie" if cookies[name].to_s.b.blank?
 
       sealed_expiry_passed?(cookies, name) ? "expired" : "unreadable_cookie"
     end

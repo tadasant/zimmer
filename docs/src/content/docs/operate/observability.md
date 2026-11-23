@@ -352,7 +352,7 @@ tab and a sign-in outage paged with the same line
 | --- | --- | --- |
 | `no_cookie` | WARN | no sign-in cookie, which is any signed-out browser |
 | `expired` | WARN | the cookie's lifetime has passed |
-| `signed_out_everywhere` | WARN | issued before the person signed out on every device |
+| `signed_out_everywhere` | WARN | issued before the person signed out on every device or set up a new authenticator |
 | `second_factor_missing` | WARN | issued without the second factor the deployment requires |
 | `unreadable_cookie` | ERROR | the cookie does not decrypt or is not a sign-in, as after a changed `SECRET_KEY_BASE` |
 | `identity_missing` | ERROR | the cookie names a `web_identities` row that does not exist |
@@ -367,14 +367,17 @@ level, is also counted under `web_cable` in the
 [security counts](#security-counts-on-the-health-surface).
 
 Removing a domain or deleting an identity to end someone's access is deliberate, and an open tab of
-theirs then logs one ERROR when it reconnects. The same line is how a bad allowed-domains value or a
-database missing its identities shows up, so it stays an ERROR.
+theirs then logs an ERROR each time it tries to reconnect. A session page retries with a backoff of
+up to 30 seconds until it is closed, so one open tab can write many lines, at either level. The same
+line is how a bad allowed-domains value or a database missing its identities shows up, so it stays an
+ERROR.
 
-**A wrong Google client id or secret shows up at sign-in instead.** The configuration has no
-`problems` then, because only Google can tell the value is wrong, and a browser that cannot sign in
-has no cookie to refuse. So when Google's token endpoint answers `invalid_client` or
+**A wrong Google client secret shows up at sign-in instead.** The configuration has no `problems`
+then, because only Google can tell the value is wrong, and a browser that cannot sign in has no
+cookie to refuse. So when Google's token endpoint answers `invalid_client` or
 `unauthorized_client`, `[web_auth] Google sign-in failed` is logged at ERROR. Any other failed
-exchange (a reused code, Google or the network down) stays a WARN.
+exchange (a reused code, Google or the network down) stays a WARN. A wrong client *id* is refused on
+Google's own page before the browser comes back, so Zimmer logs nothing for it.
 
 ### A lifecycle state the session has not reached yet is logged at INFO, not ERROR
 
@@ -907,7 +910,8 @@ reach a key or a label. Every label set is reported, zeros included, so a series
 first event.
 
 A few refusals are deliberately left out of the auth counts, because they are not the caller
-failing. A Google token exchange that fails is Google or the network. An `oauth_token`
+failing. A Google token exchange that fails is Google, the network, or this deployment's own client
+credential. An `oauth_token`
 `temporarily_unavailable` is this deployment. A malformed `/oauth/authorize` request (an unknown
 `client_id`, a bad `redirect_uri`) shows only as an `oauth` 4xx. And `oauth_token`
 `invalid_client` includes a client metadata document Zimmer could not fetch.
@@ -916,7 +920,8 @@ failing. A Google token exchange that fails is Google or the network. An `oauth_
 is how OAuth discovery starts, so a rule on API-key guessing should read `unknown`.
 
 `web_cable` counts every refusal, not only failed credentials. `no_cookie` is any signed-out browser,
-so `auth_failures_by_kind` for `web_cable` is not a rate of guesses. A rule on it should read reasons.
+and a page that keeps retrying is counted each time, so `web_cable` in `auth_failures_by_kind` is not
+a rate of guesses or of browsers. A rule on it should read reasons.
 See [the reasons](#a-refused-websocket-is-logged-by-what-an-operator-has-to-do-about-it).
 
 Recording never raises, never waits on Redis, and never changes an auth decision. A flush that

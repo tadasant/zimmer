@@ -30,11 +30,12 @@ module WebAuth
     # A refusal that is safe to show the person signing in.
     class Rejected < StandardError; end
 
-    # Google, or the network to it, failed. Not the person's fault.
+    # The code could not be exchanged. Not the person's fault: Google, the
+    # network to it, or (ClientRejected) this deployment's credential failed.
     class ExchangeFailed < StandardError; end
 
-    # Google refused this deployment's own client id or secret, so nobody can
-    # sign in until the stored value is fixed.
+    # Google's token endpoint refused this deployment's own client credential,
+    # in practice a wrong secret, so nobody can sign in until it is fixed.
     class ClientRejected < ExchangeFailed; end
 
     # RFC 6749 §5.2 errors that are about the client, not the code it presented.

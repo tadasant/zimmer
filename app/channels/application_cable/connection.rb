@@ -16,7 +16,7 @@ module ApplicationCable
     # a reason added later pages until someone decides it should not.
     ORDINARY_REFUSALS = %w[no_cookie expired signed_out_everywhere second_factor_missing].freeze
 
-    MAX_HEADER_CHARS = 300
+    MAX_FIELD_CHARS = 300
 
     identified_by :web_identity
 
@@ -45,7 +45,7 @@ module ApplicationCable
       SecurityTelemetry.record_auth_failure(:web_cable, reason)
 
       fields = { reason: reason, **detail, ip: client_ip, user_agent: request.user_agent, origin: request.headers["Origin"] }
-      line = fields.map { |name, value| "#{name}=#{value.to_s.truncate(MAX_HEADER_CHARS).inspect}" }.join(" ")
+      line = fields.map { |name, value| "#{name}=#{value.to_s.truncate(MAX_FIELD_CHARS).inspect}" }.join(" ")
       severity = ORDINARY_REFUSALS.include?(reason) ? :warn : :error
       Rails.logger.public_send(severity, "[web_auth] An unauthorized connection attempt was rejected: #{line}")
 
