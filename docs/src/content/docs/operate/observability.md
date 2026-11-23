@@ -859,7 +859,7 @@ Most authentication refusals log at INFO, which never leaves the container, and 
 single lines with an address in them. Neither is a rate. So `HealthMonitorService#security_health`
 carries one: the `security_health` section of `/health/export_diagnostics`, `GET /api/v1/health`
 and `get_system_health`'s JSON. It is what an alert rule thresholds for "someone is guessing
-credentials" or "something is creating sessions a thousand at a time".
+credentials", "something is creating sessions a thousand at a time" or "nobody can sign in".
 
 Every count is over the same trailing hour (`window_seconds: 3600`). Recorded counts
 (`SecurityTelemetry`) live in Redis as one counter per label set per five-minute bucket, and the
@@ -935,7 +935,8 @@ threshold on these is a judgement for the alert rule, not the report. See
 
 Some sign-in outages leave no error in Zimmer. A wrong Google client id or redirect URI is refused on
 Google's own page. Something that drops the sign-in cookie leaves only `no_cookie` refusals, which a
-forgotten signed-out tab makes too. `web_sign_ins_by_stage` moves only when a person tries to sign in:
+forgotten signed-out tab makes too. `web_sign_ins_by_stage` moves only when a client submits the login
+form, which no polling or reconnecting page does:
 
 - **`started`** is a `POST /auth/google` that sent the browser to Google. A post refused before that
   (no CSRF token, the sign-in wall off, a configuration that cannot sign anyone in) is not counted.
@@ -947,13 +948,16 @@ A browser that has passed Google and still owes its code is started and not comp
 token exchange, a refused account, and a person who gave up. Neither count moves when a signed-out page
 polls or retries its WebSocket, when the sign-in cookie is re-issued (at most daily, by
 `Cookies.refresh_if_due`), when someone signs out, or when a signed-in browser replaces its
-authenticator, which writes a new sign-in cookie without going to Google.
+authenticator from Settings, which writes a new sign-in cookie without going to Google.
 
-Several started and none completed in the window means people are trying and nobody is getting in.
-The cause can be Google's page, the exchange, or the second factor; the refusal counts and
-`[web_auth]` lines tell them apart. A 90-day cookie makes several completed unusual. It can be a
-cookie that is not sticking, or one person signing in on several browsers after signing out
-everywhere. `completed` counts a cookie sent, not a cookie kept.
+Several started and none completed means people are trying and nobody is getting in. The cause can be
+Google's page, the exchange, or the second factor; the refusal counts and `[web_auth]` lines tell them
+apart. One started and none completed means nothing: it is also a sign-in still in progress, which has
+up to 30 minutes (15 at Google, 15 at the second factor), or one that was cancelled.
+
+A sign-in lasts 90 days by default, so several completed is unusual. It can be a cookie that is not
+sticking, or one person signing in on several browsers after signing out everywhere. `completed` counts
+a cookie sent, not a cookie kept.
 
 ## TestFlight crash reports
 

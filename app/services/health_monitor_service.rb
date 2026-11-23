@@ -594,10 +594,11 @@ class HealthMonitorService
 
   # Security counts for the monitoring plane, over SecurityTelemetry::WINDOW:
   # authentication failures by kind and reason, web sign-ins started and
-  # completed, responses by surface and status, and what was created — sessions by genesis, OAuth grants and clients, API keys.
-  # A burst of any of these is the rate an alert rule thresholds; none of it is a
-  # judgement this report can make for itself, so the section carries no status and
-  # is absent from `overall_status`. See SecurityTelemetry.
+  # completed, responses by surface and status, and what was created — sessions
+  # by genesis, OAuth grants and clients, API keys. A burst of any of these is
+  # the rate an alert rule thresholds; none of it is a judgement this report can
+  # make for itself, so the section carries no status and is absent from
+  # `overall_status`. See SecurityTelemetry.
   #
   # Every label value is a constant (a genesis key, a reason in
   # SecurityTelemetry::AUTH_FAILURE_REASONS, a sign-in stage), never an id, address or credential.

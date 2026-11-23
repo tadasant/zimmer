@@ -35,8 +35,8 @@ module WebSignInFlow
   #
   # This is where a sign-in is counted as completed: every way in ends here, and
   # Google alone, with the second factor still owed, does not. `new_sign_in` is
-  # false when a browser that is already signed in only replaces its
-  # authenticator: it never went to Google, so it has no `started` to match.
+  # false when a signed-in browser sets up a new authenticator without having
+  # passed Google for it, so there is no `started` to match.
   def finish_sign_in(identity, factor:, trust_device: false, new_sign_in: true)
     return_to = safe_return_to(session[WebSignInRequired::RETURN_TO_KEY])
     reset_session

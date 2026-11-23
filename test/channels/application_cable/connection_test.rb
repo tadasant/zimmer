@@ -240,7 +240,7 @@ class ApplicationCable::ConnectionTest < ActionCable::Connection::TestCase
   end
 
   # Asserts a refusal, its one log line at `severity`, nothing else at ERROR,
-  # and one count under `reason`.
+  # one count under `reason`, and none under web sign-ins.
   #
   # @return [String] the log line
   def assert_refused(severity, reason, headers: CLIENT_HEADERS, remote_ip: "203.0.113.9")
@@ -257,6 +257,7 @@ class ApplicationCable::ConnectionTest < ActionCable::Connection::TestCase
 
     counts = report[:auth_failures_by_kind_and_reason]["web_cable"]
     assert_equal({ reason => 1 }, counts.select { |_, count| count.positive? })
+    assert_equal({ "started" => 0, "completed" => 0 }, report[:web_sign_ins_by_stage], "a refused socket is not a sign-in")
     refusals.first.last
   end
 end

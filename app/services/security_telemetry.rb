@@ -107,9 +107,9 @@ module SecurityTelemetry
 
   AUTH_FAILURE_KINDS = AUTH_FAILURE_REASONS.keys.freeze
 
-  # How far a web sign-in got. Both are something a person did: a signed-out tab
-  # polling or retrying its WebSocket, and the daily re-issue of the sign-in
-  # cookie, move neither. `started` is a browser sent to Google; `completed` is
+  # How far a web sign-in got. A signed-out tab polling or retrying its
+  # WebSocket, and the daily re-issue of the sign-in cookie, move neither: it
+  # takes submitting the login form. `started` is a browser sent to Google; `completed` is
   # one that passed Google, and the second factor where required, and was sent
   # the sign-in cookie. Whether the browser kept the cookie is not in here.
   WEB_SIGN_IN_STAGES = %w[started completed].freeze

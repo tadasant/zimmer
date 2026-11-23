@@ -727,22 +727,33 @@ class WebSignInTest < ActionDispatch::IntegrationTest
     assert_equal({ "started" => 0, "completed" => 0 }, counts)
   end
 
+  # The sockets such a tab keeps retrying are counted in
+  # test/channels/application_cable/connection_test.rb.
   test "a signed-out tab moves neither count, whatever it polls" do
     enable_web_auth
 
-    counts = web_sign_ins do
+    report = with_security_telemetry do
       20.times do
         get live_updates_status_path
+        assert_redirected_to "/login"
         follow_redirect!
+        assert_response :success
         get root_path, headers: { "Turbo-Frame" => "sessions" }
+        assert_response :unauthorized
         get root_path, headers: { "Accept" => "application/json" }
-        get "/cable"
+        assert_response :unauthorized
       end
       get second_factor_path
+      assert_redirected_to login_path
       get second_factor_setup_path
+      assert_redirected_to login_path
       get google_sign_in_callback_path, params: { code: "c", state: "s" }
+      assert_response :unprocessable_entity
     end
-    assert_equal({ "started" => 0, "completed" => 0 }, counts)
+    assert_equal({ "started" => 0, "completed" => 0 }, report[:web_sign_ins_by_stage])
+    assert_equal 1, report[:auth_failures_by_kind_and_reason]["web_sign_in"]["flow_mismatch"]
+    assert_equal 22, report[:responses_by_surface_and_status_class]["web"]["3xx"]
+    assert_equal 41, report[:responses_by_surface_and_status_class]["web"]["4xx"]
   end
 
   test "an expired sign-in is signed out, and moves neither count" do
@@ -799,12 +810,46 @@ class WebSignInTest < ActionDispatch::IntegrationTest
     ActionController::Base.allow_forgery_protection = false
   end
 
-  test "a counter store that is down does not change a sign-in" do
+  test "a signed-in browser that goes through Google again and sets up a new factor is a sign-in" do
+    enable_web_auth
+    identity = sign_in_and_enroll
+
+    # It stays signed in across a reset, and an already-open login page can still be submitted.
+    travel 1.hour
+    enable_web_auth(second_factor_reset_before: Time.current.iso8601)
+    counts = web_sign_ins do
+      sign_in_with_google
+      assert_redirected_to second_factor_setup_path
+      get second_factor_setup_path
+      post second_factor_setup_path, params: { code: current_totp_code(identity.reload.totp_pending_secret) }
+      assert_response :success
+    end
+    assert_equal({ "started" => 1, "completed" => 1 }, counts)
+  end
+
+  test "a signed-in browser that passes Google as someone else has not completed their sign-in" do
+    enable_web_auth
+    identity = sign_in_and_enroll
+
+    counts = web_sign_ins do
+      sign_in_with_google(google_claims(sub: "other-account", email: "operator-b@example.com"))
+      assert_redirected_to second_factor_setup_path
+      get second_factor_setup_path
+      post second_factor_setup_path, params: { code: current_totp_code(identity.reload.totp_pending_secret) }
+      assert_response :success
+    end
+    assert_equal({ "started" => 1, "completed" => 0 }, counts)
+  end
+
+  test "counting that fails does not change a sign-in" do
     enable_web_auth(second_factor: "google")
     SecurityTelemetry.stubs(:pending).raises(StandardError, "down")
 
-    sign_in_with_google
+    entries = capture_log_entries { sign_in_with_google }
     assert_redirected_to root_path
+    %w[web_sign_in:started web_sign_in:completed].each do |series|
+      assert entries.any? { |_, message| message.include?("could not record #{series}") }, series
+    end
     get root_path
     assert_response :success
   end
