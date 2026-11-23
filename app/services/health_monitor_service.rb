@@ -41,8 +41,10 @@ class HealthMonitorService
   # states it. Unset means database_size_health reports sizes and never warns.
   DATABASE_CAPACITY_ENV = "DATABASE_CAPACITY_GIB"
 
-  # The share of that capacity, in space in use, at which database_size_health warns.
-  DATABASE_WARNING_SHARE = 0.65
+  # The shares of that capacity at which database_size_health warns: of the space in use,
+  # which retention can bring down, and of the size on disk, which is what fills it.
+  DATABASE_IN_USE_WARNING_SHARE = 0.65
+  DATABASE_ON_DISK_WARNING_SHARE = 0.90
 
   # How many of the largest tables database_size_health lists.
   DATABASE_LARGEST_TABLES = 8
@@ -784,45 +786,36 @@ class HealthMonitorService
   # `log_retention_health` measured `logs`, and the table that was growing,
   # `session_transcript_chunks`, was measured nowhere.
   #
-  # TWO SIZES, because Postgres does not give deleted rows' space back to the disk. The
-  # size on disk only ever grows; what a retention job can change is the space in use.
-  # Both are catalog and statistics reads, and nothing here scans a table.
+  # TWO SIZES. Deleting rows leaves a table's files about as big as they were and frees
+  # the space inside them, so the size on disk does not show what a retention job did.
+  # The space in use does: it is the size on disk less the deleted or reusable space in
+  # TOAST, where Zimmer's large values live. A TOAST chunk is a quarter of a block at
+  # most, so a table's live chunks times that is the most its live TOAST can occupy.
+  # Space in main heaps and indexes is not estimated, so this says nothing about a table
+  # like `logs` that is mostly heap.
   #
-  # The space in use is the size on disk less the reusable space in TOAST, where
-  # Zimmer's large values live. A TOAST chunk is a quarter of a block at most, so a
-  # table's live chunks times that is what its TOAST would occupy with nothing to reuse.
-  # Measured against Postgres 16 it reads within 4% of the true size, and it follows a
-  # DELETE at once. Statistics that have never been collected count as no reusable space.
-  # Reusable space in the main heap and in indexes is not estimated.
+  # WHEN THE ESTIMATE IS TRUSTED. `pg_stat_get_live_tuples` is a running count, and
+  # Postgres discards it on a crash, a failover or a reset. It then counts up from zero,
+  # which would read a full table as empty. A vacuum sets it from the table itself, and
+  # its timestamp is discarded with the count, so the estimate is used only when there is
+  # one. Until then a table counts as having no reusable space.
   #
-  # Warns on the space in use, past DATABASE_WARNING_SHARE of DATABASE_CAPACITY_GIB. Not
-  # folded into `overall_status`: the provider already pages on the disk.
+  # The sizes add up every database on the cluster this role can connect to, because they
+  # share the disk. WAL and temporary files are not in them.
+  #
+  # `pg_total_relation_size` waits for a lock on each table, so a `VACUUM FULL` would hang
+  # every health read without the timeout.
+  #
+  # Warns on either size, as a share of DATABASE_CAPACITY_GIB. Not folded into
+  # `overall_status`: the provider already pages on the disk.
   def database_size_health
-    connection = ActiveRecord::Base.connection
-    total = connection.select_value("SELECT pg_database_size(current_database())").to_i
-    tables = connection.select_all(<<~SQL.squish).to_a
-      SELECT c.relname AS name,
-             pg_total_relation_size(c.oid) AS total_bytes,
-             pg_indexes_size(c.oid) AS index_bytes,
-             c.reltuples::bigint AS estimated_rows,
-             CASE WHEN s.n_live_tup > 0 THEN
-               GREATEST(pg_relation_size(c.reltoastrelid)
-                 - s.n_live_tup * (current_setting('block_size')::bigint / 4), 0)
-             ELSE 0 END AS reusable_bytes
-      FROM pg_class c
-      JOIN pg_namespace n ON n.oid = c.relnamespace
-      LEFT JOIN pg_stat_all_tables s ON s.relid = c.reltoastrelid
-      WHERE c.relkind IN ('r', 'm') AND n.nspname = current_schema()
-      ORDER BY pg_total_relation_size(c.oid) DESC
-    SQL
-
-    in_use = [ total - tables.sum { |row| row["reusable_bytes"].to_i }, 0 ].max
     capacity = database_capacity_bytes
+    total, tables = read_database_sizes
+    in_use = [ total - tables.sum { |row| row["reusable_bytes"].to_i }, 0 ].max
     {
       total_bytes: total,
       in_use_bytes: in_use,
       capacity_bytes: capacity,
-      warning_share: DATABASE_WARNING_SHARE,
       largest_tables: tables.first(DATABASE_LARGEST_TABLES).map do |row|
         {
           name: row["name"],
@@ -837,7 +830,7 @@ class HealthMonitorService
   rescue StandardError => e
     @logger.warn("Database size health could not be read", error: e.message)
     {
-      total_bytes: 0, in_use_bytes: 0, capacity_bytes: nil, warning_share: DATABASE_WARNING_SHARE, largest_tables: [],
+      total_bytes: nil, in_use_bytes: nil, capacity_bytes: capacity, largest_tables: [],
       status: HealthStatus.new(status: :warning, message: "Database size could not be read: #{e.message}")
     }
   end
@@ -944,11 +937,41 @@ class HealthMonitorService
     count.negative? ? nil : count
   end
 
+  # [bytes on disk, one row per table in the current schema, largest first]
+  def read_database_sizes
+    connection = ActiveRecord::Base.connection
+    connection.transaction(requires_new: true) do
+      connection.execute("SET LOCAL lock_timeout = '1s'")
+      connection.execute("SET LOCAL statement_timeout = '5s'")
+      total = connection.select_value(<<~SQL.squish).to_i
+        SELECT SUM(pg_database_size(oid)) FROM pg_database
+        WHERE datallowconn AND has_database_privilege(oid, 'CONNECT')
+      SQL
+      tables = connection.select_all(<<~SQL.squish).to_a
+        SELECT c.relname AS name,
+               pg_total_relation_size(c.oid) AS total_bytes,
+               pg_indexes_size(c.oid) AS index_bytes,
+               c.reltuples::bigint AS estimated_rows,
+               CASE WHEN c.reltoastrelid <> 0 AND COALESCE(
+                 pg_stat_get_last_vacuum_time(c.reltoastrelid), pg_stat_get_last_autovacuum_time(c.reltoastrelid)
+               ) IS NOT NULL THEN
+                 GREATEST(pg_relation_size(c.reltoastrelid)
+                   - pg_stat_get_live_tuples(c.reltoastrelid) * (current_setting('block_size')::bigint / 4), 0)
+               ELSE 0 END AS reusable_bytes
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE c.relkind IN ('r', 'm') AND n.nspname = current_schema()
+        ORDER BY pg_total_relation_size(c.oid) DESC NULLS LAST
+      SQL
+      [ total, tables ]
+    end
+  end
+
   # nil when the deployment has not said. A value that is not a positive number is the
   # same as not having said: this is a health read and must not raise over a typo.
   def database_capacity_bytes
-    gib = ENV[DATABASE_CAPACITY_ENV].to_s.to_f
-    gib.positive? ? (gib * 1.gigabyte).to_i : nil
+    gib = Float(ENV[DATABASE_CAPACITY_ENV].to_s, exception: false)
+    gib && gib.finite? && gib.positive? ? (gib * 1.gigabyte).to_i : nil
   end
 
   def database_size_status(total, in_use, capacity)
@@ -956,13 +979,16 @@ class HealthMonitorService
     message = "Database is #{human.call(total)} on disk, about #{human.call(in_use)} in use"
     return HealthStatus.new(status: :healthy, message: message) if capacity.nil?
 
-    share = in_use.to_f / capacity
-    message += " (#{(share * 100).round}% of #{human.call(capacity)})"
-    if share >= DATABASE_WARNING_SHARE
-      HealthStatus.new(status: :warning, message: "#{message}, past #{(DATABASE_WARNING_SHARE * 100).round}%. Check the largest tables.")
-    else
-      HealthStatus.new(status: :healthy, message: message)
-    end
+    percent = ->(share) { (share * 100).floor }
+    on_disk_share = total.to_f / capacity
+    in_use_share = in_use.to_f / capacity
+    message += " (#{percent.call(on_disk_share)}% and #{percent.call(in_use_share)}% of #{human.call(capacity)})"
+    past = []
+    past << "on disk is past #{percent.call(DATABASE_ON_DISK_WARNING_SHARE)}%" if on_disk_share >= DATABASE_ON_DISK_WARNING_SHARE
+    past << "in use is past #{percent.call(DATABASE_IN_USE_WARNING_SHARE)}%" if in_use_share >= DATABASE_IN_USE_WARNING_SHARE
+    return HealthStatus.new(status: :healthy, message: message) if past.empty?
+
+    HealthStatus.new(status: :warning, message: "#{message}: #{past.join(" and ")}. Check the largest tables.")
   end
 
   def log_retention_status(oldest, oldest_verbose)

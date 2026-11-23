@@ -932,20 +932,31 @@ as an audit trail.
 in use, and the eight largest tables. It exists because production's managed Postgres ran low on disk
 while nothing in Zimmer measured the table that was growing, `session_transcript_chunks`.
 
-There are two sizes because Postgres does not shrink a file when rows are deleted. The space becomes
-reusable and the size on disk stays where it was until a `VACUUM FULL` or `pg_repack`. So the size on
-disk cannot tell you whether retention is working, and the space in use can.
+There are two sizes because deleting rows leaves a table's files about as big as they were and frees
+the space inside them, until a `VACUUM FULL` or `pg_repack`. So the size on disk does not show what a
+retention job did, and the space in use does.
 
-The space in use is an estimate: the size on disk less the reusable space in TOAST, which is where
-Zimmer's large values live. A table's live TOAST chunks, at a quarter of a block each, are what its
-TOAST would occupy with nothing to reuse. On Postgres 16 it read within 4% of the true size and
-dropped as soon as rows were deleted. Reusable space in main heaps and indexes is not estimated, and
-a table whose statistics have never been collected counts as having none. Nothing here scans a table.
+The space in use is an estimate: the size on disk less the deleted or reusable space in TOAST, which
+is where transcripts and Zimmer's other large values live. A table's live TOAST chunks, at a quarter
+of a block each, are the most its live TOAST can occupy. On Postgres 16 it read within 4% of the true
+size and followed a delete at once. Three limits:
+
+- Main heaps and indexes are not estimated. `logs` is mostly heap, so `LogRetentionJob` does not move
+  this number.
+- Space counts as reusable from the delete, though Postgres can only reuse it after a vacuum.
+- Postgres discards the running count on a crash, a failover or a statistics reset. The estimate is
+  used for a table only when a vacuum has set the count since, and until then that table counts as
+  having no reusable space.
+
+Both sizes add up every database on the cluster that Zimmer's role can connect to, because they share
+the disk. WAL and temporary files are not counted. The read gives up after a one-second lock wait, so
+a `VACUUM FULL` elsewhere does not hang the health page.
 
 Zimmer cannot read a managed cluster's disk size, so the deployment states it:
 `DATABASE_CAPACITY_GIB` (80 in `config/deploy.production.yml`; keep it in step with the cluster). The
-section warns when the space in use passes 65% of that, and never warns when it is unset. It is not
-part of `overall_status`, because the provider already pages on the disk.
+section warns when the space in use reaches 65% of that or the size on disk reaches 90%, and never
+warns when it is unset. It is not part of `overall_status`, because the provider already pages on the
+disk.
 
 | Surface | Where |
 | --- | --- |

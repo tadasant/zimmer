@@ -14,8 +14,8 @@
           Deleting rows frees space for reuse without shrinking the files, so the space in use is an
           estimate beside the size on disk.
           <% if database[:capacity_bytes] %>
-            Warns past <%= number_to_percentage(database[:warning_share] * 100, precision: 0) %> of
-            <%= number_to_human_size(database[:capacity_bytes]) %> in use.
+            Warns at <%= (HealthMonitorService::DATABASE_IN_USE_WARNING_SHARE * 100).floor %>% in use or
+            <%= (HealthMonitorService::DATABASE_ON_DISK_WARNING_SHARE * 100).floor %>% on disk, of <%= number_to_human_size(database[:capacity_bytes]) %>.
           <% else %>
             Set <code class="font-mono text-xs">DATABASE_CAPACITY_GIB</code> to warn on it.
           <% end %>
@@ -31,19 +31,19 @@
     <dl class="grid grid-cols-2 gap-4">
       <div class="text-center">
         <dt class="text-sm font-medium text-gray-500">On disk</dt>
-        <dd class="mt-1 text-2xl font-semibold text-gray-900 break-words"><%= number_to_human_size(database[:total_bytes]) %></dd>
+        <dd class="mt-1 text-2xl font-semibold text-gray-900 break-words"><%= database[:total_bytes] ? number_to_human_size(database[:total_bytes]) : "—" %></dd>
       </div>
       <div class="text-center">
         <dt class="text-sm font-medium text-gray-500">In use (est.)</dt>
-        <dd class="mt-1 text-2xl font-semibold text-gray-900 break-words"><%= number_to_human_size(database[:in_use_bytes]) %></dd>
+        <dd class="mt-1 text-2xl font-semibold text-gray-900 break-words"><%= database[:in_use_bytes] ? number_to_human_size(database[:in_use_bytes]) : "—" %></dd>
       </div>
     </dl>
 
     <% if database[:largest_tables].present? %>
       <ul class="mt-4 divide-y divide-gray-100 text-sm">
         <% database[:largest_tables].each do |table| %>
-          <li class="flex items-baseline justify-between gap-3 py-1.5">
-            <code class="min-w-0 truncate font-mono text-xs text-gray-700"><%= table[:name] %></code>
+          <li class="flex flex-wrap items-baseline justify-between gap-x-3 py-1.5">
+            <code class="min-w-0 break-all font-mono text-xs text-gray-700"><%= table[:name] %></code>
             <span class="flex-shrink-0 text-gray-900">
               <%= number_to_human_size(table[:total_bytes]) %>
               <% if table[:reusable_bytes].to_i.positive? %>
