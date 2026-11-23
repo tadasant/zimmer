@@ -2,6 +2,22 @@
 
 # Catalog entries and setup shared by the token broker's tests.
 module TokenBrokerTestHelpers
+  # Every test that includes this starts with the broker OFF, whatever the
+  # process inherited, and says so when it needs it on.
+  def self.included(base)
+    base.setup do
+      @saved_token_broker_enabled = ENV[TokenBroker::ENABLED_ENV]
+      ENV.delete(TokenBroker::ENABLED_ENV)
+    end
+    base.teardown do
+      @saved_token_broker_enabled.nil? ? ENV.delete(TokenBroker::ENABLED_ENV) : ENV[TokenBroker::ENABLED_ENV] = @saved_token_broker_enabled
+    end
+  end
+
+  def turn_token_broker_on = ENV[TokenBroker::ENABLED_ENV] = "true"
+
+  def turn_token_broker_off = ENV.delete(TokenBroker::ENABLED_ENV)
+
   # A strad entry as the catalog writes them today: the static key header.
   def static_strad_entry(slug)
     {

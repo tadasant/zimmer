@@ -18,8 +18,8 @@ This is a production invariant: **no agent session gets access to the store's se
 for Zimmer's backend. A session reaches what a store credential unlocks in one of two ways only:
 
 - **A short-lived token minted from it.** Zimmer's backend holds the long-lived grant and pushes each
-  session turn a short-lived, scoped token. This is the session token broker, which is not on `main`
-  yet ([#1610](https://github.com/tadasant/zimmer/pull/1610)).
+  session turn a short-lived, scoped token. This is the [session token broker](/auth/token-broker/), which is
+  [off by default](/auth/token-broker/#the-switch).
 - **Going through strad**, which holds the credential and never hands it over.
 
 So the store is not a source for anything an agent can read:

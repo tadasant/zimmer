@@ -473,8 +473,9 @@ background thread. A regular file doesn't work here — the CLI reads nothing fr
 
 ## Brokered MCP entries get a per-turn token
 
-A catalog entry that declares `brokered_auth` is authenticated by the
-[token broker](/auth/token-broker/) rather than by its own header. During `AirPrepareService#prepare!`,
+On a deployment where the broker is [turned on](/auth/token-broker/#the-switch), a catalog entry that
+declares `brokered_auth` is authenticated by the [token broker](/auth/token-broker/) rather than by
+its own header. During `AirPrepareService#prepare!`,
 `RuntimeConfigPostProcessor#inject_brokered_credentials!` runs just before `${VAR}` resolution. It
 mints one child token per authorization server for the session and writes it as the entry's
 `Authorization: Bearer` header:
@@ -492,7 +493,8 @@ that has a brokered entry. Every other caller of `AirPrepareService` writes the 
 brokered entry's static `Authorization` variable is also left out of the clone's `.env` scope
 (`ServersConfig::Server#session_variables`).
 
-With no entry declaring `brokered_auth`, the step is one pass over the catalog that finds nothing.
+With the broker off, the step does nothing. With it on and no entry declaring `brokered_auth`, it is
+one pass over the catalog that finds nothing.
 
 ## The warm clone pool
 

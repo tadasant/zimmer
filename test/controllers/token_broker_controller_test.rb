@@ -9,6 +9,7 @@ class TokenBrokerControllerTest < ActionDispatch::IntegrationTest
   include TokenBrokerTestHelpers
 
   setup do
+    turn_token_broker_on
     @strad = FakeStrad.new
     client = @strad.client
     TokenBroker::Client.stubs(:new).returns(client)
@@ -91,6 +92,65 @@ class TokenBrokerControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to token_broker_path
     assert_match(/client identity is not configured/, flash[:error])
+  end
+
+  # --- the deployment switch ----------------------------------------------
+
+  test "off, the page says so, and that the declarations are doing nothing" do
+    turn_token_broker_off
+    get token_broker_path
+
+    assert_response :success
+    assert_select "[data-broker-state=off]", text: /1 catalog entry declared for it.*nothing here.*variable is missing from this deployment/m
+    assert_select "[data-authorization-server=?]", FakeStrad::ORIGIN
+    assert_includes response.body, "Connect it before turning the broker on"
+  end
+
+  test "off with nothing declared, the page does not suggest anything is missing" do
+    turn_token_broker_off
+    stub_mcp_catalog("granola" => static_strad_entry("granola"))
+    get token_broker_path
+
+    assert_select "[data-broker-state=off]"
+    assert_not_includes response.body, "variable is missing"
+  end
+
+  test "on, the page says declaring entries never fall back" do
+    get token_broker_path
+
+    assert_select "[data-broker-state=on]", text: /never used instead/
+    assert_select "[data-broker-state=off]", count: 0
+  end
+
+  # Connecting first is what lets the broker be turned on with no gap, so it has
+  # to work while off, and has to mint nothing.
+  test "off, connect and its callback still store a grant, and say nothing changes yet" do
+    turn_token_broker_off
+    with_oauth_client_identity do
+      post connect_token_broker_path, params: { authorization_server: FakeStrad::ORIGIN }
+      flow = McpOauthPendingFlow.where.not(broker_authorization_server: nil).sole
+      assert_redirected_to flow.authorization_url
+      McpOauthService.any_instance.stubs(:exchange_code_for_tokens)
+        .returns("access_token" => "strad_oat_p", "refresh_token" => "strad_ort_p", "expires_in" => 3600, "scope" => "mcp")
+
+      get mcp_oauth_callback_path, params: { state: flow.state, code: "the-code" }
+
+      assert_match(/broker is off on this deployment/, flash[:notice])
+      assert_equal FakeStrad::ORIGIN, McpBrokerGrant.sole.authorization_server
+      assert_equal 0, McpBrokeredToken.count
+      assert_empty @strad.exchanges
+      refute ServersConfig.find("image-diff").brokered?
+    end
+  end
+
+  test "off, disconnect still revokes the grant" do
+    turn_token_broker_off
+    with_oauth_client_identity do
+      @strad.create_grant!
+      delete disconnect_token_broker_path, params: { authorization_server: FakeStrad::ORIGIN }
+
+      assert_equal 0, McpBrokerGrant.count
+    end
   end
 
   test "the callback stores the parent grant, not a per-entry credential" do

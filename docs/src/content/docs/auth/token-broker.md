@@ -15,15 +15,67 @@ database. At the start of every turn it exchanges that grant for a **child token
 session. The child is scoped to exactly the servers that session has on that authorization server,
 labelled with the session id, valid for at most six hours, and revoked when the turn comes to rest.
 
-It is off unless three things are true, and with any of them missing every session behaves exactly
-as before, static key included:
-
-1. a catalog entry declares `brokered_auth`;
-2. Zimmer's [OAuth client identity](/auth/mcp-oauth/#zimmers-own-client-identity-cimd-and-private_key_jwt) is configured
-   (`ZIMMER_OAUTH_CLIENT_BASE_URL` and a signing key);
-3. a human has connected the authorization server once on the **Token broker** page (`/token-broker`).
-
 An entry on the static key and an entry on the broker work side by side in the same session.
+
+## The switch
+
+The broker is **off by default, per deployment**. `ZIMMER_TOKEN_BROKER_ENABLED` turns it on. Unset,
+blank and false-like values (`0`, `false`, `f`, `no`, `n`, `off`, `disabled`, any case) are off. Any
+other value is on, including one nobody recognises: a misspelling should show up as servers missing
+with a cause, not as sessions quietly carrying the static key.
+
+| Switch | A catalog entry that declares `brokered_auth` |
+| --- | --- |
+| Off | Behaves exactly as it would without the declaration, on every path: the session's MCP config, its secret scope, Zimmer's own calls, the OAuth injector and connector status. Its static header is used. |
+| On, and a token can be minted | Gets a child token. Its static header is never used. |
+| On, and a token cannot be minted | Is left out of the session, with the cause. Its static header is never used. |
+
+A catalog is shared between deployments, so a declaration alone must not change one that never set
+the broker up. The switch is configuration and nothing else. It is deliberately not "the client
+identity is configured" or "a grant exists". Those are runtime state, and a lost grant or a KMS
+outage must never read as "off" and hand a session the static key.
+
+Every consumer decides through one predicate, `ServersConfig::Server#brokered?` (the entry declares
+it, and the switch is on), so they flip together. `declares_brokered_auth?` is for pages that show a
+declaration. Revocation and the sweep do not look at the switch, so turning the broker off still
+cleans up tokens minted while it was on.
+
+On, an entry also needs Zimmer's
+[OAuth client identity](/auth/mcp-oauth/#zimmers-own-client-identity-cimd-and-private_key_jwt)
+(`ZIMMER_OAUTH_CLIENT_BASE_URL` and a signing key) and a grant a human connected on the **Token
+broker** page (`/token-broker`).
+
+:::caution[A deploy that loses the variable turns the broker off]
+Declaring entries then go back to their static header, for as long as the catalog still carries one.
+Two surfaces say so: `/token-broker` shows the broker as off with the number of entries declared for
+it, and each such row on the Connectors page carries a note. Removing the static header from the
+catalog is what closes this for good. Until then the fallback is an operator's configuration change,
+never something a session, a grant or an authorization server can cause.
+:::
+
+## Cutover
+
+In this order. Each step is safe on its own, and nothing about a session changes before step 4.
+
+1. **Configure the client identity**, and have the authorization server accept it.
+2. **Declare `brokered_auth` on one low-risk entry.** With the switch off this does nothing to
+   sessions. It comes before connecting because Connect only accepts an authorization server that a
+   catalog entry names.
+3. **Connect** that authorization server on `/token-broker`. This works while the broker is off: it
+   stores the grant and mints nothing.
+4. **Turn the switch on**, only once step 3 shows **Connected**. Web and worker must get it in the
+   same deploy, so it sits in the environment both roles share (`env.clear` in
+   `config/deploy.production.yml`), never on one role. A session that starts after this carries a
+   child token for that entry.
+5. **Check it**: the entry's row on Connectors is **Ready**, and a session's log says the broker
+   minted its token. Turning the switch off again is the way back, as long as the entry still has its
+   static header.
+6. **Declare the remaining entries**, a few at a time. With the switch on, an entry that gains a
+   declaration is brokered from its next turn, so check that its slug is within the grant first.
+7. **Remove the static headers** from the declared entries once they have run on the broker.
+
+A deployment that shares a catalog which already declares entries does nothing in step 2. It must
+still finish step 3 before step 4, for every authorization server its catalog names.
 
 ## Opting an entry in
 
@@ -43,16 +95,16 @@ A top-level `brokered_auth` object on the catalog entry:
 | `scopes` | Required. The scope tokens this entry needs; for strad, `slug:<name>`. |
 | `authorization_server` | Optional. The origin whose grant serves the entry. Defaults to the origin of `url`. |
 
-The presence of the key is the opt-in. It is a top-level key rather than part of `oauth`
+The presence of the key is the opt-in, on a deployment where [the switch](#the-switch) is on. It is a top-level key rather than part of `oauth`
 because AIR's Claude adapter copies `oauth` into the runtime's `.mcp.json`, which would hand Claude
 Code an OAuth configuration for a server Zimmer authenticates itself. A malformed declaration is
-still an opt-in: the entry fails visibly instead of falling back.
+still an opt-in: with the switch on, the entry fails visibly instead of falling back.
 
 Only the `Authorization` header is replaced. A static credential in any other header stays on the
 entry, so a brokered entry should carry its credential in `Authorization` alone.
 
-The entry may keep its static header while it is cut over. Zimmer never uses it for a brokered
-entry: the prepare step deletes it before secrets are resolved, the variable it names leaves the
+The entry may keep its static header while it is cut over. With the switch on, Zimmer never uses it
+for a brokered entry: the prepare step deletes it before secrets are resolved, the variable it names leaves the
 session's [secret scope](/sessions/spawning/), and the OAuth injector skips the entry. Removing it
 from the catalog is still the cleaner end state.
 
@@ -138,8 +190,8 @@ sequenceDiagram
 
 ## When minting fails
 
-The entry is left out of that turn's MCP config. It is never written with the static key. The cause
-is named in three places:
+With the switch on, the entry is left out of that turn's MCP config. It is never written with the
+static key. The cause is named in three places:
 
 - a warning line in the session's log: *"Token broker: MCP server 'image-diff' is unavailable this
   turn because no token broker grant exists for https://strad.tadasant.com yet — a human has to

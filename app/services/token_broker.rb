@@ -6,18 +6,28 @@
 # parent grant only the backend holds (McpBrokerGrant), and revoked when the
 # turn comes to rest.
 #
-# ## Off unless opted into, three times over
+# ## Off unless the deployment turns it on
 #
-# Nothing here runs for a server whose catalog entry has no `brokered_auth`.
-# With no entry opted in, every session's prepare path, every backend call and
-# every status page behaves exactly as before, static `${STRAD_API_KEY}`
-# included. An opted-in entry additionally needs a parent grant for its
-# authorization server, which only a human creates (the Token broker page),
-# and Zimmer's hosted client identity configured (OauthClientIdentity).
+# The switch is ZIMMER_TOKEN_BROKER_ENABLED (.enabled?), off by default. While it
+# is off a `brokered_auth` declaration is inert: the entry behaves exactly as it
+# would without one, static `${STRAD_API_KEY}` included, on every path — the
+# prepare step, the session's secret scope, backend calls, the OAuth injector and
+# connector status. A catalog is shared between deployments, and one that never
+# set the broker up must not lose the servers another one brokers.
+#
+# The switch is configuration and nothing else. It is not "a grant exists" or "the
+# client identity is configured": those are runtime state, and a lost grant or a
+# KMS outage must never read as "off" and hand a session the static key.
+#
+# Turned on, an entry that declares `brokered_auth` additionally needs a parent
+# grant for its authorization server, which only a human creates (the Token
+# broker page), and Zimmer's hosted client identity (OauthClientIdentity).
+# Connecting mints nothing, so it works while the broker is off: connect first,
+# then turn the broker on.
 #
 # ## Never a broader credential
 #
-# An opted-in entry is served by a child token or not at all. When minting
+# With the broker on, a declaring entry is served by a child token or not at all. When minting
 # fails — no grant, the grant was revoked, the authorization server or KMS is
 # down — the entry is left out of that turn's MCP config, and the cause is
 # written to the session's log and metadata. Its static header, if the catalog
@@ -44,6 +54,13 @@
 # request-scoped state, so a future per-connection hook — a runtime asking
 # Zimmer for a fresh token on reconnect — can call them directly.
 module TokenBroker
+  ENABLED_ENV = "ZIMMER_TOKEN_BROKER_ENABLED"
+  # Everything that means off. Any other value is ON, including one nobody
+  # recognises: someone set it meaning to turn the broker on, and a misspelling
+  # must show up as servers that are missing with a cause, not as sessions
+  # quietly carrying the static key.
+  OFF_VALUES = [ "", "0", "false", "f", "no", "n", "off", "disabled" ].freeze
+
   # What a session asks for. strad clamps to its `maxChildTokenTtlSeconds` and
   # to the parent grant's deadline, and answers with what it gave.
   SESSION_TOKEN_TTL = 6.hours
@@ -71,6 +88,11 @@ module TokenBroker
   end
 
   module_function
+
+  # Whether this deployment turned the token broker on. Configuration only.
+  def enabled?(env = ENV)
+    !OFF_VALUES.include?(env[ENABLED_ENV].to_s.scrub.strip.downcase)
+  end
 
   # @return [String, nil] `https://host[:port]`, lowercased; nil unless https
   #   (http is accepted for a loopback host, for local development).
@@ -104,22 +126,24 @@ module TokenBroker
     Declaration.for(server)
   end
 
-  def brokered?(server) = !declaration_for(server).nil?
-
-  # The names among `server_names` whose catalog entries opt in. One pass over
-  # the catalog, and nothing else when no entry opts in at all — this is on
-  # every session's prepare path.
+  # The names among `server_names` that the broker authenticates on this
+  # deployment (Server#brokered?). Nothing at all while the broker is off, and
+  # otherwise one pass over the catalog — this is on every session's prepare path.
   #
   # @return [Array<String>]
   def brokered_among(server_names)
+    return [] unless enabled?
+
     declared = ServersConfig.all.select(&:brokered?)
     return [] if declared.empty?
 
     Array(server_names).map(&:to_s).select { |name| ArtifactIdentity.find(declared, name) }
   end
 
-  # Every catalog entry that opts in, by authorization server. For the Token
-  # broker page.
+  # Every catalog entry that declares `brokered_auth`, by authorization server,
+  # whether or not the broker is on here. For the Token broker page, which has to
+  # show a declaration that is doing nothing and connect a grant before the
+  # broker is turned on.
   #
   # @return [Hash{String => Array<Declaration>}]
   def declarations_by_authorization_server
@@ -129,12 +153,14 @@ module TokenBroker
   end
 
   # Why the broker could not mint a token for this entry right now, or nil when
-  # it could. Configuration and database only — no network — so the Connectors
+  # it could — or when the broker does not authenticate it here at all. Configuration and database only — no network — so the Connectors
   # page and `get_configs` can ask it for every entry.
   #
   # @param server [ServersConfig::Server]
   # @return [String, nil]
   def readiness_problem(server)
+    return nil unless enabled?
+
     declaration = Declaration.for(server)
     return nil if declaration.nil?
     return "its catalog entry's brokered_auth declaration is invalid: #{declaration.error}" unless declaration.valid?
@@ -155,6 +181,8 @@ module TokenBroker
   # @param server_names [Array<String>] the entries in this turn's MCP config
   # @return [MintResult]
   def mint_for_session(session, server_names, client: Client.new)
+    return MintResult.empty unless enabled?
+
     declarations = Array(server_names).filter_map { |name| declaration_for(name.to_s) }
     return MintResult.empty if declarations.empty?
 
@@ -181,6 +209,8 @@ module TokenBroker
   # @return [String]
   # @raise [MintError]
   def backend_token(server, client: Client.new, now: Time.current)
+    raise MintError, "the token broker is off on this deployment (#{ENABLED_ENV})" unless enabled?
+
     declaration = Declaration.for(server) || raise(MintError, "#{server.name} does not opt into brokered auth")
     raise MintError, "#{server.name}: #{declaration.error}" unless declaration.valid?
 

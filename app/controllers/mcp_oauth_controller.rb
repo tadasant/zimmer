@@ -497,7 +497,11 @@ class McpOauthController < ApplicationController
     pending_flow.destroy
 
     Rails.logger.info "[McpOauthController] Token broker grant stored for #{origin}"
-    flash[:notice] = "Connected the token broker to #{origin}. Sessions with brokered entries there get their own short-lived token from their next turn."
+    flash[:notice] = if TokenBroker.enabled?
+      "Connected the token broker to #{origin}. Sessions with brokered entries there get their own short-lived token from their next turn."
+    else
+      "Connected the token broker to #{origin}. The broker is off on this deployment (#{TokenBroker::ENABLED_ENV}), so nothing changes for sessions until it is turned on."
+    end
     redirect_to token_broker_path
   end
 

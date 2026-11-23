@@ -34,7 +34,7 @@ From `mcp.json`:
 | `default_in_roots` | which roots get it by default |
 | `unavailable` | a standing declaration that this entry cannot work here, and why |
 | `startup_timeout_sec` | how long a runtime should wait for *this* server to start |
-| `brokered_auth` | authenticate this entry with a per-turn token from the [token broker](/auth/token-broker/) instead of its own header |
+| `brokered_auth` | authenticate this entry with a per-turn token from the [token broker](/auth/token-broker/) instead of its own header, on a deployment where the broker is turned on (`ZIMMER_TOKEN_BROKER_ENABLED`). Elsewhere it does nothing |
 
 `env` and `headers` values may contain `${VAR}` placeholders.
 

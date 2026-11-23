@@ -3442,7 +3442,10 @@ authorization server. It answers the discovery, refresh, token-exchange and revo
 the shapes tadasant/strad#537 pins, and verifies each `private_key_jwt` assertion the way strad does.
 Nothing has yet run against a real strad, a real KMS key, or a running Zimmer with an entry opted in:
 strad staging's OAuth is not configured, Zimmer's KMS key does not exist yet, and nothing in the
-production catalog declares `brokered_auth`. Until one does, the code is inert.
+production catalog declares `brokered_auth`. The broker is also
+[off by default](/auth/token-broker/#the-switch) on every deployment, and while it is off a
+declaration does nothing. A deploy that loses `ZIMMER_TOKEN_BROKER_ENABLED` turns it off, and
+declaring entries go back to their static header until the catalog stops carrying one.
 
 Four known edges:
 

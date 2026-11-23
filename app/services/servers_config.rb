@@ -84,7 +84,19 @@ class ServersConfig
     # TokenBroker::Declaration, which is what every caller should go through.
     attr_reader :brokered_auth
 
-    def brokered? = !@brokered_auth.nil?
+    # Whether the catalog entry asks to be brokered. Says nothing about this
+    # deployment: a catalog is shared, and a declaration is inert where the
+    # broker is off. For the pages that show a declaration; anything that decides
+    # how the entry is authenticated asks #brokered?.
+    def declares_brokered_auth? = !@brokered_auth.nil?
+
+    # Whether the token broker authenticates this entry HERE: it declares
+    # `brokered_auth` and this deployment turned the broker on
+    # (TokenBroker.enabled?). The one predicate every consumer decides through,
+    # so they all flip together. Deliberately not "and a token can be minted":
+    # with the broker on, an entry that cannot get a token is left out, never
+    # handed its static header.
+    def brokered? = declares_brokered_auth? && TokenBroker.enabled?
 
     # The `${VAR}`s a session's clone needs for this entry (SessionSecretScope).
     #

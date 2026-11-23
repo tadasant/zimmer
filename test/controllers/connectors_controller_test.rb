@@ -222,6 +222,26 @@ class ConnectorsControllerTest < ActionDispatch::IntegrationTest
     assert_no_match(/#{Regexp.escape(credential.access_token)}/, response.body)
   end
 
+  # A declaration that is doing nothing has to be visible: it is how an operator
+  # notices a deploy that lost the token broker's switch.
+  test "show says when an entry declares brokered auth but the broker is off here" do
+    saved = ENV[TokenBroker::ENABLED_ENV]
+    ENV.delete(TokenBroker::ENABLED_ENV)
+    entry = { "type" => "streamable-http", "url" => "https://strad.example.com/mcp?servers=x", "brokered_auth" => { "scopes" => [ "slug:x" ] } }
+    AirCatalogService.stubs(:entries_for).returns({})
+    AirCatalogService.stubs(:entries_for).with(:mcp).returns("x" => entry)
+
+    get connector_path("x")
+    assert_response :success
+    assert_select "[data-broker-off]", text: /broker is off on this deployment/
+
+    ENV[TokenBroker::ENABLED_ENV] = "true"
+    get connector_path("x")
+    assert_select "[data-broker-off]", count: 0
+  ensure
+    saved.nil? ? ENV.delete(TokenBroker::ENABLED_ENV) : ENV[TokenBroker::ENABLED_ENV] = saved
+  end
+
   test "show 404s for a server that is not in the catalog" do
     get connector_path("nope")
 

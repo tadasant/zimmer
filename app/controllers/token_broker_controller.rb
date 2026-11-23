@@ -20,6 +20,7 @@ class TokenBrokerController < ApplicationController
     grants = McpBrokerGrant.all.index_by(&:authorization_server)
     origins = (declarations.keys + grants.keys).uniq.sort
 
+    @broker_enabled = TokenBroker.enabled?
     @identity_enabled = OauthClientIdentity.enabled?
     @client_id = OauthClientIdentity.client_id
     @invalid_declarations = ServersConfig.all.filter_map { |server| TokenBroker::Declaration.for(server) }.reject(&:valid?)
@@ -41,6 +42,10 @@ class TokenBrokerController < ApplicationController
 
   # POST /token_broker/connect — start the one-time consent for one
   # authorization server.
+  #
+  # Works while the broker is off (TokenBroker.enabled?): it stores a grant and
+  # mints nothing, and connecting first is what lets the broker be turned on
+  # without a moment in which declaring entries have no token.
   def connect
     origin = TokenBroker.normalize_origin(params[:authorization_server])
     declarations = TokenBroker.declarations_by_authorization_server.fetch(origin, [])

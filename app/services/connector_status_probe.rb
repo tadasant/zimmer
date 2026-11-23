@@ -188,6 +188,21 @@ class ConnectorStatusProbe
       end
     end
 
+    # Said beside the row when its entry declares `brokered_auth` on a deployment
+    # whose token broker is off, so the declaration is doing nothing and sessions
+    # carry the entry's own credential. It is how an operator notices a deploy
+    # that lost ZIMMER_TOKEN_BROKER_ENABLED. An addition to the row and nothing
+    # else: the state, label, summary and availability are exactly what they would
+    # be without the declaration.
+    #
+    # @return [String, nil]
+    def broker_off_note
+      return nil unless server.declares_brokered_auth? && !TokenBroker.enabled?
+
+      "The catalog asks for this entry to be authenticated by the token broker, but the broker is off on this " \
+        "deployment (#{TokenBroker::ENABLED_ENV}), so sessions use the entry's own credential."
+    end
+
     # One sentence saying what the state means for this specific server.
     def summary
       case state

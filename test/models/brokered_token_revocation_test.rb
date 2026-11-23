@@ -10,6 +10,7 @@ class BrokeredTokenRevocationTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
 
   setup do
+    turn_token_broker_on
     @strad = FakeStrad.new
     client = @strad.client
     TokenBroker::Client.stubs(:new).returns(client)

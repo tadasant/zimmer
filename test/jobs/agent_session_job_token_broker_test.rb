@@ -9,6 +9,7 @@ class AgentSessionJobTokenBrokerTest < ActiveSupport::TestCase
   include TokenBrokerTestHelpers
 
   setup do
+    turn_token_broker_on
     @session = create_session(status: :waiting, mcp_servers: [])
     @session.update_columns(mcp_servers: %w[image-diff granola])
     @log_buffer = LogBuffer.new(@session)

@@ -294,6 +294,13 @@ env:
     # without touching a secret. Absent, the chain is just credentials -> ENV.
     ZIMMER_PARAMS_PROJECT_ID: zimmer-secrets-prod
     ZIMMER_PARAMS_LOCATION: global
+    # The session token broker's switch (TokenBroker.enabled?). Off, a catalog entry's
+    # `brokered_auth` declaration is inert and sessions use the entry's own credential.
+    # Here rather than on a role, so web and worker always flip in the same deploy.
+    # Turn it on only after the grant is connected on /token-broker: on, a declaring
+    # entry that cannot get a token is left out of every session. Dropping this line
+    # turns it off. See "Cutover" in docs/src/content/docs/auth/token-broker.md.
+    ZIMMER_TOKEN_BROKER_ENABLED: "false"
     # Zimmer never writes to that store. The pages that depend on a store secret
     # (/live, the Inference page's Pi tab) link this console to set it instead.
     ZIMMER_STORE_CONSOLE_URL: https://strad.tadasant.com/ui/secrets

@@ -23,6 +23,26 @@
       <div class="mb-4 rounded-md bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-800 break-words"><%= flash[:error] %></div>
     <% end %>
 
+    <% declaring = @servers.sum { |server| server[:declarations].size } + @invalid_declarations.size %>
+    <% if @broker_enabled %>
+      <div class="mb-6 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800 break-words" data-broker-state="on">
+        The token broker is <strong>on</strong> for this deployment. A declaring entry gets a brokered token or is
+        left out of the session; its own credential is never used instead.
+      </div>
+    <% else %>
+      <div class="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 break-words" data-broker-state="off">
+        The token broker is <strong>off</strong> for this deployment (<code><%= TokenBroker::ENABLED_ENV %></code>).
+        <% if declaring.positive? %>
+          <%= pluralize(declaring, "catalog entry", plural: "catalog entries") %> declared for it, and
+          <%= declaring == 1 ? "its declaration does" : "their declarations do" %> nothing here: sessions use each entry's
+          own credential. If the broker should be on, the variable is missing from this deployment.
+        <% else %>
+          Sessions use each entry's own credential.
+        <% end %>
+        Connecting below is safe while it is off: it stores the grant and gives no session a token.
+      </div>
+    <% end %>
+
     <div class="mb-6 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm">
       <% if @identity_enabled %>
         <p class="text-gray-700">Client identity: <span class="font-mono text-xs break-all"><%= @client_id %></span></p>
@@ -30,14 +50,14 @@
         <p class="text-gray-700">
           Zimmer's OAuth client identity is not configured on this deployment
           (<code><%= OauthClientIdentity::BASE_URL_ENV %></code> and a signing key), so nothing can be brokered here.
-          Every entry keeps its own credential, as before.
+          <% if @broker_enabled %>Declaring entries are left out of every session until it is.<% end %>
         </p>
       <% end %>
     </div>
 
     <% if @invalid_declarations.any? %>
       <div class="mb-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-        <p class="font-medium mb-1">Entries whose <code>brokered_auth</code> declaration is invalid. Sessions run without them:</p>
+        <p class="font-medium mb-1">Entries whose <code>brokered_auth</code> declaration is invalid. <%= @broker_enabled ? "Sessions run without them:" : "Sessions would run without them if the broker were on:" %></p>
         <ul class="list-disc ml-5">
           <% @invalid_declarations.each do |declaration| %>
             <li class="break-words"><span class="font-mono text-xs"><%= declaration.server_name %></span>: <%= declaration.error %></li>
@@ -85,7 +105,10 @@
                   <p class="text-amber-700 break-words">Last revocation error: <%= server[:last_revoke_error] %>. It is retried until the token expires on its own.</p>
                 <% end %>
               <% else %>
-                <p>No grant yet. Until a human connects it once, sessions run without the entries below.</p>
+                <p>
+                  No grant yet. <%= @broker_enabled ? "Until a human connects it once, sessions run without the entries below." :
+                    "Connect it before turning the broker on, or sessions lose the entries below." %>
+                </p>
               <% end %>
 
               <% if server[:declarations].any? %>

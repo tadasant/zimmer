@@ -5,6 +5,8 @@ require "mocha/minitest"
 require "support/fake_parameter_store"
 
 class ConnectorStatusProbeTest < ActiveSupport::TestCase
+  include TokenBrokerTestHelpers
+
   # A catalog entry shaped like the strad-hosted MCP servers Zimmer connects to:
   # a remote server whose only credential is a static bearer header sourced from
   # a ${VAR}. This is the motivating "missing configuration" case.
@@ -626,6 +628,7 @@ class ConnectorStatusProbeTest < ActiveSupport::TestCase
   # degrade past silently, so the only surface that would notice is a REST client
   # reading a contract that promises the two move together.
   test "every blocking state says why" do
+    turn_token_broker_on
     reasons = {
       missing_configuration: probe("secrets-service-account", SECRETS_SERVICE_ACCOUNT),
       needs_authorization: probe("notion", OAUTH_SERVER),
@@ -648,6 +651,7 @@ class ConnectorStatusProbeTest < ActiveSupport::TestCase
   end
 
   test "a brokered entry's status is the broker's readiness, not its static variable" do
+    turn_token_broker_on
     brokered = SECRETS_SERVICE_ACCOUNT.merge("brokered_auth" => { "scopes" => [ "slug:secrets" ] })
 
     status = probe("secrets-service-account", brokered, resolvable: [ "STRAD_API_KEY" ])

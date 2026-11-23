@@ -11,6 +11,7 @@ class TokenBrokerTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
 
   setup do
+    turn_token_broker_on
     @strad = FakeStrad.new
     @session = sessions(:active_session)
     client = @strad.client
