@@ -130,16 +130,16 @@ module TranscriptRedactor
   NAME_LIST_VALUE = /\A[A-Z][A-Z0-9_]*(?:,[A-Z][A-Z0-9_]*)*\z/
 
   # A configuration word: lowercase letters joined by `_`, `-` or `.`, with no
-  # digit and no capital — `webhook_shadow`, `webhook_with_poll_fallback`,
+  # digit and no capital — `webhook_with_poll_fallback`, `poll`,
   # `production-primary`. That is the shape of an enum or a mode, and it is
   # also the shape of identifiers that are everywhere in a transcript: tool
   # names, method names, file names.
   #
   # The session secret bundle and the catalog's `${VAR}`s are not all
   # credentials. A deployment puts mode switches in the same store
-  # (`GITHUB_TRIGGER_INGEST_MODE=webhook_shadow`), and exact-matching one of
+  # (`GITHUB_TRIGGER_INGEST_MODE=<a mode word>`), and exact-matching one of
   # those cuts it out of every identifier that contains it. #1603: the value
-  # was inside the MCP tool name `mcp__zimmer__compare_github_webhook_shadow`,
+  # was inside the name of an MCP tool that spelled the mode out,
   # the redacted name `mcp__zimmer__compare_github_[REDACTED:ENV:...:14ch]`
   # was replayed to the API by a fork, and the API rejected the whole request.
   #

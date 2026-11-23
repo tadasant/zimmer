@@ -227,7 +227,6 @@ class TriggerCondition < ApplicationRecord
   belongs_to :trigger
   # Which external events this condition has already fired on — see TriggerEventClaim.
   has_many :trigger_event_claims, dependent: :delete_all
-  has_many :trigger_shadow_observations, dependent: :delete_all
   # Webhook subscriptions held on the condition's MCP server (`mcp_event` only). Not destroyed with
   # the condition: the FK nullifies, and McpEventSubscriptionsJob unsubscribes before it deletes.
   has_many :mcp_event_webhook_subscriptions, dependent: nil

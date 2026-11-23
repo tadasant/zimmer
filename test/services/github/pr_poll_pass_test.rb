@@ -734,29 +734,6 @@ class Github::PrPollPassTest < ActiveSupport::TestCase
     end
   end
 
-  test "shadow mode keeps the old cadence and records whether a change was signalled first" do
-    with_pr_ingest_mode("webhook_shadow") do
-      GithubPrSignal.signal!([ %w[owner/repo delivery], [ PR_URL, "status" ] ])
-      active_session_tracking(PR_URL, stamps: all_stamps(1.minute.ago))
-      @session_with_pr.merge_custom_metadata!("github_pull_request_statuses" => { PR_URL => "open" })
-      isolate
-      Github::MergeConflictEvaluator.any_instance.stubs(:evaluate)
-      Github::CommentEvaluator.any_instance.expects(:evaluate).once
-
-      merged = Github::PrSnapshot.new(ref: Github::PrRef.parse(PR_URL), state: "MERGED", merged_at: Time.current.iso8601, mergeable: nil)
-      Github::PrSnapshot.stubs(:fetch).returns(merged)
-      Github::PrStatusEvaluator.any_instance.stubs(:post_merge_automation).returns([])
-      Github::PrStatusEvaluator.any_instance.stubs(:notify_merged_prs).returns([])
-
-      logged = []
-      Rails.logger.stubs(:info).with { |message| logged << message.to_s; true }
-      Github::PrPollPass.new.run
-
-      assert(logged.any? { |line| line.include?("webhook_shadow hit: status change on owner/repo#123") }, logged.join("\n"))
-      assert_equal [ [ "status", true, "webhook_shadow" ] ], GithubPrShadowObservation.where(session_id: @session_with_pr.id).pluck(:kind, :hit, :mode)
-    end
-  end
-
   private
 
   def goal_session_with_pr(goal)

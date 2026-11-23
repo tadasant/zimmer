@@ -827,22 +827,22 @@ token=#{'Zz9' * 12}
     end
   end
 
-  # #1603: GITHUB_TRIGGER_INGEST_MODE=webhook_shadow sat in the secret bundle,
-  # and exact-matching it rewrote the MCP tool name
-  # mcp__zimmer__compare_github_webhook_shadow into one the API rejects.
+  # #1603: a mode word sat in the secret bundle under GITHUB_TRIGGER_INGEST_MODE,
+  # and exact-matching it rewrote an MCP tool name that spelled the same word
+  # into one the API rejects.
   test "a configuration word under a non-credential name is not a known secret, so tool names survive" do
     bundle = {
-      "GITHUB_TRIGGER_INGEST_MODE" => "webhook_shadow",
+      "GITHUB_TRIGGER_INGEST_MODE" => "webhook_rehearsal",
       "FIXTURE_DEPLOY_REGION" => "production-primary",
       "STRAD_API_KEY" => INJECTED_STRAD_TOKEN
     }
     with_bundle(bundle) do
       known = TranscriptRedactor.known_secrets.to_h
-      refute known.key?("webhook_shadow")
+      refute known.key?("webhook_rehearsal")
       refute known.key?("production-primary")
       assert_equal "ENV:STRAD_API_KEY", known[INJECTED_STRAD_TOKEN], "the bundle collector ran"
 
-      line = %({"type":"tool_use","name":"mcp__zimmer__compare_github_webhook_shadow","input":{"mode":"webhook_shadow"}})
+      line = %({"type":"tool_use","name":"mcp__zimmer__compare_github_webhook_rehearsal","input":{"mode":"webhook_rehearsal"}})
       assert_equal line, TranscriptRedactor.redact(line)
     end
   end
@@ -853,10 +853,10 @@ token=#{'Zz9' * 12}
     })
     with_bundle({}) do
       ServersConfig.stubs(:all).returns([ server ])
-      SecretProviders.chain.stubs(:get).with("FIXTURE_INGEST_MODE").returns("webhook_shadow")
+      SecretProviders.chain.stubs(:get).with("FIXTURE_INGEST_MODE").returns("webhook_rehearsal")
       TranscriptRedactor.reset_known_secrets!
 
-      refute TranscriptRedactor.known_secrets.to_h.key?("webhook_shadow")
+      refute TranscriptRedactor.known_secrets.to_h.key?("webhook_rehearsal")
     end
   end
 

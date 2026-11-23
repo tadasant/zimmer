@@ -166,8 +166,6 @@ module Github
         return
       end
 
-      # Only a pass that has a reading compares before and after; see PrWebhookIngest.observe.
-      before = reading && session.custom_metadata.deep_dup
       snapshots = refs.to_h { |ref| [ ref.url, PrSnapshot.fetch(ref) ] }
 
       stamped_keys = [ POLL_BACKOFF_KEY ]
@@ -222,10 +220,6 @@ module Github
         run_evaluator(session, "CommentEvaluator") do
           CommentEvaluator.new.evaluate(session, refs, snapshots)
         end
-      end
-
-      run_evaluator(session, "PrWebhookIngest.observe") do
-        PrWebhookIngest.observe(session, reading, refs, before: before, after: session.custom_metadata, stamps: stamps, now: started_at)
       end
 
       PollBackoff.record_poll!(session, job_key: stamped_keys, at: started_at)

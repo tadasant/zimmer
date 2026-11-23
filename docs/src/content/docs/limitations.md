@@ -1692,7 +1692,7 @@ gap is worth naming precisely:
   The `ZIMMER_*_BASE_URL` variables are on it by default. Any other externalized-but-not-secret
   variable (an org slug, a model id) is scrubbed out of every transcript that mentions it until a
   deployment adds it to `TRANSCRIPT_REDACTION_ALLOWLIST_VARIABLES`. A configuration word (lowercase
-  letters joined by `_`, `-` or `.`, like `webhook_shadow`) under a configuration-shaped name
+  letters joined by `_`, `-` or `.`, like `webhook_with_poll_fallback`) under a configuration-shaped name
   (`*_MODE`, `*_ENV`, `*_LEVEL`, …) is the exception, and is skipped by shape. A real credential stored
   under such a name with an all-lowercase value would be skipped too. The same is true of every entry in the `.env` secret
   bundle, and of any process environment variable whose name says "key", "token", "secret",
@@ -5975,9 +5975,8 @@ it does not cover yet:
   but not the `X-GitHub-Delivery` id, so a captured delivery replayed under fresh ids keeps its
   repository counted as covered after its hook has stopped. That leaves its sessions on the fallback
   cadence instead of the polled one, and announces nothing false. `GITHUB_PR_INGEST_MODE` is not on
-  `/health` yet; `/supervisor/github_pr_signals` is the no-shell view of what the webhook has said,
-  and `compare_github_pr_webhook_shadow` (MCP) says whether it said it before the poll found the
-  change.
+  `/health` yet; `/supervisor/github_pr_signals` is the no-shell view of what the webhook has said.
+  Nothing measures how often the fallback poll catches a change the webhook did not announce.
 - **A mode with no poller behind it.** As for Slack, `webhook` alone is treated as `poll`.
 - **A released claim reads as a miss.** A delivery that spawned nothing because of burst control or a
   pending session releases its claim so the poller can fire the event later, and on `/health` that
@@ -5993,16 +5992,11 @@ it does not cover yet:
   poller, and a webhook that edited it would be two writers on one piece of state. So a label taken
   off and put back inside that window fires once, from either path. This is the poller's behaviour
   exactly, which is the point — the webhook is latency, not different semantics.
-- **Shadow mode compares, it does not prove.** `webhook_shadow`
-  ([Shadow mode](/sessions/triggers/#shadow-mode-and-the-rollout-to-webhooks)) pairs the webhook's
-  would-fire with the poller's fire by condition and event key, in time order. Three readings are not
-  what they look like. A delivery the job processes after the poller has already fired the event is
-  recorded by the poller alone — the webhook's match skips an event the seen-set already holds, as it
-  would in `webhook_with_poll_fallback` — so it counts as `poll_only`. A poll fire that spawned no
-  session (burst control, a pending session) is retried by the poller later and records then, so it
-  can read as a slow match. And the comparison measures whether the two paths agree, not whether the
-  webhook's fire would have succeeded: the spawn, the claim race and burst control under
-  `webhook_with_poll_fallback` are not exercised until that mode is on.
+- **The retired `webhook_shadow` mode turns the webhook on.** A deployment still carrying it in
+  `GITHUB_TRIGGER_INGEST_MODE` or `GITHUB_PR_INGEST_MODE` is read as `webhook_with_poll_fallback`
+  and WARNs once per process at boot, rather than falling back to `poll` the way an unrecognised value
+  does. That is deliberate: shadow already accepted deliveries, and `poll` would stop ingesting them
+  without a word. Set the mode to `webhook_with_poll_fallback` to silence the WARN.
 - **A slower poll interval is slower for everything the poller still owns.** Raising
   `GITHUB_TRIGGER_POLL_INTERVAL_MINUTES` delays every event the webhook did not deliver by up to the
   interval, and the removal grace and degradation pages can only act once per sweep, so at 15 minutes a

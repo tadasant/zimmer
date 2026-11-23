@@ -1764,7 +1764,7 @@ settings turn it on, read from encrypted credentials first and ENV second:
 
 | Setting | Value |
 | --- | --- |
-| `GITHUB_TRIGGER_INGEST_MODE` | `poll` (the default, and what an unset or unrecognised value means), `webhook_shadow` (see [Shadow mode](#shadow-mode-and-the-rollout-to-webhooks)) or `webhook_with_poll_fallback` |
+| `GITHUB_TRIGGER_INGEST_MODE` | `poll` (the default, and what an unset or unrecognised value means) or `webhook_with_poll_fallback`. The retired `webhook_shadow` is read as `webhook_with_poll_fallback`, with a WARN at boot |
 | `GITHUB_WEBHOOK_SECRET` | the secret set on the GitHub webhook |
 
 With a webhook mode and the secret both set, `POST /webhooks/github` is the webhook's payload URL. With either missing it answers
@@ -1865,53 +1865,19 @@ request changes. One reading there is not a miss: when a delivery spawned nothin
 control or a pending session, its claim is released, and the poller's later fire of that event counts
 as a poll claim.
 
-#### Shadow mode and the rollout to webhooks
-
-`webhook_shadow` is the rehearsal for `webhook_with_poll_fallback`. With it and the secret set, the
-endpoint accepts, verifies and records deliveries exactly as above, and `GithubEventJob` matches each
-one against every GitHub condition by the same rules — then **fires nothing and claims nothing**. It
-records a row in `trigger_shadow_observations` instead: this delivery would have fired this condition
-for this event, keyed by the claim key the fire would have taken. The poller fires exactly as it does
-on `poll`, takes no claim, and records a row for each fire it makes. So nothing a user sees changes,
-and the poller stays the only path that spawns sessions.
-
-`Webhooks::GithubShadowComparison` pairs the two paths' rows per condition and event key, in time
-order: a row joins the open event when it is from the other path and within the grace of the event's
-first sighting, and otherwise starts a new one. So a label taken off and put back later is two events,
-and a second delivery for one event (an `opened` and a `labeled` for the same label) folds into the
-first rather than reading as webhook-only. Each event is classified:
-
-| Status | Meaning |
-| --- | --- |
-| `matched` | both paths saw it; the webhook's lead is the poll's time minus the webhook's |
-| `webhook_only` | the webhook would have fired it and the poller never did — in `webhook_with_poll_fallback` that would be a session the poller would not have spawned |
-| `poll_only` | the poller fired it and no delivery matched: a dropped delivery, a hook missing an event type, or a delivery that arrived after the poll |
-| `pending` | one path has seen it and it is younger than the grace (two poll intervals plus five minutes, at least 15 minutes) |
-
-The comparison is on `/health`, in the GitHub row of the *Webhook Ingest* panel, over the last 24
-hours: the four counts, the median and p90 webhook lead, a line per condition, and the unmatched
-events by key. The same reading is in `GET /api/v1/health` (`health_report.inbound_event_health.sources[].shadow`) and `get_system_health`, and
-`compare_github_webhook_shadow` (MCP, triggers group, read-only) takes its own window, grace and
-condition. A source in shadow warns on the panel when webhook-only or poll-only is above zero; like the
-rest of the panel it never moves the overall status. Rows are kept 30 days and listed one by one at
-`/supervisor/trigger_shadow_observations`. The per-session PR pollers have their own shadow and their
-own tool, `compare_github_pr_webhook_shadow`; see
-[Reading the PR webhook shadow](/operate/background-jobs/#reading-the-pr-webhook-shadow).
+#### The rollout to webhooks
 
 The rollout, in phases, each a setting change and nothing else:
 
-1. **Shadow.** `GITHUB_TRIGGER_INGEST_MODE=webhook_shadow`, the secret set, the hook added on GitHub.
-   Leave it until the comparison has shown matched events with a positive lead and no webhook-only or
-   poll-only ones across ordinary use — a few days of merge-gate traffic.
-2. **Webhook-primary.** `GITHUB_TRIGGER_INGEST_MODE=webhook_with_poll_fallback`. The webhook fires and
-   claims; the poller is the backstop, and its claims on the panel are the deliveries the webhook
-   missed.
-3. **Slower poller.** `GITHUB_TRIGGER_POLL_INTERVAL_MINUTES` raised (see
+1. **Webhook-primary.** `GITHUB_TRIGGER_INGEST_MODE=webhook_with_poll_fallback`, the secret set, the
+   hook added on GitHub. The webhook fires and claims; the poller is the backstop, and its claims on
+   the panel are the deliveries the webhook missed.
+2. **Slower poller.** `GITHUB_TRIGGER_POLL_INTERVAL_MINUTES` raised (see
    [The poll interval](#the-poll-interval)), which is what spends less of GitHub's API budget.
 
-**Rollback** from any phase is `GITHUB_TRIGGER_INGEST_MODE=poll` (or unsetting it), plus unsetting
+**Rollback** from either phase is `GITHUB_TRIGGER_INGEST_MODE=poll` (or unsetting it), plus unsetting
 `GITHUB_TRIGGER_POLL_INTERVAL_MINUTES` if it was raised. On `poll` the endpoint answers 404, the
-poller claims nothing and records nothing, and a job already queued for a delivery fires nothing.
+poller claims nothing, and a job already queued for a delivery fires nothing.
 
 #### The poll interval
 
