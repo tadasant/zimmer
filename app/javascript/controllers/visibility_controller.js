@@ -160,7 +160,7 @@ export default class extends Controller {
     // an empty frame being left behind for a live status broadcast to fill.
     const parent = unit.parentElement
     let removable = parent && parent.tagName === "TURBO-FRAME" ? parent : unit
-    // Your board v2 holds each card in a wrapper with its drag handle; the
+    // Your board holds each card in a wrapper with its drag handle; the
     // handle leaves with the card.
     const wrapper = removable.parentElement?.closest("[data-visibility-wrapper]")
     if (wrapper) removable = wrapper

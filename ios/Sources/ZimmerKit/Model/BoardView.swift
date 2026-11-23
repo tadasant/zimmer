@@ -3,53 +3,61 @@ import Foundation
 /// The web UI's board views (`?view=` on the dashboard), as orderings of the rows the list
 /// already has. Each is the server's own rule, restated:
 ///
-/// - **Your board v2** (`Sessions::BoardV2`): the person's own categories. Uncategorized
-///   first, then each category in the person's order, each most recently touched first, as
-///   Last Touched orders them. A collapsed category is its header alone; a snoozed or
-///   backlogged one is off the board with its rows and listed at the foot. The app's default.
-/// - **Your board** (`Sessions::UserView`): priority above spot, then precedence descending,
-///   then oldest first. One list.
+/// - **Your board** (`Sessions::BoardV2`, `?view=board_v2`): the person's own categories.
+///   Uncategorized first, then each category in the person's order, each most recently
+///   touched first, as Last Touched orders them. A collapsed category is its header alone; a
+///   snoozed or backlogged one is off the board with its rows and listed at the foot. The
+///   app's default.
 /// - **Last touched** (`LAST_TOUCHED_ORDER`): the last time a person acted on the session,
 ///   else when it was created, newest first.
 /// - **Created**: newest first.
-/// - **Ranked**: the same order as Your board, as two sections — *Priority*, then the
-///   *Spot queue* in the order it will be worked.
+/// - **Ranked** (`Sessions::UserView`): priority above spot, then precedence descending, then
+///   oldest first, as two sections — *Priority*, then the *Spot queue* in the order it will
+///   be worked.
 public enum BoardView: String, Hashable, Sendable, CaseIterable, Identifiable {
     case boardV2 = "board_v2"
-    case yourBoard = "user"
     case lastTouched = "last_touched"
     case created = "created_desc"
     case ranked
 
-    /// The view the board opens on when the person has not chosen one: Your board v2, Last
+    /// The view the board opens on when the person has not chosen one: Your board, Last
     /// Touched's compact rows under the person's own categories. A choice once made is kept.
     public static let defaultView: BoardView = .boardV2
+
+    /// The view a remembered choice names. `"user"` is the board the dashboard drew before
+    /// Your board was the person's categories; the server answers `?view=user` with the same
+    /// board, so a person who chose it lands on Your board. Nothing remembered, or a value no
+    /// view has, is the default.
+    public static func remembered(_ rawValue: String?) -> BoardView {
+        guard let rawValue else { return defaultView }
+        if rawValue == "user" { return .boardV2 }
+        return BoardView(rawValue: rawValue) ?? defaultView
+    }
 
     public var id: String { rawValue }
 
     public var label: String {
         switch self {
-        case .boardV2: return "Your board v2"
-        case .yourBoard: return "Your board"
+        case .boardV2: return "Your board"
         case .lastTouched: return "Last Touched"
         case .created: return "Created"
         case .ranked: return "Ranked"
         }
     }
 
-    /// The title of Your board v2's first section, where every session nobody has put in a
+    /// The title of Your board's first section, where every session nobody has put in a
     /// category lands.
     public static let uncategorized = "Uncategorized"
 
-    /// The rows in this view's order, in sections. Ranked has two and Your board v2 one per
+    /// The rows in this view's order, in sections. Ranked has two and Your board one per
     /// category; the others are a single untitled section.
     ///
     /// `order` is where a drag just left the rows, by id, before the server has answered with
-    /// the precedence it worked out: the reorderable views show that order until the list is
+    /// the precedence it worked out: the reorderable view shows that order until the list is
     /// read again, so a dropped row does not snap back while the server is asked. Rows it does
     /// not name keep their place behind the ones it does.
     ///
-    /// `categories` is Your board v2's categories in board order, as the server last listed
+    /// `categories` is Your board's categories in board order, as the server last listed
     /// them; the other views do not read it.
     public func sections(_ sessions: [SessionSummary], order: [Int]? = nil, categories: [BoardCategory] = []) -> [BoardSection] {
         switch self {
@@ -59,9 +67,6 @@ public enum BoardView: String, Hashable, Sendable, CaseIterable, Identifiable {
             return [BoardSection(title: nil, sessions: Self.lastTouchedFirst(sessions))]
         case .created:
             return [BoardSection(title: nil, sessions: Self.sorted(sessions, newestFirst: true) { ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast) })]
-        case .yourBoard:
-            let (priority, spot) = Self.halves(sessions)
-            return [BoardSection(title: nil, sessions: Self.arranged(priority + spot, by: order))]
         case .ranked:
             let (priority, spot) = Self.halves(sessions)
             return [BoardSection(title: "Priority", sessions: Self.arranged(priority, by: order)), BoardSection(title: "Spot queue", sessions: Self.arranged(spot, by: order))]
@@ -74,7 +79,7 @@ public enum BoardView: String, Hashable, Sendable, CaseIterable, Identifiable {
         sorted(sessions, newestFirst: true) { ($0.lastTouchedAt ?? .distantPast) > ($1.lastTouchedAt ?? .distantPast) }
     }
 
-    /// Your board v2: Uncategorized, then every category on the board in the order given, each
+    /// Your board: Uncategorized, then every category on the board in the order given, each
     /// most recently touched first. A row whose category is not listed (deleted since) is
     /// Uncategorized, as the server's `ON DELETE SET NULL` makes it; one in a category that is
     /// tucked away is not drawn, as the server does not list it. A collapsed category keeps
@@ -103,7 +108,7 @@ public enum BoardView: String, Hashable, Sendable, CaseIterable, Identifiable {
         return named + rows.filter { rank[$0.id] == nil }
     }
 
-    /// The rows a drop landed between, as the web UI's boards name them: the nearest of the
+    /// The rows a drop landed between, as the web UI's Ranked view names them: the nearest of the
     /// moved row's own class above and below. Precedence orders a class and cannot lift a row
     /// out of it, so a row dropped among the other class is placed by its own neighbours and
     /// settles back into its block when the list is read again. The server reads only spot
@@ -116,8 +121,9 @@ public enum BoardView: String, Hashable, Sendable, CaseIterable, Identifiable {
         return (above, below)
     }
 
-    /// Whether a person orders this view by dragging: Your board, and Ranked's spot queue.
-    public var isReorderable: Bool { self == .yourBoard || self == .ranked }
+    /// Whether a person orders this view by dragging: Ranked's spot queue. Your board's rows
+    /// move between categories, not into an order.
+    public var isReorderable: Bool { self == .ranked }
 
     /// `Session.ranked` over each scheduling class: precedence descending, then oldest first.
     static func halves(_ sessions: [SessionSummary]) -> (priority: [SessionSummary], spot: [SessionSummary]) {
@@ -143,12 +149,12 @@ public enum BoardView: String, Hashable, Sendable, CaseIterable, Identifiable {
 
 public struct BoardSection: Hashable, Sendable, Identifiable {
     public var title: String?
-    /// The rows drawn: none for a collapsed Your board v2 category.
+    /// The rows drawn: none for a collapsed Your board category.
     public var sessions: [SessionSummary]
     /// What tells this section from the others: its title, unless it says otherwise. Your
-    /// board v2's are keyed by category, since a person could name one "Uncategorized".
+    /// board's are keyed by category, since a person could name one "Uncategorized".
     public var key: String?
-    /// The Your board v2 category this section draws; nil for Uncategorized and other views.
+    /// The Your board category this section draws; nil for Uncategorized and other views.
     public var category: BoardCategory?
     /// How many rows the section holds, drawn or not.
     public var count: Int

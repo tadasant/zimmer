@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Your board v2's categories, for a client that draws the board itself — the iOS
+# Your board's categories, for a client that draws the board itself — the iOS
 # app. The rows and the categories are read with `GET /api/v1/sessions?view=board_v2`;
 # these are the writes the app makes from that board, each the same model or
 # BoardCategories::* call the web UI's BoardCategoriesController and the

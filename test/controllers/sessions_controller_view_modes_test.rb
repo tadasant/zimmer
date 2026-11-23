@@ -1,14 +1,14 @@
 require "test_helper"
 require "mocha/minitest"
 
-# Tests for the dashboard view modes on SessionsController#index. Besides the
-# default User view, the dashboard supports two flat sort modes selected via
+# Tests for the dashboard view modes on SessionsController#index. Besides
+# Your board (`board_v2`), the dashboard supports two flat sort modes selected via
 # ?view=:
 #   - last_touched  → single list ordered by last_user_activity_at (metadata,
 #                     falling back to created_at), most-recent first
 #   - created_desc  → single list ordered purely by created_at desc
 # Both flatten the presentation into a paginated card grid sorted by one factor.
-# Desktop defaults to the User view, mobile defaults to last_touched, and an
+# Desktop defaults to Your board, mobile defaults to last_touched, and an
 # explicit choice persists via cookie.
 class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
   DESKTOP_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36".freeze
@@ -46,17 +46,17 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
 
   # ---- Defaults --------------------------------------------------------------
 
-  test "desktop default is the User view" do
+  test "desktop default is Your board" do
     make_session
 
     get dashboard_board_path, headers: { "User-Agent" => DESKTOP_UA }
 
     assert_response :success
-    assert_select "#user_view_list", true, "desktop default should render the User view's board"
+    assert_select "#board_v2", true, "desktop default should render Your board"
     assert_select "#flat_sessions", false, "desktop default should not render the flat list"
   end
 
-  test "a cookie left by the removed categories view lands on the User view" do
+  test "a cookie left by the removed categories view lands on Your board" do
     make_session
 
     # Written by a previous release; "categories" is no longer a valid mode.
@@ -64,7 +64,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
     get dashboard_board_path, headers: { "User-Agent" => MOBILE_UA }
 
     assert_response :success
-    assert_select "#user_view_list", true,
+    assert_select "#board_v2", true,
       "a stale `categories` cookie should remap to the view that replaced it, not fall through to the mobile default"
     assert_select "#flat_sessions", false
   end
@@ -76,7 +76,34 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "#flat_sessions", true, "mobile default should render the flat list"
-    assert_select "#user_view_list", false, "mobile default should not render the User view"
+    assert_select "#board_v2", false, "mobile default should not render Your board"
+  end
+
+  # The uncategorized "Your board" list (`user`) was replaced by today's board.
+  # A cookie naming it lands there, and so does a bookmarked link.
+  test "a cookie left by the removed user view lands on Your board, on a phone too" do
+    make_session
+
+    cookies[:sessions_view] = "user"
+    get dashboard_board_path, headers: { "User-Agent" => MOBILE_UA }
+
+    assert_response :success
+    assert_select "#board_v2", true
+    assert_select "#flat_sessions", false
+  end
+
+  test "a bookmarked ?view=user or ?view=categories is redirected to Your board, keeping its other params" do
+    %w[user categories].each do |legacy|
+      get root_path(view: legacy, q: "deploy"), headers: { "User-Agent" => DESKTOP_UA }
+
+      assert_response :moved_permanently
+      assert_redirected_to root_path(view: "board_v2", q: "deploy")
+    end
+
+    get root_path(view: "board_v2"), headers: { "User-Agent" => DESKTOP_UA }
+    assert_response :success
+    assert_select "[aria-label='Dashboard view mode'] a[aria-pressed='true']", text: "Your board"
+    assert_select "[aria-label='Dashboard view mode'] a", count: 4
   end
 
   # ---- Explicit selection + persistence -------------------------------------
@@ -88,7 +115,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_select "#flat_sessions", true
-    assert_select "#user_view_list", false
+    assert_select "#board_v2", false
   end
 
   test "explicit view choice persists via cookie across navigation" do
@@ -102,7 +129,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
     get dashboard_board_path, headers: { "User-Agent" => DESKTOP_UA }
     assert_response :success
     assert_select "#flat_sessions", true, "the persisted explicit choice should survive navigation"
-    assert_select "#user_view_list", false
+    assert_select "#board_v2", false
   end
 
   test "an invalid view param falls back to the default" do
@@ -111,7 +138,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
     get dashboard_board_path(view: "bogus"), headers: { "User-Agent" => DESKTOP_UA }
 
     assert_response :success
-    assert_select "#user_view_list", true, "invalid view should fall back to desktop default"
+    assert_select "#board_v2", true, "invalid view should fall back to desktop default"
     assert_select "#flat_sessions", false
   end
 
@@ -165,7 +192,7 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_equal [ "session_#{c.id}", "session_#{b.id}", "session_#{a.id}" ], flat_card_ids
-    assert_select "#user_view_list", false
+    assert_select "#board_v2", false
   end
 
   test "last touched view degrades to created_at on a malformed stored timestamp" do

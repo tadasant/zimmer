@@ -14,7 +14,7 @@ class SessionsTest < ApplicationSystemTestCase
 
     # Sessions from fixtures should be visible
     assert_text "Agent Sessions"
-    assert_selector "#user_view_list" # The board the default User view renders
+    assert_selector "#board_v2" # The default view is Your board
   end
 
   test "home page shows empty state when no sessions" do
@@ -25,7 +25,7 @@ class SessionsTest < ApplicationSystemTestCase
     visit root_url
 
     assert_text "No sessions"
-    # The User view keeps its list in the DOM and says so inside it.
+    # The board keeps its lists in the DOM and says so above them.
     assert_text "No sessions match these filters"
   end
 

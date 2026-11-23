@@ -452,7 +452,7 @@ module AutomatedPrompts
   # pull request is the human review gate, and a session that opened one holds it
   # until a human decides. This message is what a human deciding LOOKS like from
   # inside the session. It is emitted by exactly one code path —
-  # Sessions::AuthorizeMerge, behind the Merge button on the dashboard's User view
+  # Sessions::AuthorizeMerge, behind the Merge button (the iOS app, Live Mode)
   # — and that button is only ever rendered next to a PR that is open and CI-green.
   #
   # So the authorization has to be unmistakable in the text itself, because the

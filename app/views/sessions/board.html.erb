@@ -10,22 +10,12 @@
   <%= turbo_stream.update "off-board-count",
         [ (@off_board_count.to_i.positive? ? "#{pluralize(@off_board_count, "session")} tucked away" : nil),
           (@backlogged_count.to_i.positive? ? "#{@backlogged_count} backlogged" : nil) ].compact.join(" · ") %>
-  <% if @view_mode == SessionsController::VIEW_MODE_USER %>
-    <%# The User view: one list of everything the filters match, worked top to
-        bottom. Search narrows it exactly as the status and visibility filters
-        do — there is no separate "search results" presentation to bounce the
-        operator into. %>
+  <% if @view_mode == SessionsController::VIEW_MODE_BOARD_V2 %>
+    <%# Your board: the filtered rows, grouped into the operator's own
+        categories. Search narrows it exactly as the status and visibility
+        filters do. See Sessions::BoardV2. %>
     <%= render "sessions/content_scan_notice", scan: @content_scan %>
-    <%= render "sessions/user_view_sessions",
-          sessions: @user_view_sessions,
-          limit: @user_view_limit,
-          truncated: @user_view_truncated,
-          visibility_filter: @visibility_filter %>
-  <% elsif @view_mode == SessionsController::VIEW_MODE_BOARD_V2 %>
-    <%# Your board v2: the same filtered rows, grouped into the operator's own
-        categories. See Sessions::BoardV2. %>
-    <%= render "sessions/content_scan_notice", scan: @content_scan %>
-    <%= render "sessions/board_v2", board: @board_v2, limit: @user_view_limit %>
+    <%= render "sessions/board_v2", board: @board_v2, limit: @board_limit %>
   <% elsif @view_mode == SessionsController::VIEW_MODE_RANKED %>
     <%# The Ranked view: priority above, the spot queue below it in precedence
         order, both editable in place. Honors the same filters as every other
@@ -78,11 +68,10 @@
     </div>
   <% end %>
 
-  <%# The Ranked view's page-level empty state. Not rendered in the User view,
-      which carries its own placeholder INSIDE the list section — the list has to
-      stay in the DOM there so it remains a drop target and somewhere an undone
-      Trash can put a row back. The card views render theirs inside the grid
-      controller above. %>
+  <%# The Ranked view's page-level empty state. Not rendered on Your board,
+      which keeps every group's list in the DOM so it remains a drop target and
+      somewhere an undone Trash can put a row back. The card views render theirs
+      inside the grid controller above. %>
   <% if !@any_sessions && @view_mode == SessionsController::VIEW_MODE_RANKED %>
     <%= render "sessions/board_empty_state", search_active: @search_active, content_scan: @content_scan %>
   <% end %>

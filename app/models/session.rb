@@ -80,7 +80,7 @@ class Session < ApplicationRecord
   has_one :cycle_time_analysis, foreign_key: :root_session_id, inverse_of: :root_session, dependent: :destroy
 
   belongs_to :parent_session, class_name: "Session", optional: true
-  # The Your board v2 category a person dragged this session into, or nil for
+  # The Your board category a person dragged this session into, or nil for
   # Uncategorized. Presentation only. Written by BoardCategories::Assign alone.
   belongs_to :board_category, optional: true
   has_many :child_sessions, class_name: "Session", foreign_key: :parent_session_id, dependent: :nullify
@@ -3453,7 +3453,7 @@ class Session < ApplicationRecord
   # session that does not exist, so this one is a plain removal.
   def broadcast_remove_from_sessions_index
     broadcaster.broadcast_removal(stream: SESSIONS_INDEX_STREAM, target: dom_id(self))
-    # Your board v2 holds the card in a wrapper with its drag handle; the handle
+    # Your board holds the card in a wrapper with its drag handle; the handle
     # goes too. A no-op on every other page.
     broadcaster.broadcast_removal(stream: SESSIONS_INDEX_STREAM, target: "board_v2_row_#{id}")
   end

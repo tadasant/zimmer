@@ -1,6 +1,5 @@
-<%# Your board v2 — the Last Touched cards, grouped into categories the operator
-    makes and drags sessions into by hand. Offered beside "Your board", which is
-    unchanged.
+<%# Your board — the Last Touched cards, grouped into categories the operator
+    makes and drags sessions into by hand. (`board_v2` in the URL and the ids.)
 
     Top to bottom: Uncategorized (where every new session lands), then each
     category in the order its header was dragged to, then the snoozed and
@@ -23,9 +22,9 @@
          data-board-v2-category-url-template-value="<%= board_category_path("__ID__") %>">
   <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
     <div class="min-w-0 flex-1 basis-64">
-      <h2 class="text-lg font-semibold text-gray-800">Your board v2</h2>
+      <h2 class="text-lg font-semibold text-gray-800">Your board</h2>
       <p class="mt-0.5 text-sm text-gray-500">
-        The same sessions as Your board, in categories you make. To move a session, drag its card by
+        Your sessions, in categories you make. To move a session, drag its card by
         the grey grip on its left edge. While you drag, every category shows up in a bar at the bottom
         of the screen, snoozed and backlogged ones included; drop the card on one. Inside each
         category the session you touched most recently is on top. Drag a category's header to
@@ -47,6 +46,11 @@
           data-board-v2-target="total"><%= board.session_count %></span>
     <span class="min-w-0 text-xs text-gray-400">rows on this board</span>
   </div>
+  <%# Said once, above the groups, when the filters matched nothing on the board:
+      every group's own "nothing here" line is true but does not say why. %>
+  <% if board.session_count.zero? %>
+    <p class="mb-3 text-sm text-gray-500" data-board-v2-no-match>No sessions match these filters.</p>
+  <% end %>
 
   <%# Uncategorized: not draggable and not collapsible — it is the inbox, and it
       has no row to keep either on. %>

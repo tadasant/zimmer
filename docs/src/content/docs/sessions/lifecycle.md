@@ -2877,7 +2877,7 @@ Two behaviours are worth knowing:
 
 The **scheduling class** is a filter rather than a search: it narrows whichever view you are in and
 leaves that view's presentation alone. So does a free-text query, an agent root and a genesis — in
-the [User view](/sessions/user-view/) and the Ranked view a search narrows the list you are already
+[Your board](/sessions/board-v2/) and the Ranked view a search narrows the list you are already
 reading rather than replacing it with a separate results presentation. The two flat sort views still
 render their results as a paginated card grid, because that is what they are.
 
@@ -2914,7 +2914,7 @@ Two actions stream a card as well, because a broadcast cannot reach one:
 
 - **Trash** removes what the page is showing the session as, and streams the "Session moved to
   trash." toast carrying the **Undo** button. It sends *two* removals — the card
-  (`#session_<id>`) and the [User view](/sessions/user-view/) row (`#user_view_row_<id>`) — because
+  (`#session_<id>`) and the [Your board](/sessions/board-v2/) card (`#board_v2_row_<id>`) — because
   the reply goes to whichever page made the request and the server does not know which of the two it
   is looking at; a `remove` for an id that is not in the DOM is a silent no-op. The page does not
   wait for them: `app/javascript/lib/optimistic_actions.js` takes the card, the row and the ranked
@@ -2923,10 +2923,11 @@ Two actions stream a card as well, because a broadcast cannot reach one:
   speed bump as a **422**, and the page reads any non-2xx answer as "put it back", so the card
   returns with the refusal over it and nobody is left believing a session was trashed that was not.
 - **Undo** puts it back, on both surfaces for the same reason: it prepends the card into
-  `#sessions_grid` and a row into `#user_view_list`. Its own restore broadcast is a `replace`, and
-  there is nothing left in the DOM to replace. The restored row lands at the top of the list and the
-  User view's own controller re-sorts it into place, so it goes where the order says rather than
-  where the stream put it.
+  `#sessions_grid` and into the session's own category list on Your board. Its own restore broadcast
+  is a `replace`, and there is nothing left in the DOM to replace. On Your board the restored card
+  lands at the top of its category and the board's controller re-sorts it by last touched, so it
+  goes where the order says rather than where the stream put it. In a snoozed or backlogged
+  category there is no list to prepend into, so it stays off the board with its category.
 
 `#archive`, `#unarchive` and `#pause` stream one more thing: the session page's own status badge
 and header actions. `Session#broadcast_status_change` already pushes both over the cable, but a
@@ -2958,7 +2959,7 @@ The dashboard and the session page show a mutation's outcome the moment it is cl
 the server after; the server's own answer replaces the guess, and a refusal puts the guess back
 with the refusal as a toast in `#flash` (`app/javascript/lib/toast.js` draws the same card
 `shared/_flash` does). `app/javascript/lib/optimistic_actions.js` does this for every Turbo
-submission it recognises by path: a Trash takes the session's card, User-view row and ranked row
+submission it recognises by path: a Trash takes the session's card, Your board card and ranked row
 away; a queued message's Delete and Send Now take its frame out of the queue; a notification's
 Dismiss takes its row, and Mark read dims it; Pause and Restart say *Pausing…* / *Restarting…*; a
 trigger's switch says *Turning on…* / *Turning off…*. The server's refusal, when it streams one
@@ -3163,8 +3164,8 @@ answers with a bare frame and no chrome — it is the drawer's own address.
 
 ### The dashboard prefetches what View opens
 
-Every session row on the dashboard — the card grid's **View**, a Ranked row's title, a User view
-row's title — is a target of `session_prefetch_controller`. Once the board has rendered and the
+Every session row on the dashboard — a card's **View**, on Your board or in the card grid, and a
+Ranked row's title — is a target of `session_prefetch_controller`. Once the board has rendered and the
 browser is idle, it fetches the detail of the rows on screen (and a screen's worth either side) in
 the background, so a click paints from the browser's HTTP cache instead of waiting on the server.
 
@@ -3203,7 +3204,7 @@ hold still waits for `pending` to clear first.
 Every prefetch is a full detail render on a web server with three threads, which also serve the
 agents' MCP calls, so the load is kept small on purpose:
 
-- Only rows on or near the screen, never the whole list — a User view can hold hundreds.
+- Only rows on or near the screen, never the whole list — Your board can hold hundreds.
 - One request at a time, top row first, starting once the page has loaded and the browser is idle.
 - Opening the drawer aborts the request in flight and holds the queue, so the session being read
   has the server to itself.

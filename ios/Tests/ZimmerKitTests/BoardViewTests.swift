@@ -21,14 +21,8 @@ final class BoardViewTests: XCTestCase {
         ]
     }
 
-    func testYourBoardIsTheUserViewsOrder() {
+    func testRankedSplitsTheUserViewsOrderIntoPriorityAndTheSpotQueue() {
         // Priority first; then precedence descending; then oldest first (4 is older than 1).
-        let order = BoardView.yourBoard.sections(rows).flatMap(\.sessions).map(\.id)
-        XCTAssertEqual(order, [5, 2, 3, 4, 1])
-        XCTAssertEqual(BoardView.yourBoard.sections(rows).count, 1, "one list, as the web UI draws it")
-    }
-
-    func testRankedSplitsTheSameOrderIntoPriorityAndTheSpotQueue() {
         let sections = BoardView.ranked.sections(rows)
         XCTAssertEqual(sections.map(\.title), ["Priority", "Spot queue"])
         XCTAssertEqual(sections.map { $0.sessions.map(\.id) }, [[5, 2], [3, 4, 1]])
@@ -154,12 +148,12 @@ final class BoardViewLocalOrderTests: XCTestCase {
     ]
 
     func testWithoutAnOrderTheServersPrecedenceRules() {
-        XCTAssertEqual(BoardView.yourBoard.sections(rows).first?.sessions.map(\.id), [4, 1, 2, 3])
+        XCTAssertEqual(BoardView.ranked.sections(rows).map { $0.sessions.map(\.id) }, [[4], [1, 2, 3]])
     }
 
     func testADroppedOrderIsShownUntilTheNextRead() {
-        let sections = BoardView.yourBoard.sections(rows, order: [4, 3, 1, 2])
-        XCTAssertEqual(sections.first?.sessions.map(\.id), [4, 3, 1, 2])
+        let sections = BoardView.ranked.sections(rows, order: [2, 1, 3])
+        XCTAssertEqual(sections.last?.sessions.map(\.id), [2, 1, 3])
     }
 
     func testRankedHalvesEachFollowTheOrderTheyAreNamedIn() {
@@ -168,8 +162,8 @@ final class BoardViewLocalOrderTests: XCTestCase {
     }
 
     func testRowsTheOrderDoesNotNameFollowInTheirOwnOrder() {
-        let sections = BoardView.yourBoard.sections(rows, order: [3])
-        XCTAssertEqual(sections.first?.sessions.map(\.id), [3, 4, 1, 2], "a row that arrived since the drag keeps its rank, after the dragged ones")
+        let sections = BoardView.ranked.sections(rows, order: [3])
+        XCTAssertEqual(sections.last?.sessions.map(\.id), [3, 1, 2], "a row that arrived since the drag keeps its rank, after the dragged ones")
     }
 
     func testTheDatedViewsIgnoreAnOrder() {

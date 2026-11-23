@@ -440,7 +440,7 @@ elif [ -d "$app" ] && [ -z "$smoke" ]; then
   shoot sessions-ranked -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureView ranked
   shoot board-filters -ZimmerFixture -ZimmerFixtureBoard all -ZimmerFixtureFilterSheet -ZimmerFixtureStatuses needs_input,failed
   shoot board-filtered -ZimmerFixture -ZimmerFixtureBoard all -ZimmerFixtureStatuses needs_input,failed -ZimmerFixtureClass priority
-  shoot sessions-your-board -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureView user
+  shoot sessions-your-board -ZimmerFixture -ZimmerFixtureFilter active -ZimmerFixtureView board_v2
   # A session opens on where things stand, its status summary; the transcript chip lands on
   # the newest message of a hundred. Then a session with no summary yet.
   shoot session-detail -ZimmerFixture -ZimmerFixtureOpenSession 1038

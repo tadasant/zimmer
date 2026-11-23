@@ -39,14 +39,14 @@ class SessionsControllerBoardTest < ActionDispatch::IntegrationTest
   test "the shell renders the board frame with a skeleton and no rows" do
     session = make_session
 
-    get root_path(view: "user"), headers: { "User-Agent" => DESKTOP_UA }
+    get root_path(view: "board_v2"), headers: { "User-Agent" => DESKTOP_UA }
 
     assert_response :success
     assert_select "turbo-frame#sessions_board[target=_top][data-deferred-panel]" do
       assert_select "[data-board-skeleton]"
     end
-    assert_select "#user_view_list", false, "the shell must not render the board itself"
-    assert_select "#user_view_row_#{session.id}", false
+    assert_select "#board_v2", false, "the shell must not render the board itself"
+    assert_select "#board_v2_row_#{session.id}", false
     # The Filters, the view switcher and the off-board slot are the shell's.
     assert_select "form[action='/'] input[name=q]"
     assert_select "[aria-label='Dashboard view mode']"
@@ -59,7 +59,7 @@ class SessionsControllerBoardTest < ActionDispatch::IntegrationTest
     queries = []
     callback = ->(*, payload) { queries << payload[:sql] if payload[:sql].match?(/FROM "sessions"/) }
     ActiveSupport::Notifications.subscribed(callback, "sql.active_record") do
-      get root_path(view: "user"), headers: { "User-Agent" => DESKTOP_UA }
+      get root_path(view: "board_v2"), headers: { "User-Agent" => DESKTOP_UA }
     end
 
     assert_response :success
@@ -82,12 +82,12 @@ class SessionsControllerBoardTest < ActionDispatch::IntegrationTest
   test "the board is the frame alone, without the layout" do
     session = make_session
 
-    get dashboard_board_path(view: "user"), headers: { "User-Agent" => DESKTOP_UA }
+    get dashboard_board_path(view: "board_v2"), headers: { "User-Agent" => DESKTOP_UA }
 
     assert_response :success
     refute_includes response.body, "<html", "the board renders without the application layout"
     assert_select "turbo-frame#sessions_board[target=_top]" do
-      assert_select "#user_view_row_#{session.id}"
+      assert_select "#board_v2_row_#{session.id}"
     end
   end
 

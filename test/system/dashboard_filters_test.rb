@@ -120,11 +120,11 @@ class DashboardFiltersTest < ApplicationSystemTestCase
   # so they assert against the default view's rows rather than asking for a view
   # whose cookie would change what every later bare visit renders.
   def assert_card(session)
-    assert_selector "#user_view_list li#user_view_row_#{session.id}", count: 1, wait: 5
+    assert_selector "#board_v2 #board_v2_row_#{session.id}", count: 1, wait: 5
   end
 
   def refute_card(session)
-    assert_no_selector "#user_view_list li#user_view_row_#{session.id}"
+    assert_no_selector "#board_v2 #board_v2_row_#{session.id}"
   end
 
   # The status pills hide nothing — each is a real checkbox — but they sit inside a

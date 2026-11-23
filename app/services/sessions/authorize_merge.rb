@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Sessions
-  # The Merge button on the dashboard's User view: a human's click turned into a
+  # The Merge button (the iOS app's, or Live Mode's spoken yes): a human's press turned into a
   # message the session holding the PR can act on.
   #
   # == Why this exists at all

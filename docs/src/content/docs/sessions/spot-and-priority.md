@@ -1512,8 +1512,8 @@ one-time schedules.
 
 ### The Ranked view
 
-`/?view=ranked` — one of four dashboard views, beside the [User view](/sessions/user-view/) (the
-default), Last Touched and Created. It is the queue's own screen: priority sessions stack above the
+`/?view=ranked` — one of four dashboard views, beside [Your board](/sessions/board-v2/) (the
+desktop default), Last Touched and Created. It is the queue's own screen: priority sessions stack above the
 queue,
 the spot queue is listed under them highest-precedence first, and both halves are editable in place:
 
@@ -1772,14 +1772,13 @@ control that combines with the others, and each persists exactly as pressing **A
 | Park a session in the spot queue with no wake-up time | — (MCP only; the web UI has no control that sleeps a session) | `action_session` (`pause_into_spot_queue`) |
 | Sleep a session until a chosen wall-clock time | — (MCP only) | `wake_me_up_later` |
 | Stop a *running* session's turn while parking it | — (MCP only) | `action_session` (`pause_into_spot_queue` with `halt: true`; the default lets the turn finish, and `self_session` does not offer it) |
-| Rank a session in the spot queue | **Precedence** on the session detail page; the Ranked view's inline field, drag handle and ⋮ menu; dragging a row in the [User view](/sessions/user-view/) | `action_session` (`change_precedence`, or `precedence` alongside `change_scheduling_class`) |
-| Re-rank a whole board at once | **Reprioritize** at the top of the [User view](/sessions/user-view/), which hands it to an agent | `reorder_user_view` |
+| Rank a session in the spot queue | **Precedence** on the session detail page; the Ranked view's inline field, drag handle and ⋮ menu | `action_session` (`change_precedence`, or `precedence` alongside `change_scheduling_class`) |
 | Put a session at the head of the spot queue | **Demote to spot** in the Ranked view's ⋮ menu; **Run as spot** on a Quick Router submission | `action_session` and `start_session` (`place: "top_of_spot"`) |
 | Choose a rank when spawning | **Precedence** on the new-session form | `start_session` (`precedence`) |
 | Predefine the rank a trigger's sessions get | **Precedence** on the trigger edit form | `action_trigger` (`precedence`) |
 | Read a session's rank | Ranked view, session detail page | `get_session`, `quick_search_sessions` |
 | Read the spot queue in the order it will be worked | Ranked view | `quick_search_sessions` (`status: "waiting"`, `priority_class: "spot"`, `order: "precedence"`) |
-| Read the human's decision board, in the order it is drawn | [User view](/sessions/user-view/) | `get_user_view` |
+| Read the human's decision board, in the order it is drawn | [Your board](/sessions/board-v2/) | `get_user_view` |
 
 The page and the tool render the **same** decision — `SpotGateService.evaluate`, of which there is
 exactly one — so the card's badge and the tool's answer cannot disagree.

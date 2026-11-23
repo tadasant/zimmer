@@ -3,9 +3,9 @@
 require "test_helper"
 require "mocha/minitest"
 
-# `get_user_view` and `reorder_user_view` — the read and write halves of the
-# dashboard's User view over MCP, which is how the Reprioritize button's session
-# reaches the board without scraping the page.
+# `get_user_view` — the dashboard's Your board over MCP: the same grouping and
+# order the human sees (Sessions::BoardV2), and the facts a decision on each row
+# turns on.
 class Mcp::Tools::UserViewToolsTest < ActiveSupport::TestCase
   GREEN_PR = "https://github.com/o/r/pull/42"
 
@@ -16,7 +16,6 @@ class Mcp::Tools::UserViewToolsTest < ActiveSupport::TestCase
     Session.delete_all
 
     @read = Mcp::Tools::GetUserView.new(context: Mcp::Context.new(tool_groups: "sessions"))
-    @write = Mcp::Tools::ReorderUserView.new(context: Mcp::Context.new(tool_groups: "sessions"))
   end
 
   def make_session(status: :needs_input, klass: SessionGenesis::SPOT, precedence: 0, title: "A session", custom_metadata: {})
@@ -33,16 +32,39 @@ class Mcp::Tools::UserViewToolsTest < ActiveSupport::TestCase
     assert_includes @read.call({}), "the board is empty"
   end
 
-  test "rows come back in the board's own order, priority above spot" do
-    spot = make_session(klass: SessionGenesis::SPOT, precedence: 100_000, title: "spot high")
-    priority = make_session(klass: SessionGenesis::PRIORITY, precedence: 1, title: "priority low")
+  test "rows come back in the board's own order: Uncategorized, then each category, most recently touched first" do
+    freeze_time do
+      infra = BoardCategory.create!(name: "Infra")
+      research = BoardCategory.create!(name: "Research")
+      parked = BoardCategory.create!(name: "Parked", visibility: SessionVisibility::SNOOZED, snoozed_until: 2.days.from_now)
 
-    output = @read.call({})
+      touch = ->(session, ago) { session.update!(metadata: (session.metadata || {}).merge("last_user_activity_at" => ago.ago.iso8601)) }
+      research_old = make_session(title: "research old", klass: SessionGenesis::PRIORITY, precedence: 100_000)
+      research_old.update_columns(board_category_id: research.id)
+      touch.call(research_old, 3.hours)
+      research_new = make_session(title: "research new")
+      research_new.update_columns(board_category_id: research.id)
+      touch.call(research_new, 1.hour)
+      infra_row = make_session(title: "infra row")
+      infra_row.update_columns(board_category_id: infra.id)
+      touch.call(infra_row, 5.hours)
+      loose = make_session(title: "loose row")
+      touch.call(loose, 9.hours)
+      tucked = make_session(title: "tucked row")
+      tucked.update_columns(board_category_id: parked.id)
 
-    assert_operator output.index("priority low"), :<, output.index("spot high"),
-      "a spot session cannot outrank a priority one however high its precedence"
-    assert_includes output, "1. priority low (ID: #{priority.id})"
-    assert_includes output, "2. spot high (ID: #{spot.id})"
+      output = @read.call({})
+
+      assert_includes output, "1. loose row (ID: #{loose.id})", "Uncategorized is drawn first, however long ago it was touched"
+      assert_includes output, "2. infra row (ID: #{infra_row.id})"
+      assert_includes output, "3. research new (ID: #{research_new.id})", "inside a category, most recently touched first"
+      assert_includes output, "4. research old (ID: #{research_old.id})", "precedence and class do not order the board"
+      assert_includes output, "- **Category:** Uncategorized"
+      assert_includes output, "- **Category:** Research"
+      assert_not_includes output, "tucked row", "a snoozed category's rows are off the board"
+      assert_includes output, "Not listed — in categories the person has taken off the board: Parked (snoozed until #{2.days.from_now.utc.iso8601}): 1."
+      assert_includes output, "4 row(s)"
+    end
   end
 
   # The three facts a decision on this board turns on that a plain session
@@ -152,57 +174,11 @@ class Mcp::Tools::UserViewToolsTest < ActiveSupport::TestCase
     assert_includes @read.call("per_page" => 2, "page" => 2), "page 2 of 2"
   end
 
-  # ---- The write -------------------------------------------------------------
-
-  test "an ordering is applied top first and reported back" do
-    a = make_session(precedence: 1, title: "a")
-    b = make_session(precedence: 2, title: "b")
-
-    output = @write.call("session_ids" => [ a.id, b.id ])
-
-    assert_includes output, "Board reordered"
-    assert_includes output, "1. Session #{a.id}"
-    assert_equal [ a.id, b.id ], Session.ranked.pluck(:id)
-  end
-
-  test "the reason reaches the sessions' logs, so the human can see what moved their board" do
-    a = make_session(precedence: 1)
-
-    @write.call("session_ids" => [ a.id ], "reason" => "unblocks three sessions")
-
-    assert_match(/unblocks three sessions/, a.logs.last.content)
-  end
-
-  test "an unknown id is a tool error naming the id, and nothing is written" do
-    a = make_session(precedence: 1)
-
-    error = assert_raises(Mcp::ToolError) { @write.call("session_ids" => [ a.id, 999_999_999 ]) }
-
-    assert_match(/999999999/, error.message)
-    assert_equal 1, a.reload.precedence
-  end
-
-  test "a non-array argument is refused rather than coerced" do
-    assert_raises(Mcp::ToolError) { @write.call("session_ids" => 7) }
-  end
-
   # ---- Registration ----------------------------------------------------------
 
-  # `zimmer-sessions` is the catalog server the reprioritizer root attaches, and
-  # it is scoped to the `sessions` group — so both tools have to live there or
-  # the button's session cannot reach the board at all.
-  test "both tools are in the sessions group" do
-    names = Mcp::Registry.tools_for(%w[sessions]).map(&:tool_name)
-
-    assert_includes names, "get_user_view"
-    assert_includes names, "reorder_user_view"
-  end
-
-  test "the readonly variant of the sessions group offers the read and not the write" do
-    names = Mcp::Registry.tools_for(%w[sessions_readonly]).map(&:tool_name)
-
-    assert_includes names, "get_user_view"
-    assert_not_includes names, "reorder_user_view"
+  test "the read is in the sessions group and its readonly variant" do
+    assert_includes Mcp::Registry.tools_for(%w[sessions]).map(&:tool_name), "get_user_view"
+    assert_includes Mcp::Registry.tools_for(%w[sessions_readonly]).map(&:tool_name), "get_user_view"
   end
 
   # ---- CarPlay fit ----------------------------------------------------------
@@ -215,14 +191,14 @@ class Mcp::Tools::UserViewToolsTest < ActiveSupport::TestCase
     untagged = make_session(klass: SessionGenesis::PRIORITY, precedence: 5, title: "nobody judged")
 
     board = @read.call({})
-    assert_includes board, "1. needs the mac (ID: #{laptop.id})"
+    assert_includes board, "3. needs the mac (ID: #{laptop.id})"
     assert_includes board, "- **CarPlay fit:** Laptop only (a credential) · auto · current"
     assert_includes board, "- **CarPlay fit:** untagged"
 
     driving = @read.call({ "carplay_fit" => "not_laptop_only" })
     assert_not_includes driving, "needs the mac"
-    assert_includes driving, "1. say yes (ID: #{ok.id})"
-    assert_includes driving, "2. nobody judged (ID: #{untagged.id})"
+    assert_includes driving, "1. nobody judged (ID: #{untagged.id})"
+    assert_includes driving, "2. say yes (ID: #{ok.id})"
   end
 
   # A filtered read must not pass for the whole board: the dropped rows are
@@ -285,7 +261,7 @@ class Mcp::Tools::UserViewToolsTest < ActiveSupport::TestCase
         carplay_fit: "laptop_only", carplay_fit_reason: "credential", carplay_fit_source: "auto", carplay_fit_line_count: 0)
 
       board = @read.call({})
-      assert_includes board, "1. board top (ID: #{board_top.id})", "the default order is still the board's"
+      assert_includes board, "Ordered top to bottom exactly as the human sees it", "the default order is still the board's"
 
       output = @read.call({ "order" => "last_touched", "carplay_fit" => "not_laptop_only" })
 
@@ -297,18 +273,18 @@ class Mcp::Tools::UserViewToolsTest < ActiveSupport::TestCase
       assert_includes output, "3. board top (ID: #{board_top.id})"
       assert_includes output, "- **Last touched:** #{1.hour.ago.utc.iso8601} (about 1 hour ago)"
       assert_includes output, "- **Last touched:** #{1.day.ago.utc.iso8601} (1 day ago) (never touched — this is when it was created)"
-      assert_includes output, "read the board with the default order first",
+      assert_includes output, "This is not the board's order",
         "a last-touched list must not be written back as the board's order"
     end
   end
 
   test "an unknown order falls back to the board's order" do
-    priority = make_session(klass: SessionGenesis::PRIORITY, precedence: 1, title: "priority")
-    make_session(klass: SessionGenesis::SPOT, precedence: 5, title: "spot")
+    make_session(title: "older")
+    newer = make_session(title: "newer")
 
     output = @read.call({ "order" => "sideways" })
 
-    assert_includes output, "1. priority (ID: #{priority.id})"
+    assert_includes output, "1. newer (ID: #{newer.id})"
     assert_includes output, "Ordered top to bottom exactly as the human sees it"
   end
 

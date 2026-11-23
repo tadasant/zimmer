@@ -36,7 +36,7 @@ Ranked within each group by how often a person on a phone runs into it. The area
 
 1. Health drops every number, table and action: process/session/system counts, retry budgets, post-deploy tasks, cron freshness, recent failures and errors, and the queue-recovery state — all in `GET /api/v1/health` (D, `_health_content.html.erb`, `health/_*.html.erb`; E `_queue_recovery_mode_banner`).
 2. Costs decodes `total_cost_usd`, `by_day(day,cost_usd)`, `by_agent_root`, `by_model`, `top_sessions` and discards the rest: ledger coverage, token/call tiles, per-day drilldown, cost by token kind, by feature, by thread kind, by runtime, by ad-hoc source, burn rates (D, `costs/show.html.erb`).
-3. Board rows do not show genesis, precedence or (on Ranked/flat views) the agent root, and only the newest PR is reachable — all already in `session_json` / `board_row` (C `_session_card:95-108`, `_user_view_row:133`, `_ranked_row:178`, `_github_pr_link`).
+3. Board rows do not show genesis, precedence or (on Ranked/flat views) the agent root, and only the newest PR is reachable — all already in `session_json` / `board_row` (C `_session_card:95-108`, `_ranked_row:178`, `_github_pr_link`).
 4. The new-session form lacks the auto-compact window, precedence, `/` slash commands, attachments on the first prompt and Clone Only; the first two are permitted on `POST /api/v1/sessions` today (C `new.html.erb:196-246, 256, 430`).
 5. The trigger page omits scheduling class, precedence, the catalog chips, the coalescing window and the missed-fires date, and Run Now cannot fill `{{variables}}` — the API returns every field and accepts `variables` (D `triggers/show.html.erb:67-72, 318-457`).
 6. The Quick Router sends no page context and always opens the new session; the ingest takes `page_url` / `page_title` / `page_context` and the web has Submit-in-background (C `_chat_bubble.html.erb:127, 160-166`).
@@ -494,34 +494,30 @@ Ranked within each group by how often a person on a phone runs into it. The area
 
 | Web location | What it does | iOS equivalent | Status | Note |
 | --- | --- | --- | --- | --- |
-| index.html.erb:641–646 view mode links: **Your board / Your board v2 / Last Touched / Created / Ranked** (persisted in cookie `sessions_view`, `?view=`) | Switch view, keep filters | SessionListView.swift Picker "View" in the view menu; `boardView` UserDefaults, Your board v2 when unset | present |  |
-| _board_v2.html.erb **Your board v2** (`?view=board_v2`): Uncategorized, then the person's categories in order, most recently touched first in each | The category board | BoardView.swift `.boardV2` (`categorized`), the app's default view (`BoardView.defaultView`); Last Touched's compact rows under category headers | present | Rows are Last Touched's, not the Your board row partial the web tab draws |
+| index.html.erb view mode links: **Your board / Last Touched / Created / Ranked** (persisted in cookie `sessions_view`, `?view=`) | Switch view, keep filters | SessionListView.swift Picker "View" in the view menu; `boardView` UserDefaults, read by `BoardView.remembered`: Your board when unset, and a remembered `user` lands on Your board | present |  |
+| _board_v2.html.erb **Your board** (`?view=board_v2`): Uncategorized, then the person's categories in order, most recently touched first in each | The category board | BoardView.swift `.boardV2` (`categorized`), the app's default view (`BoardView.defaultView`); Last Touched's compact rows under category headers | present | Rows are Last Touched's compact rows, as the web tab draws the Last Touched card (`_board_v2_row` wraps `session_card_frame`) |
 | _board_v2_group.html.erb row drag handle → `PATCH /sessions/:id/board_category` | Put a session in a category | Row long press → **Move to Category** (`PATCH /api/v1/sessions/:id/board_category`) | present | A menu, not a drag |
 | _board_v2_group.html.erb header chevron (collapse, stored on the category) | Collapse a category | Tap the category header (`PATCH /api/v1/board_categories/:id`) | present |  |
 | _board_v2.html.erb tray: snoozed & backlogged categories with count and **Wake** | Bring a category back | Tray section at the foot with **Wake** (`PATCH /api/v1/board_categories/:id/visibility`) | present |  |
 | _board_v2.html.erb New category, rename, delete, header drag to reorder, category Snooze / backlog | Manage categories | — | missing | Web tab and `manage_board_categories` MCP only |
 | sessions#index:76 Ranked default status filter = waiting+running+needs_input+failed | Ranked opens on live work | BoardFilters.ranked (SessionFilter.swift:81) | present |  |
-| _flat_sessions.html.erb:12–15 heading "Sorted by last touched" + total count badge | Title and count | — | partial | iOS shows no total count for flat views (API pagination `total_count` is available; not rendered). Your board has a count on web (`_user_view_sessions:43`) — iOS has none |
+| _flat_sessions.html.erb:12–15 heading "Sorted by last touched" + total count badge | Title and count | — | partial | iOS shows no total count for flat views (API pagination `total_count` is available; not rendered) |
 | _flat_sessions.html.erb:31 Kaminari `paginate` (50/page, `?page=`) | Page through flat views | SessionActionsAPI.swift:174 reads up to 5×100 then says "Showing the first 500" | present | Different mechanism, same reach |
-| _user_view_sessions.html.erb:24–67 **Your board**: one list, priority above spot, precedence within, capped 500 with truncation notice | The decision board | BoardView.swift:204; SessionListView.swift:172 `listIncomplete` | present |  |
-| _user_view_sessions.html.erb:26 `user-view` drag reorder (writes precedence via `reorder_precedence`) | Drag a row to reorder | SessionListView.swift:283 "Reorder Board" edit mode, `.onMove` → `reorder(above:below:)` | partial | iOS needs an explicit "Reorder Board" mode, then Done; the web drags directly. Priority rows are `moveDisabled` on iOS. Acceptable, but two extra taps per reorder |
-| _user_view_sessions.html.erb:38 **Reprioritize** button + "Working in session #N" | Hand the board to the reprioritizer session | `SessionListView.swift` (#1284) | partial | **in #1284**: view menu → confirm → `reprioritize()`, toast with the message. The "Working in session #N" link is not shown (the response carries `session`; the PR shows only `message`) → partial once #1284 lands |
-| _user_view_sessions.html.erb:64 error live region for failed reorder | Error without reload | AppModel.swift:465 `handle(error)` + refresh | present |  |
 | _ranked_sessions.html.erb:77–102 **Priority** section + count | Priority sessions above the queue | SessionListView.swift:123 sections "Priority" / "Spot queue"; BoardView.swift:207 | present | Section counts not shown on iOS (web shows `priorityCount` / `spotCount`) — minor |
 | _ranked_sessions.html.erb:104–124 **Spot queue** section + count, capped 200 | The queue in work order | same | present |  |
 | _ranked_row.html.erb:163 inline **precedence number field** (Enter commits, `update_precedence`) | Type an exact rank | SessionDetailView.swift (`setPrecedence`) only | partial | Rank is editable on the session page, not on the row; iOS Ranked rows do not show the precedence number at all (`SessionRow`), the web row does |
-| _ranked_row.html.erb:36 drag handle on spot rows (`ranked-queue#persistDrop`) | Drag to reorder the spot queue | SessionListView.swift:295 "Reorder Spot Queue" | present | Same explicit mode caveat as Your board |
+| _ranked_row.html.erb:36 drag handle on spot rows (`ranked-queue#persistDrop`) | Drag to reorder the spot queue | SessionListView.swift "Reorder Spot Queue" edit mode, `.onMove` → `reorder(above:below:)` | present | iOS needs an explicit "Reorder Spot Queue" mode, then Done; the web drags directly. Two extra taps per reorder |
 | _ranked_row.html.erb:100–111 ⋮ **Promote to priority** / **Demote to spot** (`update_scheduling_class`, demote → `place: top_of_spot`) | Move a row between sections | SessionDetailView.swift `setSchedulingClass` | partial | Only on the session page; not on the row's context menu. API supports it (`PATCH /sessions/:id` `scheduling_class` / `place`) |
 | _ranked_row.html.erb:127 ⋮ **Start now** (`start_now`) | Take the waiting session's turn now | SessionListView.swift:461 context menu "Start Now" (status == waiting) | present | Web offers it on every row and lets the server refuse; iOS only on waiting rows — fine |
 | _ranked_row.html.erb:135 ⋮ **Open session** (full page) | Navigate to `/sessions/:id` | row tap → `SessionDetailView`; "Open in browser" | present |  |
 | _ranked_row.html.erb:144 ⋮ **Trash** | Archive via the ranked stream | swipe / context menu Trash | present |  |
 | _ranked_row.html.erb:118 ⋮ Snooze until… / Hide | Visibility from the row | SessionListView.swift:453 context menu / swipe | present |  |
-| _ranked_row.html.erb:178 agent root (else genesis) on the row | What the work is | SessionRow shows root only on Your board (`RowSummary`) | partial | Ranked/flat rows on iOS have no root. `board_rows` comes with `include=board_row`, which iOS requests for user/ranked views, but `SessionRow` renders it only when `showsSummary` (Your board). Ranked could show it today without an API change |
+| _ranked_row.html.erb:178 agent root (else genesis) on the row | What the work is | SessionRow's facts line (`RowFacts`): `SessionSummary.agentRoot`, else the genesis beside it | present | The root is the session's `metadata.agent_root`, else `board_rows` from `include=board_row`, which iOS requests for Ranked and search |
 | _ranked_row_status.html.erb | Status pill with spinner | SessionBadges.swift `StatusBadge` (halo dot) | present |  |
 | index.html.erb:749–787 **Empty state** ("No sessions" / "No sessions found" + Clear Search / New Session) | Empty state | SessionListView.swift:613 `EmptyListRow` | present |  |
 | index.html.erb:775 **Clear Search** (drops q/agent_root/genesis/search_contents, keeps filters) | Abandon a query only | system search cancel clears `searchText` | present |  |
 
-#### Session card (`_session_card.html.erb`, flat views) and row (`_user_view_row.html.erb`)
+#### Session card (`_session_card.html.erb`, flat views and Your board)
 
 | Web location | What it does | iOS equivalent | Status | Note |
 | --- | --- | --- | --- | --- |
@@ -533,7 +529,7 @@ Ranked within each group by how often a person on a phone runs into it. The area
 | _session_card.html.erb:70 created "N ago" (`timestamp-updater`) | Age | SessionRow `Format.age` (updatedAt ?? createdAt) | present | iOS uses updatedAt first; web card shows created. Minor |
 | _session_card.html.erb:78–89 **editable title** (pencil, `update_title`) | Rename inline | SessionListView.swift:437 context menu "Rename" alert | present |  |
 | _session_card.html.erb:90–94 prompt excerpt when untitled (`truncate(80)`, full prompt on hover) | Fallback title | SessionSummary.displayTitle | present |  |
-| _session_card.html.erb:95–99 agent root key | Which root | Your board rows only (see above) | partial | Flat views on iOS have no root |
+| _session_card.html.erb:95–99 agent root key | Which root | SessionRow's facts line (`RowFacts`, see above) | present |  |
 | _session_card.html.erb:104–108 **genesis · class** pill (`web_ui · priority`) | Origin and the class it resolved to | SessionRow "Priority" word only | partial | Genesis not on the row (field `genesis` is in `session_json`; just not rendered). No API change needed |
 | _session_card.html.erb:112 / _visibility_badge | "Snoozed · date" / "Hidden" pill when revealing | SessionBadges.swift `VisibilityLabel` | present |  |
 | _session_card.html.erb:123 / _github_pr_link | PR button: state glyph/colour, CI dot, multi-PR dropdown (all PRs, latest marked) | SessionRow shows newest PR glyph+label+CI dot; context menu "View PR" opens only the last | partial | Multiple PRs: only the newest is reachable from the row/menu; the web lists all. `custom_metadata.github_pull_request_urls` is already decoded (`pullRequests`) — app-only |
@@ -547,16 +543,7 @@ Ranked within each group by how often a person on a phone runs into it. The area
 | _session_card.html.erb:192–197 **Restore** (archived card, `unarchive`) | Out of the trash | swipe "Restore" / context "Restore from Trash" | present |  |
 | _session_card.html.erb:199–204 **Trash** (`archive`; queued-messages speed bump "Archive anyway" via `_flash` `force_archive`; running session trashed outright) | Trash | AppModel.swift:377 `trash()` sends `end_turn: true`; `.queued` → `QueuedTrashQuestion` "Trash anyway" (`force: true`) | present |  |
 | _session_card.html.erb:219 **View** → right-side drawer (`session_drawer_controller.js`, `sessions#drawer`, resizable, lazy frame, focus trap) | Peek at a session without losing your place | row tap pushes `SessionDetailView` on the NavigationStack; back returns to the same scroll | present | Below `sm` the web drawer declines and the full page opens (`_ranked_row:51`), so the phone behaviour is a push there too |
-| _user_view_row.html.erb:40 drag handle | reorder | see Your board | partial | explicit mode |
-| _user_view_row.html.erb:52 title link | open | row tap | present |  |
-| _user_view_row.html.erb:60 **Priority / Spot** badge | which half | SessionRow "Priority" (spot shown by absence) | present |  |
-| _user_view_row.html.erb:86–121 **status summary** as inline markdown + freshness chip (Up to date / Stale / Regenerating, "N messages since", "written N ago") | Decide on the row | SessionListView.swift:570 `RowSummary` (markdown attributed, freshness, since-count, written-ago) | present | Links render as text on iOS (row is one tap target) |
-| _user_view_row.html.erb:128 agent root / genesis chip |  | `RowSummary` root ?? genesis | present |  |
-| _user_view_row.html.erb:133 **precedence readout** `#N` |  | — | missing | `precedence` is in `session_json`; not rendered on any iOS row |
-| _user_view_row.html.erb:139 PR button |  | SessionRow PR | present |  |
-| _user_view_merge_button.html.erb **Merge** (offered when open+green; "Merge sent" when `AuthorizeMerge.authorized_at`; "Merged" when merged) | Authorize the merge | `SessionListView.swift` (#1284) | partial | **in #1284**: swipe/context "Merge" with confirm. The "Merge sent" state is not shown afterwards: `authorized_at` is not in `session_json`, so a second press is only refused server-side. Needs API: `merge_authorized_at` → partial once #1284 lands |
-| _user_view_row.html.erb:147 Snooze popover on the row |  | swipe/context | present |  |
-| _user_view_row.html.erb:156 Trash (turbo stream removes the row) |  | swipe/context | present |  |
+| Merge on a session's row (`POST /api/v1/sessions/:id/authorize_merge`) | Authorize the merge | `SessionListView.swift` swipe/context "Merge" with confirm (#1284) | partial | No web board view draws a Merge button on its rows; the app's is the row's. The "Merge sent" state is not shown afterwards: `authorized_at` is not in `session_json`, so a second press is only refused server-side. Needs API: `merge_authorized_at` |
 
 #### Bulk select / bulk actions
 
@@ -939,10 +926,9 @@ Taken from the rows' notes ("in #NNNN"). Only the session page, the board and th
 - `timeline_items/_item.html.erb:113-134` `fork-session` — Fork conversation from this message (`MessageBubble` context menu "Fork from Here"; runtime notices are not forkable there because they are not sent).
 - `timeline_items/_item.html.erb:135-150` `message-copy` — Copy a single message's markdown (context menu "Copy").
 
-**#1284 — Merge and Reprioritize.** Flips two C rows from `missing` to `partial`:
+**#1284 — Merge.** Flips a C row from `missing` to `partial`:
 
-- `_user_view_sessions.html.erb:38` Reprioritize — view menu → confirm → `POST /api/v1/sessions/reprioritize`; partial because the "Working in session #N" link is not shown (the response carries `session`, the PR shows only `message`).
-- `_user_view_merge_button.html.erb` Merge — swipe/context "Merge" with confirm → `POST /api/v1/sessions/:id/authorize_merge`; partial because the "Merge sent" state is not shown afterwards (`merge_authorized_at` is not in `session_json`).
+- Merge on a session's row — swipe/context "Merge" with confirm → `POST /api/v1/sessions/:id/authorize_merge`; partial because the "Merge sent" state is not shown afterwards (`merge_authorized_at` is not in `session_json`).
 
 **#1341 — the Settings page's row on REST, API half (auth boundary).** Opens `GET`/`PATCH /api/v1/app_settings` to the app's token: the session defaults and the experimental toggles on any grant, the MCP Apps switch and allowlist only on a grant that acts as you. The app half (Settings → Session Defaults, Experimental, MCP Apps) stacks on it and flips A's rows for `show.html.erb:21-88`, `147-176` and `184-243`.
 

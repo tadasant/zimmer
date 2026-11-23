@@ -6,10 +6,9 @@ module Mcp
     # group): what needs the person, most recently touched first, in one call.
     #
     # The same rows and the same dropped-row line as GetUserView. It differs in
-    # three ways: `order` defaults to `last_touched`, the arguments that rank a
-    # board for rewriting (priority class, agent root, visibility, summary length)
-    # are gone, and the description is short and does not send the voice model to
-    # `reorder_user_view`, which this surface does not have.
+    # three ways: `order` defaults to `last_touched`, the narrowing arguments a
+    # voice conversation has no use for (priority class, agent root, visibility,
+    # summary length) are gone, and the description is short.
     class LiveModeGetUserView < GetUserView
       tool_name "get_user_view"
 

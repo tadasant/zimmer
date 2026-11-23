@@ -24,15 +24,12 @@ class SessionsController < ApplicationController
 
   # Dashboard view modes.
   #
-  # "user" is the default and the dashboard's centre of gravity: one unified list
-  # of every session the filters match, each row carrying enough — status, root,
-  # the generated status blurb, the PR and its CI colour — that a decision can be
-  # taken ON the row. Trash, Snooze and Merge are all inline, so the board is
-  # worked top to bottom without opening a session.
-  #
-  # It REPLACES the old "categories" grid, which asked the operator to open a
-  # card to learn anything about it.
-  VIEW_MODE_USER = "user".freeze
+  # Your board (`board_v2` in the URL) is the dashboard's centre of gravity: the
+  # sessions the filters match, grouped into categories the operator makes and
+  # drags sessions into by hand, most recently touched first inside each. See
+  # Sessions::BoardV2 and BoardCategory. The URL value keeps its `board_v2`
+  # spelling because the iOS app and `GET /api/v1/sessions?view=board_v2` already
+  # speak it; the older values that named a board are LEGACY_VIEW_MODES below.
   # The two flat modes flatten the presentation into a single list sorted solely
   # by one factor — no grouping, no custom ordering, no pinned float.
   VIEW_MODE_LAST_TOUCHED = "last_touched".freeze
@@ -41,19 +38,18 @@ class SessionsController < ApplicationController
   # it is a two-section list (priority above, spot below, ranked) whose rows are
   # editable — this is where a queue is MANAGED rather than read.
   VIEW_MODE_RANKED = "ranked".freeze
-  # Your board v2: the same filtered sessions, grouped into categories the
-  # operator creates and drags sessions into by hand, most recently touched
-  # first inside each. Offered beside "user", not instead of it. See
-  # Sessions::BoardV2 and BoardCategory.
   VIEW_MODE_BOARD_V2 = "board_v2".freeze
   VALID_VIEW_MODES = [
-    VIEW_MODE_USER, VIEW_MODE_BOARD_V2, VIEW_MODE_LAST_TOUCHED, VIEW_MODE_CREATED_DESC, VIEW_MODE_RANKED
+    VIEW_MODE_BOARD_V2, VIEW_MODE_LAST_TOUCHED, VIEW_MODE_CREATED_DESC, VIEW_MODE_RANKED
   ].freeze
 
-  # Cookie values a previous release wrote that no longer name a view. Remapped
-  # rather than dropped, so an operator who had deliberately chosen the grid lands
-  # on the view that replaced it instead of silently on the mobile default.
-  LEGACY_VIEW_MODES = { "categories" => VIEW_MODE_USER }.freeze
+  # Values a previous release wrote — in a ?view= link or in the view cookie —
+  # that no longer name a view: "categories" was the card grid and "user" the
+  # uncategorized "Your board" list, and both were replaced by today's board.
+  # Remapped rather than dropped, so an operator who had deliberately chosen one
+  # lands on the view that replaced it instead of silently on the mobile default.
+  # A ?view= link carrying one is redirected to the current name.
+  LEGACY_VIEW_MODES = { "categories" => VIEW_MODE_BOARD_V2, "user" => VIEW_MODE_BOARD_V2 }.freeze
 
   # Cookie that persists an explicitly-chosen view mode across navigation. Only
   # written when the user picks a view via ?view=; absent until then so the
@@ -86,19 +82,13 @@ class SessionsController < ApplicationController
   # another page — so this is a cap, and the view says when it has truncated.
   RANKED_SECTION_LIMIT = 200
 
-  # How many rows the User view renders. Same reasoning as RANKED_SECTION_LIMIT —
-  # a drag between two rows means nothing if one of them is on another page, so
-  # there is no paginator and the view says when it has truncated — but the number
-  # is an order of magnitude larger, because this view's whole job is to show
-  # EVERYTHING the filters match. The default filter (`needs_input` alone) is the
-  # population it exists for, and that is tens of rows, not hundreds.
-  #
-  # It is a safety rail rather than a target: each row costs one <li> with no
-  # nested frames and no per-row query (the status summary comes from an
-  # eager-loaded join), so a full 500 renders in well under a second.
-  # Past that the drag-and-drop and the browser's own layout, not the server, are
-  # what degrade.
-  USER_VIEW_LIMIT = 500
+  # How many rows Your board renders. There is no paginator — a category's rows
+  # are only worth reading whole — so this is a cap, and the board says when it
+  # has truncated (the least recently touched rows drop off first; see
+  # Sessions::BoardV2). The default filter (`needs_input` alone) is the
+  # population the board exists for, and that is tens of rows, not hundreds: this
+  # is a safety rail rather than a target.
+  BOARD_LIMIT = 500
 
   # The Filters section's board-visibility control — the reveal affordance for the
   # second, presentation-only axis. "On board" is the default and hides the
@@ -190,6 +180,7 @@ class SessionsController < ApplicationController
     # "Reset filters" drops the persisted choice and lands the user back on a bare
     # dashboard, so it has to happen before anything reads the cookie.
     return if reset_filters!
+    return if redirect_legacy_view!
 
     resolve_dashboard_inputs
 
@@ -912,7 +903,7 @@ class SessionsController < ApplicationController
   # are absent when the click came from a dashboard card.
   #
   # The two elements a dashboard can be showing this session as: the card (keyed
-  # on dom_id, in the flat sort views) and the User view's row. Both are removed
+  # on dom_id, in the flat sort views) and Your board's row. Both are removed
   # rather than one, because the removal is sent to whichever page made the
   # request and the server does not know which of the two it is looking at; a
   # `remove` for an id that is not in the DOM is a silent no-op.
@@ -927,7 +918,6 @@ class SessionsController < ApplicationController
   def archive_remove_streams(session, notice:)
     [
       turbo_stream.remove(dom_id(session)),
-      turbo_stream.remove(helpers.user_view_row_dom_id(session)),
       turbo_stream.remove(helpers.board_v2_row_dom_id(session)),
       flash_stream(notice: notice)
     ] + session_chrome_streams(session)
@@ -1037,7 +1027,7 @@ class SessionsController < ApplicationController
     respond_with_flash(
       notice: "Session restored from trash.",
       location: @session,
-      streams: [ restored_card_stream(@session), restored_row_stream(@session), restored_board_v2_row_stream(@session) ]
+      streams: [ restored_card_stream(@session), restored_board_v2_row_stream(@session) ]
     )
   end
 
@@ -1058,23 +1048,7 @@ class SessionsController < ApplicationController
   end
   private :restored_card_stream
 
-  # The same restore, for the User view's row list. Prepended rather than slotted
-  # into place: the row carries its precedence and its class, and the view's own
-  # controller re-sorts the list whenever a row arrives, so it lands where the
-  # order says it belongs rather than where this stream put it.
-  #
-  # A no-op on any page that is not the User view — "user_view_list" is not in
-  # the DOM there.
-  def restored_row_stream(session)
-    turbo_stream.prepend(
-      "user_view_list",
-      partial: "sessions/user_view_row",
-      locals: { agent_session: session }
-    )
-  end
-  private :restored_row_stream
-
-  # The same restore for Your board v2: into the session's own category list,
+  # The same restore for Your board: into the session's own category list,
   # whose controller re-sorts by last touched when a card arrives. A no-op on any
   # other page, and when that category is snoozed or backlogged (no list in the DOM).
   def restored_board_v2_row_stream(session)
@@ -2344,100 +2318,6 @@ class SessionsController < ApplicationController
   end
   private :start_notice
 
-  # POST /sessions/reprioritize
-  #
-  # The Reprioritize button at the top of the User view. Hands the board to the
-  # deployment's durable reprioritizing session — reused rather than spawned
-  # fresh, the way a trigger reuses a session — and reports which session took it
-  # so the operator can watch it work.
-  #
-  # See Sessions::DashboardReprioritizer for why it is a trigger rather than a
-  # bare `start_session`.
-  def reprioritize
-    result = Sessions::DashboardReprioritizer.call
-
-    # Only a fire hands the board to a session. The other outcomes — burst
-    # suppressed, a burst notice, a pending session, a target that is no longer
-    # reusable — can still carry a session, and naming it in the panel would tell
-    # the operator a session is re-ranking their board when none was given the job.
-    # They are also not successes, so they are said as an alert.
-    fired = result.fired?
-    flash_kind = fired ? { notice: result.message } : { alert: result.message }
-
-    respond_to do |format|
-      format.turbo_stream do
-        render turbo_stream: [
-          turbo_stream.replace(
-            "user_view_reprioritize",
-            partial: "sessions/user_view_reprioritize",
-            locals: { reprioritizer_session: (result.session if fired) }
-          ),
-          flash_stream(**flash_kind)
-        ]
-      end
-      format.html { redirect_to root_path(view: VIEW_MODE_USER), **flash_kind }
-    end
-  rescue => e
-    Rails.logger.error "[SessionsController#reprioritize] #{e.class}: #{e.message}"
-    respond_with_flash(alert: "Could not start the reprioritizer: #{e.message}", location: root_path(view: VIEW_MODE_USER))
-  end
-
-  # POST /sessions/:id/authorize_merge
-  #
-  # The User view's Merge button. A human has decided this PR should land, and
-  # the click is the sign-off — see Sessions::AuthorizeMerge for why this is the
-  # one sanctioned route to an agent merging its own work, and for everything the
-  # authorization records.
-  #
-  # Answers with the row's button re-rendered in its new state rather than with a
-  # redirect, so the operator keeps their place on a board they are working top to
-  # bottom. Double-clicking is harmless: the second call finds the PR already
-  # authorized and reports that instead of sending a second message.
-  def authorize_merge
-    @session = find_session
-
-    result = Sessions::AuthorizeMerge.call(session: @session)
-
-    # The human's own words are the click. Recorded through the same capture every
-    # other web-UI input goes through, so the session's provenance says a PERSON
-    # authorized this rather than leaving the merge attributable only to the agent
-    # that performed it.
-    if result.sent?
-      capture_web_ui_human_message(
-        @session,
-        "Merge #{result.pr_url}",
-        "web_ui.authorize_merge"
-      )
-    end
-
-    respond_to do |format|
-      format.turbo_stream do
-        render turbo_stream: [
-          turbo_stream.replace(
-            "user_view_merge_#{@session.id}",
-            partial: "sessions/user_view_merge_button",
-            locals: { agent_session: @session }
-          ),
-          flash_stream(
-            notice: (result.ok? ? result.message : nil),
-            alert: (result.ok? ? nil : result.message)
-          )
-        ]
-      end
-      format.json do
-        render json: { outcome: result.outcome, message: result.message, pr_url: result.pr_url },
-          status: (result.ok? ? :ok : :unprocessable_entity)
-      end
-      format.html do
-        respond_with_flash(
-          notice: (result.ok? ? result.message : nil),
-          alert: (result.ok? ? nil : result.message),
-          location: @session
-        )
-      end
-    end
-  end
-
   # POST /sessions/:id/start_now
   # "Start it now" from the Ranked view's ⋮ menu: take this waiting session's
   # next turn immediately rather than when the scheduler gets round to it.
@@ -2832,42 +2712,11 @@ class SessionsController < ApplicationController
       return
     end
 
-    # The User view. One unified list of every session the filters match, ordered
-    # so a priority session outranks every spot one and precedence is respected
-    # all the way down.
-    #
-    # The ordering rule itself is Sessions::UserView's, shared with the
-    # `get_user_view` MCP tool so the reprioritizing session reads exactly the
-    # board the human is looking at.
-    #
-    # The select drops `transcript`. It is a legacy JSON column on `sessions`
-    # (transcripts live in session_transcript_chunks now) and this view renders an
-    # order of magnitude more rows than the card grid did, so a row that still
-    # carries one would be paid for on every one of them. Nothing this view
-    # renders reads it — `transcript_line_count` and `transcript_byte_size` are
-    # their own columns, and ChunkedTranscript's `has_attribute?` guards degrade
-    # correctly when the column is not selected.
-    if @view_mode == VIEW_MODE_USER
-      user_scope = sessions
-        .select(Session.column_names - [ "transcript" ])
-        .includes(:status_summary)
-
-      # One more than the cap, so the "showing the first N" notice appears only when
-      # a row was actually cut off rather than whenever exactly N sessions match.
-      fetched = Sessions::UserView.rows(scope: user_scope, limit: USER_VIEW_LIMIT + 1)
-      @user_view_truncated = fetched.size > USER_VIEW_LIMIT
-      @user_view_sessions = fetched.first(USER_VIEW_LIMIT)
-      @user_view_limit = USER_VIEW_LIMIT
-      @any_sessions = @user_view_sessions.any?
-      return
-    end
-
-    # Your board v2. The same filtered `sessions` the User view gets, grouped by
-    # the operator's categories; Sessions::BoardV2 owns the grouping, the
-    # last-touched order and the cap.
+    # Your board: the filtered `sessions`, grouped by the operator's categories;
+    # Sessions::BoardV2 owns the grouping, the last-touched order and the cap.
     if @view_mode == VIEW_MODE_BOARD_V2
-      @board_v2 = Sessions::BoardV2.build(scope: sessions, limit: USER_VIEW_LIMIT)
-      @user_view_limit = USER_VIEW_LIMIT
+      @board_v2 = Sessions::BoardV2.build(scope: sessions, limit: BOARD_LIMIT)
+      @board_limit = BOARD_LIMIT
       @any_sessions = @board_v2.session_count.positive?
       return
     end
@@ -2884,7 +2733,7 @@ class SessionsController < ApplicationController
   #      navigation back to the dashboard.
   #   2. A previously-persisted valid cookie value (the user's last explicit pick),
   #      or a LEGACY_VIEW_MODES name remapped to the view that replaced it.
-  #   3. The default: "last_touched" on mobile, "user" on desktop. The default
+  #   3. The default: "last_touched" on mobile, Your board on desktop. The default
   #      only applies when the user has never explicitly chosen a view.
   def resolve_view_mode
     requested = params[:view].to_s
@@ -2900,7 +2749,21 @@ class SessionsController < ApplicationController
     return persisted if VALID_VIEW_MODES.include?(persisted)
     return LEGACY_VIEW_MODES[persisted] if LEGACY_VIEW_MODES.key?(persisted)
 
-    mobile_request? ? VIEW_MODE_LAST_TOUCHED : VIEW_MODE_USER
+    mobile_request? ? VIEW_MODE_LAST_TOUCHED : VIEW_MODE_BOARD_V2
+  end
+
+  # A bookmarked ?view=user or ?view=categories is redirected to the view that
+  # replaced it, every other parameter kept, so the address bar names a view that
+  # exists. resolve_view_mode still remaps the same names in a cookie, and on
+  # GET /board, which only ever receives the shell's own query string.
+  #
+  # @return [Boolean] true when a redirect was issued
+  def redirect_legacy_view!
+    replacement = LEGACY_VIEW_MODES[params[:view].to_s]
+    return false unless replacement
+
+    redirect_to root_path(request.query_parameters.merge("view" => replacement)), status: :moved_permanently
+    true
   end
 
   # "Reset filters" is a GET that drops the persisted Filters choice and redirects to

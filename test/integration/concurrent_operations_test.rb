@@ -192,7 +192,7 @@ class ConcurrentOperationsTest < IntegrationTestCase
       )
     end
 
-    # Get index, in a flat sort view: the default User view renders rows, not
+    # Get index, in a flat sort view: the default Your board wraps its cards, not
     # the per-session turbo-frame cards this asserts on. It defaults to needs_input alone, and needs_input is
     # deliberately not among the statuses seeded above — so a bare "/" renders
     # none of these ten. Ask for every status, the way the UI does: an explicit

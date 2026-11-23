@@ -41,26 +41,43 @@ class Api::V1::SessionsBoardViewsTest < ActionDispatch::IntegrationTest
     assert_equal [ newest.id, middle.id, old_but_touched.id ], ids_for(nil), "the default is still newest created first"
   end
 
-  test "view=user and view=ranked are Sessions::UserView: priority, then precedence, then oldest" do
+  test "view=ranked is Sessions::RankedOrder: priority, then precedence, then oldest" do
     spot_low = make("spot low", created: 1.hour.ago, precedence: 1)
     spot_high_old = make("spot high old", created: 2.days.ago, precedence: 9)
     spot_high_new = make("spot high new", created: 1.day.ago, precedence: 9)
     priority = make("priority", created: 1.minute.ago, scheduling_class: "priority")
 
-    expected = [ priority.id, spot_high_old.id, spot_high_new.id, spot_low.id ]
-    assert_equal expected, ids_for("user")
-    assert_equal expected, ids_for("ranked")
+    assert_equal [ priority.id, spot_high_old.id, spot_high_new.id, spot_low.id ], ids_for("ranked")
 
     json = JSON.parse(response.body)
     assert_equal 1, json["pagination"]["total_pages"]
     assert_equal false, json["truncated"]
   end
 
-  test "view=user says when the cap cut rows, and only then" do
-    Api::V1::SessionsController.any_instance.stubs(:user_view_limit).returns(2)
+  # An app build from before Your board was the only board still asks for
+  # `view=user`; it gets today's board rather than a 422.
+  test "view=user answers exactly what view=board_v2 does" do
+    infra = BoardCategory.create!(name: "Infra")
+    loose = make("loose", created: 3.hours.ago)
+    filed = make("filed", created: 1.hour.ago, scheduling_class: "priority", precedence: 50)
+    filed.update_columns(board_category_id: infra.id)
+
+    get "/api/v1/sessions", params: { view: "board_v2" }, headers: @headers
+    board_v2 = JSON.parse(response.body)
+    get "/api/v1/sessions", params: { view: "user" }, headers: @headers
+    assert_response :success
+    user = JSON.parse(response.body)
+
+    assert_equal [ loose.id, filed.id ], user["sessions"].map { |s| s["id"] }, "Uncategorized first, then each category"
+    assert_equal board_v2, user
+    assert_equal [ infra.id ], user["board_categories"].map { |c| c["id"] }
+  end
+
+  test "view=ranked says when the cap cut rows, and only then" do
+    Api::V1::SessionsController.any_instance.stubs(:board_limit).returns(2)
     3.times { |i| make("s#{i}", created: i.hours.ago, precedence: i) }
 
-    get "/api/v1/sessions", params: { view: "user" }, headers: @headers
+    get "/api/v1/sessions", params: { view: "ranked" }, headers: @headers
     json = JSON.parse(response.body)
     assert_equal 2, json["sessions"].size
     assert_equal true, json["truncated"]
@@ -85,20 +102,20 @@ class Api::V1::SessionsBoardViewsTest < ActionDispatch::IntegrationTest
     assert_equal [ newer.id, older.id ], ids_for("last_touched")
   end
 
-  test "view=user honours board visibility" do
+  test "view=ranked honours board visibility" do
     shown = make("shown", created: 1.hour.ago)
     hidden = make("hidden", created: 2.hours.ago)
     hidden.update!(visibility: "hidden")
 
-    get "/api/v1/sessions", params: { view: "user", visibility: "on_board" }, headers: @headers
+    get "/api/v1/sessions", params: { view: "ranked", visibility: "on_board" }, headers: @headers
     assert_equal [ shown.id ], JSON.parse(response.body)["sessions"].map { |s| s["id"] }
   end
 
-  test "view=user honours the filters the index already applies" do
+  test "view=ranked honours the filters the index already applies" do
     make("waiting", created: 1.hour.ago, status: :waiting)
     asked = make("asked", created: 2.hours.ago)
 
-    get "/api/v1/sessions", params: { view: "user", status: "needs_input" }, headers: @headers
+    get "/api/v1/sessions", params: { view: "ranked", status: "needs_input" }, headers: @headers
     assert_equal [ asked.id ], JSON.parse(response.body)["sessions"].map { |s| s["id"] }
   end
 

@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Sessions
-  # Your board v2 (`/?view=board_v2`): the sessions the board's filters match,
+  # Your board (`/?view=board_v2`): the sessions the board's filters match,
   # grouped into the operator's own categories.
   #
   # == The layout
@@ -54,8 +54,9 @@ module Sessions
         )
       end
 
-      # `transcript` is dropped for the reason SessionsController gives for the
-      # User view: a legacy column nothing on a card reads.
+      # `transcript` is dropped: a legacy JSON column on `sessions` (transcripts
+      # live in session_transcript_chunks) that nothing on a card reads, and
+      # this reads up to `limit` rows.
       fetched = shown_scope
         .select(Session.column_names - [ "transcript" ])
         .reorder(Session::LAST_TOUCHED_ORDER, id: :desc)

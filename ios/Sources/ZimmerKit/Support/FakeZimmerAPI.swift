@@ -11,7 +11,7 @@ import Foundation
 /// every `waiting` session.
 public actor FakeZimmerAPI: ZimmerAPI {
     public internal(set) var all: [SessionSummary]
-    /// Your board v2's categories, in board order.
+    /// Your board's categories, in board order.
     public internal(set) var boardCategories: [BoardCategory] = FakeZimmerAPI.sampleBoardCategories()
     var summaries: [Int: StatusSummary]
     private var conversations: [Int: [ConversationMessage]]
@@ -43,7 +43,6 @@ public actor FakeZimmerAPI: ZimmerAPI {
     private var prompts: [Int: [PendingElicitation]] = FakeZimmerAPI.samplePrompts()
     /// The PRs a Merge tap has authorized, so a second tap answers as already sent.
     private var mergesAuthorized: Set<URL> = []
-    private var reprioritizerID: Int?
     public private(set) var registeredDevices: [String: APNsEnvironment] = [:]
     public private(set) var pushFailures: [PushFailureStage] = []
     private let live: Bool
@@ -415,7 +414,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
         ])))))
     }
 
-    /// Your board v2's categories: *iOS app* first, *Ops* collapsed to its header, and
+    /// Your board's categories: *iOS app* first, *Ops* collapsed to its header, and
     /// *Someday* backlogged, so the board draws each kind.
     public static func sampleBoardCategories() -> [BoardCategory] {
         [
@@ -967,7 +966,7 @@ extension FakeZimmerAPI {
 extension FakeZimmerAPI {
     public func sessions(_ filters: BoardFilters, board: BoardFilter, view: BoardView) async throws -> SessionSearchResult {
         var rows = try await sessions(filters, board: board).sessions
-        if view == .yourBoard || view == .ranked {
+        if view == .ranked {
             rows = rows.map { session in
                 var session = session
                 session.boardRow = BoardRow(agentRoot: session.agentRoot, statusSummary: summaries[session.id])
@@ -1776,10 +1775,10 @@ extension FakeZimmerAPI {
     }
 }
 
-// MARK: - Merge and Reprioritize
+// MARK: - Merge
 //
 // As the server: Merge is offered only on an open, green PR and answers a second tap as
-// already sent; Reprioritize hands the board to one reprioritizing session, reused.
+// already sent.
 extension FakeZimmerAPI {
     public func authorizeMerge(_ id: Int) async throws -> MergeAuthorization {
         let session = try find(id)
@@ -1791,20 +1790,6 @@ extension FakeZimmerAPI {
         }
         mergesAuthorized.insert(pr.url)
         return MergeAuthorization(alreadySent: false, message: "Merge authorized. Session \(id) has been told to merge \(pr.url.absoluteString).")
-    }
-
-    public func reprioritize() async throws -> Reprioritization {
-        let id: Int
-        if let existing = reprioritizerID {
-            id = existing
-        } else {
-            id = nextID
-            nextID += 1
-            all.append(SessionSummary(id: id, title: "Dashboard reprioritizer", status: .running, agentRuntime: "claude_code",
-                                      prompt: "Re-rank the board.", createdAt: Date(), updatedAt: Date()))
-            reprioritizerID = id
-        }
-        return Reprioritization(sessionID: id, message: "Reprioritizing — session \(id) is re-ranking the board.")
     }
 }
 

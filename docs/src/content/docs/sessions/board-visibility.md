@@ -19,8 +19,8 @@ whose only job is deciding whether the card is on screen.
 | `snoozed` | Off the board until `snoozed_until`, then back on its own. |
 | `backlogged` | In the backlog: off the board with no end time, because it is low priority. Shown only on the *Backlogged* and *All* views. |
 
-A [Your board v2](/sessions/board-v2/) category carries the same pair and can be snoozed or
-backlogged as a unit, taking its sessions off that tab without writing their own visibility.
+A [Your board](/sessions/board-v2/) category carries the same pair and can be snoozed or
+backlogged as a unit, taking its sessions off the board without writing their own visibility.
 
 ## The backlog
 
@@ -88,16 +88,11 @@ predicate, and the two disagreeing would put a card on screen that the page beli
 
 ## Using it
 
-**On a card.** The ⋮ menu on every session card — in both flat sort views — offers *Snooze until…*,
+**On a card.** The ⋮ menu on every session card (on Your board and in both flat sort views) offers *Snooze until…*,
 *Hide* and *Move to backlog*. The snooze panel holds a
 handful of presets (later today, tomorrow, in 3 days, this weekend, next week) and a
 date/time picker for anything else. The presets are computed in **your browser's** timezone, so
 "Tomorrow" means your 9am.
-
-**In the User view.** Every row carries a **Snooze** button of its own, next to Merge and Trash —
-the same panel, opened inline rather than from behind a ⋮, with *Hide* and *Move to backlog* at its
-foot. That view is the board an operator is
-actually tidying, so the control is one click rather than two.
 
 **In the Ranked view.** The compact row's ⋮ menu carries the same three entries and the same panel.
 The ranked queue is a list of work that has not started, which makes it exactly the list worth
@@ -115,7 +110,7 @@ The dashboard's **Filters → Board visibility** control has four settings: *On 
 legend says how many of each ("2 sessions tucked away · 5 backlogged"), so a board
 that is holding cards back always says so. The number arrives with the board itself, a moment after
 the page: it is counted through every other filter, so it costs what the board costs (see
-[how the page loads](/sessions/user-view/#how-the-page-loads)).
+[how the page loads](/sessions/board-v2/#how-the-page-loads)).
 
 Revealed cards carry a badge saying which kind of tucking-away it is (*Hidden*, *Snoozed*, or an
 amber *Backlog*) and, for a snooze, when it ends

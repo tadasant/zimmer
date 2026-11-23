@@ -89,49 +89,26 @@ module SessionsHelper
     end
   end
 
-  # The DOM id of a session's row in the dashboard's User view.
-  #
-  # Deliberately NOT `dom_id(session)`. That id belongs to the session CARD, and
-  # the card grid's live updates (Session#broadcast_update_to_sessions_index)
-  # replace whatever holds it with a freshly rendered card — which on a User view
-  # page would swap a row for a card mid-scroll. One spelling, here, because the controller
-  # (which sends the removal stream when a row is trashed) and the partial (which
-  # renders the id) have to agree.
-  def user_view_row_dom_id(session)
-    "user_view_row_#{session.id}"
-  end
-
-  # The id of one Your board v2 group's row list: a category's, or
+  # The id of one Your board group's row list: a category's, or
   # Uncategorized's for nil. The undo-archive stream puts a restored row back
   # into it, so the controller and the partial share this spelling.
   def board_v2_list_dom_id(category_id)
     "board_v2_list_#{category_id || "uncategorized"}"
   end
 
-  # The id of one session's item on Your board v2: the drag handle and the Last
+  # The id of one session's item on Your board: the drag handle and the Last
   # Touched card it carries. Trash removes it by this id (#archive's stream and
   # lib/optimistic_actions.js), so the handle leaves with the card.
   def board_v2_row_dom_id(session)
     "board_v2_row_#{session.id}"
   end
 
-  # One Your board v2 group's card list: the Last Touched grid, with each column
+  # One Your board group's card list: the Last Touched grid, with each column
   # widened by the handle beside the card and packed from the left so a short
   # category does not float in the middle of its box. Nearly edge to edge on a
   # phone, where the card needs every pixel Last Touched gives it.
   def board_v2_list_classes
     "grid min-h-[2.75rem] gap-4 rounded-b-md bg-gray-50 px-1 py-3 sm:p-3 grid-cols-[repeat(auto-fill,minmax(min(344px,100%),428px))]"
-  end
-
-  # Where a status summary stands against its session, for the freshness chip on
-  # a User view row: :regenerating while a generation is in flight, :stale once
-  # the session has written anything since the summary was, :current otherwise.
-  # Regenerating outranks the other two because it is the one that says the
-  # answer is already on its way.
-  def status_summary_freshness(summary, line_count)
-    return :regenerating if summary.pending?
-
-    summary.stale?(line_count) ? :stale : :current
   end
 
   # Extract PR number from a GitHub PR URL for display

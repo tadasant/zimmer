@@ -161,8 +161,8 @@ class SessionsControllerStatusPanelTest < ActionDispatch::IntegrationTest
     get dashboard_board_url
 
     assert_response :success
-    assert_select "#user_view_row_#{@session.id}"
-    assert_select "#user_view_row_#{fork.id}", 0
+    assert_select "#board_v2_row_#{@session.id}"
+    assert_select "#board_v2_row_#{fork.id}", 0
   end
 
   test "regenerate enqueues a forced generation" do

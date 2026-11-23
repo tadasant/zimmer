@@ -1,6 +1,6 @@
 <%# What the board frame shows between the shell painting and #board answering.
 
-    Shaped like the view it stands in for — User-view rows (a title line, two
+    Shaped like the view it stands in for — Your board's rows (a title line, two
     lines of status, a row of buttons), or a grid of cards for the flat and
     Ranked views — so the swap to real content moves nothing above it and
     little below it. Widths vary because a column of identical bars reads as a
@@ -14,7 +14,7 @@
       view_mode - the view the shell resolved, so the skeleton takes its shape %>
 <div role="status" aria-busy="true" aria-label="Loading sessions" data-board-skeleton>
   <span class="sr-only">Loading sessions…</span>
-  <% if [ SessionsController::VIEW_MODE_USER, SessionsController::VIEW_MODE_BOARD_V2 ].include?(view_mode) %>
+  <% if view_mode == SessionsController::VIEW_MODE_BOARD_V2 %>
     <div class="mb-4 space-y-2 animate-pulse motion-reduce:animate-none">
       <div class="h-5 w-32 rounded bg-gray-200"></div>
       <div class="h-3 w-full max-w-xl rounded bg-gray-100"></div>

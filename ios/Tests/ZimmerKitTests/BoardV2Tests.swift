@@ -1,7 +1,8 @@
 import XCTest
 @testable import ZimmerKit
 
-/// Your board v2: Last Touched's rows under the person's own categories, the app's default view.
+/// Your board (`?view=board_v2`): Last Touched's rows under the person's own categories, the
+/// app's default view.
 final class BoardV2Tests: XCTestCase {
     private func client(_ handlers: [ScriptedTransport.Handler]) -> (ZimmerHTTPClient, ScriptedTransport) {
         let transport = ScriptedTransport(handlers)
@@ -35,11 +36,24 @@ final class BoardV2Tests: XCTestCase {
         ]
     }
 
-    func testTheAppOpensOnYourBoardV2() {
+    func testTheAppOpensOnYourBoard() {
         XCTAssertEqual(BoardView.defaultView, .boardV2)
         XCTAssertEqual(BoardView.boardV2.rawValue, "board_v2", "the web UI's ?view=")
-        XCTAssertEqual(BoardView.boardV2.label, "Your board v2")
+        XCTAssertEqual(BoardView.boardV2.label, "Your board")
         XCTAssertFalse(BoardView.boardV2.isReorderable, "rows are placed by category and last touch, not dragged into an order")
+        XCTAssertEqual(BoardView.allCases.map(\.label), ["Your board", "Last Touched", "Created", "Ranked"], "one board, as the web UI has one")
+    }
+
+    func testARememberedUserViewLandsOnYourBoard() {
+        // "user" is what the app remembered for the board the dashboard drew before Your board
+        // was the person's categories; there is no view by that value any more.
+        XCTAssertNil(BoardView(rawValue: "user"))
+        XCTAssertEqual(BoardView.remembered("user"), .boardV2)
+        XCTAssertEqual(BoardView.remembered("board_v2"), .boardV2)
+        XCTAssertEqual(BoardView.remembered("ranked"), .ranked)
+        XCTAssertEqual(BoardView.remembered("last_touched"), .lastTouched)
+        XCTAssertEqual(BoardView.remembered(nil), BoardView.defaultView, "nothing chosen yet")
+        XCTAssertEqual(BoardView.remembered("no_such_view"), BoardView.defaultView)
     }
 
     func testUncategorizedFirstThenEachCategoryOnTheBoardNewestTouchedFirst() {
@@ -82,7 +96,7 @@ final class BoardV2Tests: XCTestCase {
         let result = try await api.sessions(SessionFilter.active.filters, board: .onBoard, view: .boardV2)
 
         XCTAssertEqual(query(transport.sent[0])["view"], "board_v2")
-        XCTAssertNil(query(transport.sent[0])["page"], "one page, as the User view")
+        XCTAssertNil(query(transport.sent[0])["page"], "one page, as Ranked")
         XCTAssertEqual(result.sessions.map(\.boardCategoryID), [7, nil])
         XCTAssertEqual(result.categories?.map(\.name), ["Research", "Someday"])
         XCTAssertEqual(result.categories?.map(\.onBoard), [true, false])

@@ -99,25 +99,25 @@ module Mcp
       # caller can already read sessions. Not in self_session — a session has no
       # cycle time of its own until its whole hierarchy is archived.
       Definition.new(klass: "Mcp::Tools::GetCycleTime", group: "sessions", write: false),
-      # The dashboard's User view, as an agent reads it. In `sessions` rather than
+      # The dashboard's Your board, as an agent reads it. In `sessions` rather than
       # a group of its own because it is a session listing — it just carries the
       # three facts a decision on that board turns on (the root, the generated
       # blurb, the PR and its CI) that `quick_search_sessions` rows do not.
       #
-      # Note what is NOT here, and deliberately: there is no tool for the User
-      # view's **Merge** button. That button is the one sanctioned route to an
-      # agent merging its own work, and what sanctions it is that a human clicked
-      # it. Be precise about what that buys: it is not a wall. The web UI has no
+      # Note what is NOT here, and deliberately: there is no tool for the
+      # **Merge** button (the iOS app's, and Live Mode's spoken yes). That button is
+      # the one sanctioned route to an agent merging its own work, and what
+      # sanctions it is that a human pressed it. Be precise about what that buys:
+      # it is not a wall. The web UI has no
       # login (the network perimeter is the boundary) and `action_session`'s
       # `follow_up` delivers any text, the `[HUMAN-AUTHORIZED MERGE]` marker
       # included. What an agent cannot produce from this endpoint is the
-      # HumanMessage the browser (or the iOS app, acting as its approver) writes for
-      # the click, and that record — not the marker — is the provenance an audit
+      # HumanMessage the iOS app (or Live Mode, on a spoken yes) writes for the
+      # press, and that record — not the marker — is the provenance an audit
       # keys on. See Sessions::AuthorizeMerge.
       #
       # In live_mode as LiveModeGetUserView: last-touched first by default, and a
-      # short description that does not send the voice model to the reorder tool
-      # it does not have.
+      # short description.
       Definition.new(
         klass: "Mcp::Tools::GetUserView",
         group: "sessions",
@@ -160,12 +160,7 @@ module Mcp
         }
       ),
       Definition.new(klass: "Mcp::Tools::ManageEnqueuedMessages", group: "sessions", write: true),
-      # The write half of the User view. Beside `change_precedence` rather than
-      # replacing it: that one moves ONE session and is what a session uses on
-      # itself, this one takes a whole ordering and is what the Reprioritize
-      # button's session uses on the human's board.
-      Definition.new(klass: "Mcp::Tools::ReorderUserView", group: "sessions", write: true),
-      # Your board v2's manually-managed categories, and putting a session in one.
+      # Your board's manually-managed categories, and putting a session in one.
       Definition.new(klass: "Mcp::Tools::ManageBoardCategories", group: "sessions", write: true),
       # Beside get_configs, which lists the same catalog. Adding a model changes
       # what start_session accepts, which is a sessions concern; not in

@@ -13,7 +13,7 @@
 
     Locals:
       agent_session — the session
-      variant       — :button     (session detail header, and the User view row):
+      variant       — :button     (session detail header):
                                   a car icon that toggles CarPlay-ok, with a
                                   chevron beside it opening every choice
                       :sheet_item (the mobile bottom sheet on the detail page)
@@ -58,9 +58,7 @@
       car sits third in a row that wraps, so a panel hung off it could open past
       the left edge (or the drawer's), and the header row is already the
       `relative` box Snooze's popover uses; the panel opens from its left edge,
-      near the car. The User view row makes it `relative`
-      from sm: up only; on a phone the panel opens from the row's action line
-      instead, because a car mid-line would put the panel past the right edge. %>
+      near the car. %>
   <div class="<%= 'sm:relative' if compact %> inline-flex items-center" data-carplay-fit-toggle="<%= on ? 'on' : (laptop ? 'laptop_only' : 'off') %>">
     <%= link_to update_carplay_fit_session_path(agent_session, carplay_fit: on ? "clear" : SessionCarplayFit::CARPLAY_OK),
           data: { turbo_method: :patch, turbo_frame: "_top" },
