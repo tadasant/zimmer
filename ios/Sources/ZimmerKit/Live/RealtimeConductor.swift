@@ -516,13 +516,26 @@ public enum RealtimeAudio {
     /// The samples, at 24 kHz, as a WAV file in memory.
     public static func wav(from samples: [Float]) -> Data {
         let pcm = pcm16(from: samples, sampleRate: sampleRate)
-        func bytes<Value: FixedWidthInteger>(_ value: Value) -> Data { withUnsafeBytes(of: value.littleEndian) { Data($0) } }
         let rate = UInt32(sampleRate)
-        var file = Data("RIFF".utf8) + bytes(UInt32(36 + pcm.count)) + Data("WAVE".utf8)
-        // Format 1 is PCM: one channel, two bytes a frame.
-        file += Data("fmt ".utf8) + bytes(UInt32(16)) + bytes(UInt16(1)) + bytes(UInt16(1))
-        file += bytes(rate) + bytes(rate * 2) + bytes(UInt16(2)) + bytes(UInt16(16))
-        file += Data("data".utf8) + bytes(UInt32(pcm.count)) + pcm
+        var file = Data()
+        func put(_ name: String) { file.append(contentsOf: name.utf8) }
+        func put32(_ value: UInt32) { withUnsafeBytes(of: value.littleEndian) { file.append(contentsOf: $0) } }
+        func put16(_ value: UInt16) { withUnsafeBytes(of: value.littleEndian) { file.append(contentsOf: $0) } }
+        put("RIFF")
+        put32(UInt32(36 + pcm.count))
+        put("WAVE")
+        // Format 1 is PCM: one channel, two bytes a frame, 16 bits a sample.
+        put("fmt ")
+        put32(16)
+        put16(1)
+        put16(1)
+        put32(rate)
+        put32(rate * 2)
+        put16(2)
+        put16(16)
+        put("data")
+        put32(UInt32(pcm.count))
+        file.append(pcm)
         return file
     }
 

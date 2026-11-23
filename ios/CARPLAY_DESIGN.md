@@ -222,7 +222,7 @@ table):
 
 | Cue | Sound | Peak | Plays |
 | --- | --- | --- | --- |
-| pressed | F5, F5, quick and level | −11.4 dBFS | Once, at the Talk tap, before any request; on its own engine with no microphone |
+| pressed | F5, F5, quick and level | −11.4 dBFS | Once, at the Talk tap, before any request; on its own player with no microphone |
 | connected | D5, G5, rising | −9.3 dBFS | Once, when the call is up |
 | heard | D5, short | −9.7 dBFS | 1.5 s (`LiveCue.settle`) after the driver stops talking and stays quiet, on a line that will be answered |
 | thinking | a C5 (523 Hz) sine pulse, 90 ms, every 1.2 s | −9.3 dBFS | From 2.5 s after the end of speech to the reply, no tool running; gives up after 45 s |
@@ -477,7 +477,7 @@ What made the first TestFlight builds crash, or misbehave, in the car, and what 
 | `@Published` publishes in `willSet`, so the screen read the state the call was leaving | Every sink on the call is received on the main queue's next turn | A source guard |
 | The Live call's `AVAudioEngine` restarted on the route-change notification's thread while a hang-up stopped it on the main one; the car connecting or disconnecting is a route change | `LiveAudioEngine` decides everything on the main actor; its observers run on the main queue; an engine is reconfigured on one serial queue and belongs to it until it comes back; a media-services reset ends the call | A source guard for the blocking calls; review for the rest: no test can drive AVAudioEngine on Linux, and the Simulator has no car audio route |
 | The audio engine's start blocked the main thread for 770 s with the call on Connecting…, so nothing could time it out or end it | Every call that can block runs on `LiveAudioEngine.queue`; `LiveCallHealth` gives up at 15 s | `CarPlayTests.testTheCallsThatCanBlockNeverRunOnTheMainActor`; `LiveCallHealthTests` |
-| A cue with no call up had an `AVAudioEngine` of its own, whose output unit aborts the process when the audio server does not answer in time (`_ReportRPCTimeout`), in its start, stop or dealloc | An `AVAudioPlayer` plays it (`LiveAudioEngine.playAlone`) | A source guard; the abort forced by stopping the audio server under the app, old code and new. A call's own engine still has the exposure: limitations.md |
+| A cue with no call up had an `AVAudioEngine` of its own, whose output unit aborts the process when the audio server does not answer in time (`_ReportRPCTimeout`), as it initialized, stopped or was disposed of | An `AVAudioPlayer` plays it (`LiveAudioEngine.playAlone`) | A source guard; the abort forced by stopping the audio server under the app, old code and new. A call's own engine still has the exposure: limitations.md |
 | A microphone tap installed with a format read before the route settled | The tap takes the node's own format (`format: nil`) and reads each buffer's rate | Review |
 | The system voice and its `.playback` audio session, switched on and off around a running call's `.playAndRecord` one | No system voice | A source guard |
 | Tab bar, lists, cards, alerts, action sheet, a rebuilt call screen: many templates and transitions | Three templates; the call screen only goes up and down; one pushed list, whose pages are redraws | `CarPlayTests.testTheCarIsAHomeOneCallScreenAndOnePanel` |

@@ -412,10 +412,10 @@ final class CarPlayDrillUITests: XCTestCase {
     private func waitWhileAlive(for element: XCUIElement, timeout: TimeInterval, _ when: String) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if element.waitForExistence(timeout: 1) { return true }
+            if element.waitForExistence(timeout: 2) { return true }
             assertAlive(when)
         }
-        return element.exists
+        return false
     }
 
     /// The call screen's title is one of its five states. With no call it must be gone: a call
@@ -453,8 +453,8 @@ final class CarPlayDrillUITests: XCTestCase {
     /// ([run 45103157432](https://github.com/tadasant/zimmer/actions/runs/45103157432)).
     private var whatTheCarShowed: String {
         guard isAlive else {
-            return "Zimmer is NOT RUNNING (state \(zimmer.state.rawValue)): it crashed, and the crash report printed after the tests says where. "
-                + "The car, with no app behind it, showed:\n\(car.debugDescription)"
+            let why = zimmer.state == .notRunning ? "it died, and any crash report is printed after the tests" : "not a state it can draw the car from"
+            return "Zimmer is NOT RUNNING (state \(zimmer.state.rawValue)): \(why). The car, with no app behind it, showed:\n\(car.debugDescription)"
         }
         return "the car showed:\n\(car.debugDescription)"
     }

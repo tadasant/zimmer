@@ -713,7 +713,7 @@ final class CarPlayTests: XCTestCase {
         let activate = try XCTUnwrap(outsideGraph.range(of: "private nonisolated static func activateSession"))
         let afterActivate = try XCTUnwrap(outsideGraph.range(of: "private let sink = FrameSink()", range: activate.upperBound..<outsideGraph.endIndex))
         outsideGraph.removeSubrange(activate.lowerBound..<afterActivate.lowerBound)
-        for blocking in ["engine.start()", "engine?.start()", "setActive(", "setVoiceProcessingEnabled", ".configure(sink:", "engine.stop()", "tearDown(deactivate"] {
+        for blocking in ["engine.start()", "engine?.start()", "setActive(", "setVoiceProcessingEnabled", ".configure(sink:", "engine.stop()", "tearDown(deactivate", "AVAudioPlayer(", "setCategory("] {
             XCTAssertFalse(outsideGraph.contains(blocking), "\(blocking) on the main actor")
         }
     }
