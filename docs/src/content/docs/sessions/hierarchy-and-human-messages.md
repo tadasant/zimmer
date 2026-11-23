@@ -667,8 +667,8 @@ A tap carries its referent, and a spoken "yes" does not, so Zimmer binds the PR 
    before it asks whether to merge.
 2. `authorize_merge(session_id, confirm: true)`, once you have answered.
 
-Either call merges as soon as you have said yes. Nothing hands out a second question while a yes you
-gave still stands. It merges when all of this holds:
+Either call merges once you have said yes, so a clear one is never answered with another question. It
+merges when all of this holds:
 
 - the newest question in the conversation was for this session and PR, and is under ten minutes old.
   Asking about the same PR again keeps a yes already given, until you refuse or take it back;
@@ -677,25 +677,25 @@ gave still stands. It merges when all of this holds:
 - one of those lines is a **clear yes**, under three minutes old: a word of assent ("yes", "yeah",
   "approved", "do it", "merge it", "okay"…) with nothing beside it but words that go with one, the
   PR's own number, and the repository and title Zimmer knows it by. "What's next" may follow it. A yes
-  that already sent a merge is spent;
-- none of them is a refusal ("no", "wait", "don't"…), and none after the yes takes it back with a
-  condition, a correction or another PR's number ("after the deploy", "I mean 1491");
+  is spent by the merge it sent, whichever PR that was;
+- none of them is a refusal ("no", "wait", "don't"…), and what follows the yes is only another yes,
+  filler or moving on. Any other line takes it back;
 - just before that yes the assistant had not offered something else ("also, want me to restart session
-  7?", "merge pull request 1491 as well");
+  7?", "merge pull request 1491?"). An "okay" or "sure" also needs a recorded line that asks to merge
+  just before it, because it answers anything;
 - merging came up aloud, from either of you, around the question or since.
 
-**How the assistant worded its question is not checked**, and neither is whether its transcript spells
-the number, where its line was cut off, or what order the lines were recorded in. On a voice call the
-model that speaks is not the model that makes these calls, its lines break wherever you talk over it,
-and each line reaches Zimmer on a request of its own, so a question can be recorded after its answer.
-A gate that matched the assistant's line passed on OpenAI Realtime, where one model does both, and
-refused every merge confirmed on GPT-Live, four of four.
+**How the assistant worded its question is not checked** for a clear yes, and neither is whether its
+transcript spells the number, where its line was cut off, or what order its lines were recorded in. On a
+GPT-Live call the model that speaks is not the model that makes these calls, its lines break wherever you
+talk over it, and each line reaches Zimmer on a request of its own.
 
-**A yes before any question counts too**, for a PR this Zimmer holds, when it is unmistakable. The
-last session Zimmer showed the conversation (`get_session`) is the one holding the PR, and showed that
-PR; your newest words, under two minutes old, are a clear yes to the assistant asking to merge it, or
-"merge it" itself; and nothing else was asked about since. Then the first `authorize_merge` merges.
-Anything less gets the one question. A PR another Zimmer holds always gets the question, because the
+The first call is not the model's word that you said yes, so on that call a yes merges only where the
+recorded line you answered asks for the merge. **A yes before any question counts too**, for a PR this
+Zimmer holds, when it is unmistakable: the last session Zimmer showed the conversation (`get_session`)
+is the one holding the PR, and showed that PR; your newest words, under two minutes old, are a clear yes
+(not an "okay") to "want to merge it?" and nothing more, or "merge it" itself; and no other PR has been
+asked about since. Anything less gets the one question. A PR another Zimmer holds always gets the question, because the
 question is what pins the commit.
 
 Anything else merges nothing, and the model is told why and whether to ask. In a conversation that

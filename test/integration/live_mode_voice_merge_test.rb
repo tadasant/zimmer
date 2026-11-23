@@ -192,7 +192,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     say(conversation, phone, "user", "Yes.")
 
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
-    assert_match(/you offered or asked something else/, result["output"])
+    assert_match(/was not asking to merge/, result["output"])
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
 
@@ -302,7 +302,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
 
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
     assert result["error"]
-    assert_match(/you offered or asked something else/, result["output"])
+    assert_match(/was not asking to merge/, result["output"])
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
 
@@ -315,7 +315,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
 
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
     assert result["error"]
-    assert_match(/you offered or asked something else/, result["output"])
+    assert_match(/was not asking to merge/, result["output"])
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
 
@@ -327,7 +327,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     say(conversation, phone, "user", "Yes.")
 
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
-    assert_match(/you offered or asked something else/, result["output"])
+    assert_match(/was not asking to merge/, result["output"])
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
 
@@ -378,12 +378,12 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     say(conversation, phone, "assistant", "Or should I wait.")
     say(conversation, phone, "user", "Yes.")
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
-    assert_match(/you offered or asked something else/, result["output"])
+    assert_match(/was not asking to merge/, result["output"])
 
     say(conversation, phone, "assistant", "Restart session seven too.")
     say(conversation, phone, "user", "Yes.")
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
-    assert_match(/you offered or asked something else/, result["output"])
+    assert_match(/was not asking to merge/, result["output"])
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
 

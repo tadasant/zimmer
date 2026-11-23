@@ -241,9 +241,9 @@ class HumanMessageCapture
         occurred_at: occurred_at,
         provenance: live_mode_provenance(conversation, words, "live_mode.authorize_merge").merge(
           "confirmed_pr_url" => pr_url,
-          "read_back" => read_back.to_s.strip.truncate(LIVE_MODE_RELAYED_LIMIT),
+          "read_back" => read_back.to_s.strip.truncate(LIVE_MODE_RELAYED_LIMIT).presence,
           "relayed_message" => relayed.to_s.strip.truncate(LIVE_MODE_RELAYED_LIMIT)
-        )
+        ).compact
       )
     rescue => e
       Rails.logger.error("[HumanMessageCapture] Failed to record a Live Mode merge approval for session #{session&.id}: #{e.class}: #{e.message}")

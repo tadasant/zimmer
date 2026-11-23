@@ -12,56 +12,80 @@ module LiveConversations
   # Their answer is what authorizes, so it has to be read as a yes before it
   # counts (#answer): at least one word of assent, and every other word one that
   # goes with it. Words, not phrases, so "yeah okay go ahead and merge that PR"
-  # needs no entry of its own. Anything else is `:unclear` and counts for
-  # nothing. A refusal is `:no`; a condition, a correction or another PR's number
-  # is `:takes_back`, which is what undoes a yes already given.
+  # needs no entry of its own. A refusal is `:no`; a condition, a correction or
+  # another PR's number is `:takes_back`; a line of nothing but filler, or moving
+  # on ("what's next"), is `:neutral`; anything else is `:unclear`. A yes stands
+  # only while what follows it is another yes or neutral, so a retraction needs
+  # no entry here either.
   #
   # == The assistant
   #
   # Its line is the model's own choice of words, transcribed, cut where the
-  # person talked over it, and recorded in whatever order it arrived. So nothing
-  # a merge needs is read out of it. It is only ever read for a reason a yes was
-  # about something else (#changes_subject?): an offer to do another thing, or
-  # another PR's number. What is not recognised counts for nothing either way:
-  # half a question, "Say yes, and I'll do it.", "Okay, merging."
+  # person talked over it, and recorded in whatever order it arrived. So a clear
+  # yes needs nothing read out of it. It is read for a reason a yes was about
+  # something else (#changes_subject?): an offer to do another thing, or
+  # another PR's number. What is not recognised there counts for nothing: half a
+  # question, "Say yes, and I'll do it.", "Okay, merging." And it is read for the
+  # merge being asked about (.asks?) where that is the stricter side: an "okay",
+  # which answers anything, and a yes nobody has called a confirmation.
   class MergeAnswer
     ASSENT = /\b(yes|yeah|yea|yep|yup|yah|correct|confirm|confirmed|affirmative|absolutely|definitely|of\ course|do\ it|
                  do\ that|go\ ahead|go\ for\ it|please\ do|that's\ right|thats\ right|approve|approved|merge|ship\ it|land\ it|
-                 sounds\ good|send\ it|proceed|sure|ok|okay)\b/x
-    # An assent that can be nothing but the person's own: "okay" also answers
-    # "I'll leave it, then."
+                 sounds\ good|send\ it|proceed|fine\ by\ me|works\ for\ me|that\ works|sure|ok|okay)\b/x
+    # An assent that does not also answer "I'll leave it, then" or "here's what
+    # it changes".
     STRONG_ASSENT = /\b(yes|yeah|yea|yep|yup|correct|confirm|confirmed|affirmative|absolutely|definitely|do\ it|go\ ahead|
                         go\ for\ it|approve|approved|merge|ship\ it|land\ it|send\ it|proceed)\b/x
-    REFUSAL = /\b(no|nope|nah|naw|not|never|none|stop|wait|cancel|cannot|hold|hang\ on|abort|skip|dont|
-                  nevermind|forget\ it|leave\ it|unable|[a-z]+n't)\b/x
-    # Short conditions and corrections. Any of these after a yes undoes it.
+    REFUSAL = /\b(no|nope|nah|naw|not|never|none|stop|wait|cancel|cannot|cant|hold|hang\ on|abort|skip|dont|pause|
+                  nevermind|forget|scratch|leave|unable|[a-z]+n't)\b/x
+    # Not refusals, whatever word they start with.
+    NO_OBJECTION = /\bno (problem|worries)\b/
+    # Conditions and corrections.
     TAKES_BACK = /\b(but|first|until|unless|after|before|once|when|later|instead|if|wrong|other\ one|another\ one|another\ pr|
-                     different|tomorrow|tonight|laptop|computer|revert|undo|rather|except|change\ my\ mind)\b/x
+                     different|tomorrow|tonight|laptop|computer|revert|undo|rather|except|take\ (it|that)\ back|
+                     chang(e|ed)\ my\ mind|i\ meant?)\b/x
     # What people say next once they have answered. Nothing about the merge.
-    MOVING_ON = /\b((and|so|okay|ok|now|then)\s+)*(what('s|s| is) (up )?next|what else)\b.*\z/m
+    MOVING_ON = /\b((and|so|okay|ok|now|then)[\s,]+)*
+                 (what('s|s|\ is)\ (up\ )?next|what\ else(\ (is\ there|do\ you\ have|have\ you\ got|do\ we\ have|do\ i\ have|needs\ me))?)
+                 [\s?.!,]*\z/x
+    ALL_OF_IT = /\b(100|a hundred|one hundred|hundred) ?(%|percent\b)/
+    # Sounds a transcript writes down. Any other bracket is words.
+    NOISE = /\[(tongue click|inhale|exhale|breath\w*|cough\w*|hum\w*|laugh\w*|sigh\w*|noise|music|silence|sniff\w*|beep\w*)\]?/
+    # A transcript's own typography. Any other character beyond ASCII is
+    # something said that this does not read.
+    UNREAD = /[^\u0000-\u007F‘’ʼ“”–—… �]/
+    NEUTRAL = %w[uh uhh um umm er erm hm hmm mm mhm oh ah so well and then now please great perfect cool nice awesome good
+                 alright all right thanks thank you very much got it zimmer].to_set.freeze
     # Words that go with an assent without changing what it assents to.
-    FILLER = %w[
-      uh uhh um umm er erm hm hmm mm mhm oh ah so well and then just now please great perfect cool nice awesome good fine
-      alright all right thanks thank you lets let's let us we i i'm im it it's its this that that's thats the a one pr prs p r
-      pull request number merge merging merged approve approved approval already said say saying told is am i've ive you go ahead
-      do for to with in on be been my me mine happy totally exactly yo hey zimmer sounds looks look like ready green ship land
-      sure ok okay yes yeah yea yep yup yah correct confirm confirmed affirmative absolutely definitely of course send proceed
-    ].to_set.freeze
-    # What makes the assistant's talk about merging at all.
-    ABOUT_MERGING = /\b(merg\w*|ship(ping|s|ped)?|land(ing|s|ed)?|approv\w*|pull requests?|prs?|p r)\b/i
+    FILLER = (NEUTRAL + %w[
+      just fine lets let's let us we i i'm im i'd it's its this that that's thats the a one pr prs p r by me my mine
+      pull request number merge merging merged approve approved approval already said say saying told is am i've ive go ahead
+      do for to with in into on be been happy totally exactly yo hey sounds looks look like ready green ship land main want wanna
+      can get works thing percent sure ok okay yes yeah yea yep yup yah correct confirm confirmed affirmative absolutely
+      definitely of course send proceed
+    ]).to_set.freeze
 
-    OFFER = /\b(want\ me\ to|do\ you\ want|would\ you\ like|want\ to|wanna|should\ i|shall\ i|should\ we|shall\ we|can\ i|could\ i|how\ about|
-                what\ about|or\ should)\b/x
-    OTHER_ACTION = /\b(restart|re-?run|retry|archive|unarchive|start|stop|close|delete|remove|send|reply|email|deploy|
-                      roll\ back|revert|skip|wait|hold|ask|check|look|open|update|schedule|remind|pause|resume|cancel|
-                      move\ on|next\ one|show|read|tell|create|run)(ed|d|ing|s)?\b/x
-    # Its own merge question may carry an offer word ("should I land it or hold it?").
-    ASKS_MERGE = /\b(merg\w*|ship\ it|land\ (it|this|that)|approv\w*)\b/x
+    # What makes their talk about merging at all.
+    ABOUT_MERGING = /\b(merg\w*|ship(ping|s|ped)?|land(ing|s|ed)?|approv\w*|pull requests?|prs?|p r)\b/i
+    # "Merge" as something to do, not "the merge", "the merge gate", "merge conflicts".
+    MERGE_VERB = /(?<!the )(?<!a )(?<!its )\bmerge\b(?! gate| queue| of\b| conflict)|\b(ship|land) (it|this|that|the|pr|pull)\b/
+
+    OFFER = /\b(?:(?:do\ you\ |would\ you\ |you\ )?(?:(?:want|like)(?:\ me)?\ to|wanna)|should\ (?:i|we)|shall\ (?:i|we)|can\ i|could\ i|how\ about|what\ about)/x
+    ACTION = /(?:restart|re-?run|retry|archive|unarchive|start|stop|close|delete|remove|send\ (?!it)|reply|email|deploy|roll\ back|revert|
+                 skip|wait|hold|ask|check|look|open|update|schedule|remind|pause|resume|cancel|move\ on|show|read|tell|create|run|
+                 hear|know|see|explain|review|dig|walk|go\ (?:through|over)|find|fix)(?:ing)?\b(?!\ (?:the\ |that\ )?merg)/x
+    # An offer to do another thing, whatever that thing would let them merge.
+    OTHER_OFFER = /#{OFFER}(?:\ (?:just|also|quickly|first|go\ ahead\ and))*\ #{ACTION}|
+                   \b(?:want|like)\ (?:some\ |any\ |the\ )?(?:more|details?|context|summary|background)\b|
+                   \bwant\ (?:it|that|session\ \w+)\ (?:restarted|archived|closed|deleted|stopped|reverted|rerun)\b/x
     # An order the assistant proposes without asking ("Restart session seven too.").
     OTHER_ORDER = /\A(?:(?:also|and|or|then|so|okay|ok)[\ ,]+)*(restart|rerun|re-run|retry|archive|unarchive|close|delete|remove|
                    send|reply|email|deploy|revert|cancel|pause|resume)\b/x
     # The assistant saying it will not: an "okay" to that is not a yes.
     DECLINES = /\b(won't|wont|will not|not going to|not gonna|hold off|holding off|leave it|leaving it|not merging)\b/
+    # "Want to merge it?", and nothing else in the sentence.
+    BARE_ASK = /(?:\A|,\ )(?:(?:so|okay|ok|now|well|alright)[\ ,]+)*(?:#{OFFER}\ )?(?:just\ |go\ ahead\ and\ )?
+                (?:merge|ship|land)\ (?:it|this|that)(?:\ (?:one|pr|pull\ request))?(?:\ now|\ then)?\?\z/x
 
     ONES = %w[zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen
               seventeen eighteen nineteen].freeze
@@ -71,6 +95,7 @@ module LiveConversations
       def yes? = kind == :yes
       def no? = kind == :no
       def takes_back? = kind == :takes_back
+      def neutral? = kind == :neutral
     end
 
     # @param number [String] the PR's number
@@ -89,31 +114,33 @@ module LiveConversations
       return Reading.new(kind: :takes_back, strong: false) if line.match?(TAKES_BACK) || other_number?(line)
 
       said = line.sub(MOVING_ON, " ")
-      return Reading.new(kind: :unclear, strong: false) if said.include?("?") || !said.match?(ASSENT)
+      return Reading.new(kind: :unclear, strong: false) if said.include?("?") || text.to_s.match?(UNREAD)
 
-      rest = without_number(words(said)).reject { |word| FILLER.include?(word) || @name_words.include?(word) }
-      Reading.new(kind: rest.empty? ? :yes : :unclear, strong: said.match?(STRONG_ASSENT))
+      rest = phrases(said).flat_map { |phrase| without_number(phrase) }
+      if said.match?(ASSENT)
+        goes_with_it = rest.all? { |word| FILLER.include?(word) || @name_words.include?(word) }
+        return Reading.new(kind: goes_with_it ? :yes : :unclear, strong: said.match?(STRONG_ASSENT))
+      end
+      Reading.new(kind: rest.all? { |word| NEUTRAL.include?(word) } ? :neutral : :unclear, strong: false)
     end
 
     # Whether an assistant line gives a yes after it something else to be about.
     # @param answer [Reading] that yes
     def changes_subject?(text, answer)
       sentences(text).any? do |sentence|
-        next true if sentence.match?(DECLINES) && !answer.strong
-        next true if other_pr?(sentence)
-        next false if sentence.match?(ASKS_MERGE)
-
-        (sentence.match?(OFFER) && sentence.match?(OTHER_ACTION)) || other_order?(sentence)
+        (sentence.match?(DECLINES) && !answer.strong) || other_pr?(sentence) || sentence.match?(OTHER_OFFER) || other_order?(sentence)
       end
     end
 
-    # Whether the last thing an assistant asked is to merge one PR. Read only to
-    # spare a question (AuthorizeMerge#already_said_yes), so it is strict.
-    def self.asks_to_merge?(text)
-      question = text.to_s.downcase.split(/(?<=[.?!;])\s+/).reverse.find { |sentence| sentence.include?("?") }
-      return false if question.nil?
+    # Whether an assistant line says to merge, as something to do.
+    def self.asks?(text) = text.to_s.downcase.match?(MERGE_VERB)
 
-      question.match?(/(?<!the )\bmerge\b(?! gate| queue| of\b)/) && !question.match?(/\b(them|both|either|which|all|two|three|these|those|or)\b/)
+    # Whether the last thing an assistant asked is, in so many words, "merge
+    # it?". Read only to spare a question (AuthorizeMerge#already_said_yes), so
+    # it is strict.
+    def self.asks_only_to_merge?(text)
+      question = text.to_s.downcase.squish.split(/(?<=[.?!;])\s+/).reverse.find { |sentence| sentence.include?("?") }
+      question.to_s.match?(BARE_ASK)
     end
 
     # Whether the person told it to merge, rather than answering.
@@ -123,9 +150,16 @@ module LiveConversations
 
     private
 
-    def plain(text) = text.to_s.tr("‘’ʼ", "'").downcase.gsub(/\[[^\]]*\]?/, " ").gsub(/[^a-z0-9'?,.]+/, " ").squish
+    def plain(text)
+      text.to_s.tr("‘’ʼ", "'").downcase.gsub(NOISE, " ").gsub(ALL_OF_IT, " ").gsub(NO_OBJECTION, " ")
+          .gsub(/[^a-z0-9'?,.]+/, " ").squish
+    end
 
     def words(text) = plain(text).gsub(/(\d),(\d)/, '\1\2').gsub(/[^a-z0-9']+/, " ").split
+
+    # The line's runs of words between its commas and full stops, so "that one,
+    # 1490" is not one number.
+    def phrases(text) = plain(text).gsub(/(\d),(\d)/, '\1\2').split(/[,.?]+/).map { |phrase| words(phrase) }
 
     # Zimmer's question quotes the session's title, which is not the model's.
     def sentences(text)
@@ -140,17 +174,18 @@ module LiveConversations
       !words(sentence).all? { |word| @name_words.include?(word) || FILLER.include?(word) }
     end
 
-    # A sentence that asks to merge a pull request by a number that is not this
-    # PR's, nor the start of it where the line was cut. Only right after
-    # "merge": "it follows up pull request 12, want to merge it?" is this PR's
-    # question.
+    # A sentence that names a number right after merging, and it is not this PR's
+    # nor the start of it where the line was cut. Only after the verb: "it
+    # follows up pull request 12, want to merge it?" is this PR's question.
     def other_pr?(sentence)
-      tokens = words(sentence)
-      named = tokens.each_index.filter_map do |i|
-        next unless %w[request requests pr prs number].include?(tokens[i]) && tokens[[ i - 6, 0 ].max...i].include?("merge")
+      named = phrases(sentence).flat_map do |tokens|
+        tokens.each_index.filter_map do |i|
+          next unless number_word?(tokens[i]) && (i.zero? || !number_word?(tokens[i - 1]))
+          next unless tokens[[ i - 6, 0 ].max...i].any? { |word| word.match?(/\A(merg(e|ing)|ship(ping)?|land(ing)?|approv(e|ing))\z/) }
 
-        run = tokens.drop(i + 1).take_while { |word| number_word?(word) }
-        run if run.size > 1 || run.first.to_s.match?(/\A\d{2,}\z/)
+          run = tokens.drop(i).take_while { |word| number_word?(word) }
+          run if run.size > 1 || run.first.match?(/\A\d{2,}\z/)
+        end
       end
       named.any? && named.none? { |run| ours?(run) }
     end
@@ -158,8 +193,9 @@ module LiveConversations
     # A number in the person's line that is not this PR's. One number word on
     # its own ("that one", "two seconds") names nothing.
     def other_number?(line)
-      runs = without_number(words(line)).chunk_while { |one, two| number_word?(one) == number_word?(two) }.select { |run| number_word?(run.first) }
-      runs.any? { |run| run.size > 1 || run.first.match?(/\A\d{2,}\z/) }
+      phrases(line).any? do |phrase|
+        number_runs(phrase).any? { |run| !@forms.include?(run.join(" ")) && (run.size > 1 || run.first.match?(/\A\d{2,}\z/)) }
+      end
     end
 
     def ours?(run)
@@ -168,12 +204,15 @@ module LiveConversations
         (run.all? { |word| word.match?(/\A\d+\z/) } && @number.start_with?(run.join))
     end
 
-    # The words with this PR's number taken out, however it was said. A whole
-    # run of number words at a time, so "fourteen ninety one" is not 1490.
-    def without_number(list)
-      list = list.reject.with_index { |word, i| word == "and" && i.positive? && %w[hundred thousand].include?(list[i - 1]) }
-      list.chunk_while { |one, two| number_word?(one) == number_word?(two) }
-          .reject { |run| @forms.include?(run.join(" ")) }.flatten
+    # The words with this PR's number taken out, however it was said. A whole run
+    # of number words at a time, so "fourteen ninety one" is not 1490.
+    def without_number(list) = runs(list).reject { |run| @forms.include?(run.join(" ")) }.flatten
+
+    def number_runs(list) = runs(list).select { |run| number_word?(run.first) }
+
+    def runs(list)
+      list.reject.with_index { |word, i| word == "and" && i.positive? && %w[hundred thousand].include?(list[i - 1]) }
+          .chunk_while { |one, two| number_word?(one) == number_word?(two) }.to_a
     end
 
     def number_word?(word) = word.match?(/\A\d+\z/) || ONES.include?(word) || TENS.include?(word) || %w[oh hundred thousand].include?(word)

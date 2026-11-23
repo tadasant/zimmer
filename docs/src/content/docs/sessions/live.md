@@ -844,7 +844,7 @@ Claude reads the thread and the request as text; no audio goes to Anthropic.
 
 GPT-Live and Claude do not share a script: Claude makes the tool calls, GPT-Live says its own words
 between them, and a line of either side ends wherever the other starts, sometimes mid-sentence. Each
-finished line is posted to `turns` in the order it was said, one at a time (a line waits at most three
+finished line is posted to `turns` in the order it was said, one at a time (a line waits at most two
 seconds for the one before it), so the recorded thread keeps the spoken order across a slow network. A
 line can still land after a tool call that answers it.
 

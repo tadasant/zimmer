@@ -15,8 +15,8 @@ module LiveConversations
   #    off its own record (Sessions::PrSummary, the button's source), refuses
   #    anything the button would refuse, and composes one short question.
   # 2. **Confirm** — `authorize_merge(session_id, confirm: true)`, once the
-  #    person has answered. A yes already given merges on either call; nothing
-  #    hands out a second question while one stands.
+  #    person has answered. A yes already given merges on either call, so a
+  #    clear one is never answered with another question.
   #
   # == What is checked, and what is not
   #
@@ -29,31 +29,33 @@ module LiveConversations
   # * the conversation is one nothing unvouched-for has written into
   #   (HumanMessageCapture.live_mode_taint), and every line the person said since
   #   the question is one signed-in person's;
-  # * one of those lines is a clear yes, under CONFIRM_WINDOW old, that no
-  #   earlier sign-off used up, and that did not answer something else the
-  #   assistant had just offered;
-  # * none of them is a refusal, and none after the yes takes it back;
+  # * one of those lines is a clear yes, under CONFIRM_WINDOW old, that no merge
+  #   sent since has used up, and that did not answer something else the
+  #   assistant had just offered. An "okay" counts only to a line about merging;
+  # * none of them is a refusal, and everything after the yes is another yes,
+  #   filler or moving on;
   # * merging came up aloud around then, so a question that was never spoken
   #   cannot be answered by a yes to the weather.
   #
   # Not checked: how the assistant worded its question, whether its transcript
-  # spells the number, whether its line was cut off, and what order the lines
-  # were recorded in. On a voice call the model that speaks (GPT-Live) is not the
-  # model that calls this function (Claude), its lines break wherever the person
-  # talks over them, and each is posted on a request of its own. A gate on those
-  # lines held while one model did both (OpenAI Realtime) and refused every merge
-  # confirmed on GPT-Live (docs: sessions/hierarchy-and-human-messages, "Merging
-  # by voice").
+  # spells the number, whether its line was cut off, and what order its lines
+  # were recorded in. On a GPT-Live call the model that speaks is not the model
+  # that calls this function (Claude), its lines break wherever the person talks
+  # over them, and each is posted on a request of its own, so a gate on those
+  # lines refuses yeses nobody would mistake
+  # (docs: sessions/hierarchy-and-human-messages, "Merging by voice").
   #
-  # == A yes before the question
+  # == A yes nobody has called a confirmation
   #
-  # People answer "want to merge it?" before any of this is called. When the
-  # last session Zimmer showed the conversation (`get_session`) is the one
-  # holding the PR, with the PR in what it showed, and the person's newest words
-  # are a yes to the assistant asking to merge, or "merge it" itself, that is the
-  # yes (#already_said_yes). The binding is Zimmer's record from before they
-  # spoke, like a question's; what is missing is only the second ask. Anything
-  # short of that gets the one question.
+  # People answer "want to merge it?" before any of this is called, and a model
+  # whose confirm did not land starts over. Either way the first call is not a
+  # claim that the person said yes, so it merges only where the recorded line
+  # they answered asks for the merge. Before any question, the last session
+  # Zimmer showed the conversation (`get_session`) must also be the one holding
+  # the PR, with the PR in what it showed, and the person's words the answer to a
+  # bare "merge it?", or "merge it" itself (#already_said_yes). The binding is
+  # Zimmer's record from before they spoke, like a question's. Anything short of
+  # that gets the one question.
   #
   # Only then does it send the merge authorization to the session holding the
   # PR, and record the person's words there as a `live_mode` HumanMessage
@@ -102,7 +104,7 @@ module LiveConversations
     TALK_BEFORE = 2.minutes
     # How long a confirm waits for an answer still on its way: a voice call posts
     # the line and the delegation that acts on it side by side.
-    ANSWER_GRACE = 3.seconds
+    ANSWER_GRACE = 4.seconds
     ANSWER_POLL = 0.25
 
     # Words of the session's title said beside the PR: enough to recognise it.
@@ -152,17 +154,9 @@ module LiveConversations
     # @return [String] what the model is told
     # @raise [Refused] with what the model should tell the person
     def call(args)
-      session = find_session!(args["session_id"])
-      summary = Sessions::PrSummary.for(session)
-      confirming = truthy?(args["confirm"])
-      requested = args["pr_url"].to_s.strip.presence
-      return remote(session, requested, confirming) if requested && requested != summary.url
-
-      if (reason = summary.merge_blocked_reason)
-        raise Refused, "Cannot merge from session #{session.id}: #{reason} Tell the person."
-      end
-
-      local(session, summary.url, confirming)
+      # A wait re-reads within one request, which would otherwise be answered
+      # from its query cache.
+      ActiveRecord::Base.uncached { authorize(args) }
     end
 
     # The read-back for a PR a session on another Zimmer holds: the same
@@ -220,6 +214,20 @@ module LiveConversations
 
     private
 
+    def authorize(args)
+      session = find_session!(args["session_id"])
+      summary = Sessions::PrSummary.for(session)
+      confirming = truthy?(args["confirm"])
+      requested = args["pr_url"].to_s.strip.presence
+      return remote(session, requested, confirming) if requested && requested != summary.url
+
+      if (reason = summary.merge_blocked_reason)
+        raise Refused, "Cannot merge from session #{session.id}: #{reason} Tell the person."
+      end
+
+      local(session, summary.url, confirming)
+    end
+
     # A yes Zimmer may act on.
     #
     # `question`: the tool turn of the question they answered, or nil for a yes
@@ -238,12 +246,13 @@ module LiveConversations
         return "Already authorized: session #{session.id} has been told to merge #{pr_url}. Tell the person."
       end
 
+      let_an_answer_land(session, pr_url) if confirming
       refuse_tainted!
       asked = questions(session, pr_url)
       names = [ repo_name(pr_url), self.class.spoken_title(session).to_s ]
-      yes = asked.any? ? answer_to(asked, session, pr_url, names, wait: confirming) : already_said_yes(session, pr_url, names)
+      yes = asked.any? ? answer_to(asked, pr_url, names, confirming) : already_said_yes(session, pr_url, names)
       return merge(session, pr_url, yes) if yes.is_a?(Confirmation)
-      return refuse!(yes || not_asked(session), session, confirming: true) if confirming
+      return refuse!(yes || not_asked(session), session) if confirming
 
       report_asked_again(session, asked, yes)
       prepare(session, pr_url)
@@ -287,19 +296,16 @@ module LiveConversations
     # Whether the person has said a clear yes since the first of `asked`, the
     # standing questions for this PR.
     #
+    # @param confirming [Boolean] whether the model says they did
     # @return [Confirmation, Unanswered]
-    def answer_to(asked, session, pr_url, names, wait: false)
+    def answer_to(asked, pr_url, names, confirming)
       latest = asked.last
       if latest.created_at < @now - QUESTION_WINDOW
         return Unanswered.new(code: :old_question, heard_yes: false,
                               message: "the question was more than #{QUESTION_WINDOW.inspect} ago. Call #{NAME} again without confirm and ask once.")
       end
 
-      lines = lines_after(start_of(asked, session))
-      if wait && lines.none?(&:user?)
-        lines = wait_for_an_answer(asked, session)
-        refuse_tainted!
-      end
+      lines = lines_after(start_of(asked))
       said = lines.select(&:user?)
       if said.empty?
         return Unanswered.new(code: :silent, heard_yes: false,
@@ -325,16 +331,16 @@ module LiveConversations
                               message: "#{quoted(said.last)} is not a clear yes. If it was a no, leave it. If you are not sure, ask " \
                                        "what they meant, once, then call with confirm true.")
       end
-      if (undone = said.find { |turn| turn.id > yeses.last.id && readings[turn].takes_back? })
+      if (undone = said.find { |turn| turn.id > yeses.last.id && !readings[turn].neutral? })
         return Unanswered.new(code: :takes_back, heard_yes: false,
                               message: "after their yes the person said #{quoted(undone)}. Do what that asks. If they still want it " \
                                        "merged now, call #{NAME} again without confirm and ask once.")
       end
 
-      answers = yeses.select { |turn| subject_kept?(turn, lines, reader, readings[turn]) }
+      answers = yeses.select { |turn| answers_the_merge?(turn, lines, reader, readings, confirming) }
       if answers.empty?
         return Unanswered.new(code: :other_question, heard_yes: true,
-                              message: "just before their yes you offered or asked something else, so it may answer that. Ask once " \
+                              message: "what you said just before their yes was not asking to merge, so it may answer that. Ask once " \
                                        "whether to merge pull request #{self.class.pr_number(pr_url)}, and nothing else.")
       end
       if answers.last.created_at < @now - CONFIRM_WINDOW
@@ -360,7 +366,7 @@ module LiveConversations
       return nil if words.declined
 
       run = words.turns
-      return nil if run.last.created_at < @now - EARLY_YES_WINDOW || run.first.id <= last_merged_id(session)
+      return nil if run.last.created_at < @now - EARLY_YES_WINDOW || run.first.id <= last_merged_id
 
       shown = last_session_shown(before: run.first.id)
       return nil unless shown && shown.created_at >= @now - QUESTION_WINDOW && shows?(shown, session, pr_url)
@@ -373,13 +379,14 @@ module LiveConversations
 
       reader = MergeAnswer.new(number: self.class.pr_number(pr_url), names: names)
       readings = run.map { |turn| reader.answer(turn.content) }
-      return nil if readings.any? { |reading| reading.no? || reading.takes_back? } || !readings.last.yes?
+      yes = run.zip(readings).reverse.find { |_, reading| reading.yes? }
+      return nil unless yes&.last&.strong && readings.all? { |reading| reading.yes? || reading.neutral? }
 
       aloud = heard.map(&:content).join(" ")
-      return nil if reader.changes_subject?(aloud, readings.last)
-      return nil unless MergeAnswer.asks_to_merge?(aloud) || MergeAnswer.says_merge?(run.last.content)
+      return nil if reader.changes_subject?(aloud, yes.last)
+      return nil unless MergeAnswer.asks_only_to_merge?(aloud) || MergeAnswer.says_merge?(yes.first.content)
 
-      confirmation([ run.last ], earlier, question: nil)
+      confirmation([ yes.first ], earlier, question: nil)
     end
 
     def confirmation(answers, lines, question:)
@@ -390,11 +397,22 @@ module LiveConversations
                        answer: answers.map(&:content).join(" ").squish)
     end
 
-    # Whether nothing the assistant said since the person last spoke gives this
-    # yes something else to be about.
-    def subject_kept?(turn, lines, reader, reading)
-      heard = lines.take_while { |line| line.id < turn.id }.reverse.take_while { |line| !line.user? }
-      heard.none? { |line| reader.changes_subject?(line.content, reading) }
+    # Whether this yes is to the merge, going by the assistant's lines before it:
+    # back to the newest that is about the merge or about something else, and no
+    # further than the person's last plain answer. A clear yes needs only that
+    # none is about something else. An "okay", or a yes the model is not calling
+    # a confirmation, needs one that asks.
+    def answers_the_merge?(turn, lines, reader, readings, confirming)
+      lines.take_while { |line| line.id < turn.id }.reverse_each do |line|
+        if line.user?
+          break unless %i[unclear neutral].include?(readings[line].kind)
+        elsif reader.changes_subject?(line.content, readings[turn])
+          return false
+        elsif MergeAnswer.asks?(line.content)
+          return true
+        end
+      end
+      confirming && readings[turn].strong
     end
 
     # Whether merging came up aloud, by either of them, around the question or
@@ -405,32 +423,29 @@ module LiveConversations
     end
 
     # The answer may still be on its way to Zimmer when the model acts on it.
-    def wait_for_an_answer(asked, session)
-      lines = []
+    def let_an_answer_land(session, pr_url)
+      return unless @conversation.voice?
+
       (ANSWER_GRACE / ANSWER_POLL).to_i.times do
-        break unless @conversation.voice?
+        asked = questions(session, pr_url)
+        break if asked.empty? || lines_after(start_of(asked)).any?(&:user?)
 
         pause
-        lines = lines_after(start_of(asked, session))
-        break if lines.any?(&:user?)
       end
-      lines
+      @conversation.reload
     end
 
     def pause = sleep(ANSWER_POLL)
 
     def spoken = @conversation.turns.where(role: %w[user assistant])
 
-    # Uncached: a wait re-reads within one request.
-    def lines_after(id) = ActiveRecord::Base.uncached { spoken.where("id > ?", id).reorder(:id).to_a }
+    def lines_after(id) = spoken.where("id > ?", id).reorder(:id).to_a
 
-    # A yes that already sent a merge is spent, so one that came back unmerged is
-    # asked about again.
-    def start_of(asked, session) = [ asked.first.id, last_merged_id(session) ].max
+    # A yes is spent by the merge it sent, whichever PR that was: one that came
+    # back unmerged, and the next PR, are asked about.
+    def start_of(asked) = [ asked.first.id, last_merged_id ].max
 
-    def last_merged_id(session)
-      merge_calls.limit(20).find { |turn| called_session_id(turn) == session.id && turn.tool_output.to_s.match?(MERGED) }&.id.to_i
-    end
+    def last_merged_id = merge_calls.limit(20).find { |turn| turn.tool_output.to_s.match?(MERGED) }&.id.to_i
 
     def merge_calls = @conversation.turns.where(role: "tool", tool_name: NAME, tool_error: false).reorder(id: :desc)
 
@@ -473,7 +488,7 @@ module LiveConversations
                      "person, and that the Merge button in the Zimmer app works."
     end
 
-    def refuse!(unanswered, session, confirming:)
+    def refuse!(unanswered, session)
       report("Live Mode refused a merge the person had said yes to", session, unanswered.code) if unanswered.heard_yes
       raise Refused, "Not merging: #{unanswered.message}"
     end
@@ -483,7 +498,7 @@ module LiveConversations
     # me" looks like from here, whatever the reason turns out to be.
     def report_asked_again(session, asked, yes)
       return if asked.empty? || %i[no takes_back].include?(yes.code) || asked.last.created_at < @now - QUESTION_WINDOW
-      return unless spoken.where(role: "user").where("id > ?", start_of(asked, session)).exists?
+      return unless spoken.where(role: "user").where("id > ?", start_of(asked)).exists?
 
       report("Live Mode asked for the same merge more than once", session, :asked_again)
     end
@@ -499,9 +514,10 @@ module LiveConversations
     # --- A PR another Zimmer holds ---------------------------------------------
 
     def remote(session, pr_url, confirming)
+      let_an_answer_land(session, pr_url) if confirming
       refuse_tainted!
       asked = questions(session, pr_url)
-      yes = asked.any? ? answer_to(asked, session, pr_url, remote_names(asked.last, pr_url), wait: confirming) : not_asked(session)
+      yes = asked.any? ? answer_to(asked, pr_url, remote_names(asked.last, pr_url), confirming) : not_asked(session)
       return merge_remote(session, pr_url, yes, confirming) if yes.is_a?(Confirmation)
 
       remote, target = remote_target!(session, pr_url) unless confirming && yes.code != :not_asked
@@ -509,7 +525,7 @@ module LiveConversations
       # the holding session comes back to rest without merging, so a yes can
       # be given again after a merge that did not happen.
       return already_remote(remote, target, pr_url) if target&.merge_authorized_at
-      return refuse!(yes, session, confirming: true) if confirming
+      return refuse!(yes, session) if confirming
 
       report_asked_again(session, asked, yes)
       prepare_remote(session, pr_url, remote, target)
@@ -679,7 +695,7 @@ module LiveConversations
         run.unshift(turn)
       end
       # A merge was sent since: whatever was asked before it is settled.
-      run.reject { |turn| turn.id < last_merged_id(session) }
+      run.reject { |turn| turn.id < last_merged_id }
     end
 
     def undone_between?(earlier, later, pr_url)

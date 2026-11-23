@@ -5404,22 +5404,30 @@ The [voice Merge](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_
 (`authorize_merge`) establishes who said yes, when, and which PR Zimmer named. It does not establish
 what the person heard. The model chooses its own words, on a GPT-Live call the transcript of them is cut
 and recorded out of order, and a gate on that transcript refused every merge confirmed there. So a model
-steered by text it read mid-call could have Zimmer name a PR, ask about something else in words Zimmer
-does not recognise as another offer, and pass on the yes. What stands in its way: the yes is a person's,
-fresh, in a conversation no agent wrote into; merging has to have come up aloud, though possibly from
-before the question or about another PR; an offer of another action or another PR's number just before
-the yes is recognised from a word list; and a no, a condition or a correction stops it. A yes to the
-weather merges nothing only because nobody mentioned merging.
+that has Zimmer name one PR, talks about something else, and reports the yes as a confirmation can get a
+merge the person did not mean. It need not be steered by anything: a plain mistake does it. What stands
+in the way: the yes is a person's, fresh, spent by one merge, in a conversation no agent wrote into;
+merging has to have come up aloud, though possibly from before the question or about another PR; an
+"okay" needs a recorded line asking to merge just before it; an offer of another action, or another PR's
+number after "merge", "ship", "land" or "approve", is recognised from a word list just before the yes; and
+anything the person says after it that is not a yes, filler or moving on stops it. The word list has gaps:
+"want to merge the docs one?" names no number. It counts only when the model then confirms the
+wrong session.
 
 A yes before any question is bound by the last session Zimmer showed the model, not by a number the
 person heard. A model that opened one session and talked about another would merge the one it opened.
 
 Whether the person said yes is still read from words: an assent, and every other word one that goes with
 it. A yes the transcript garbled ("Yet proved") is not one, and is asked about. "Yes, and bump the
-version" is not one either. A refusal word anywhere since the question, even about something else
-("no other questions"), or a condition after the yes ("ask what happened after the restart"), costs
-one more question. The session's title, up to eight words of it, adds to the words that may sit beside
-an assent.
+version" is not one either. A refusal word anywhere since the question, even about something else ("no
+other questions"), or an unrelated remark after the yes and before the merge, costs one more question. The
+session's title, up to eight words of it, adds to the words that may sit beside an assent. A line with
+anything beyond ASCII and a transcript's own punctuation is not read as a yes, so a yes in another script
+is not one.
+
+A confirm that reaches Zimmer before the person's answer waits up to four seconds for it, holding a web
+thread. A line that takes longer than that to arrive is refused as no answer, and the model is told to wait
+rather than ask again.
 
 A local merge is not pinned to a commit, as the button's is not: a push between the question and the
 merge, up to thirteen minutes, is covered by the yes if the PR is still open and green.

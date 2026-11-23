@@ -53,7 +53,7 @@ const HEARD_IDLE_MS = 600
 // GPT-Live is not answering, so the call goes back to listening, quietly.
 const ANSWER_GRACE_MS = 8000
 // The longest a finished line waits for the one before it to be recorded.
-const RECORD_PATIENCE_MS = 3000
+const RECORD_PATIENCE_MS = 2000
 // A long call's seconds are reported as it goes, so a tab that dies takes at
 // most this much unreported time with it.
 const SESSION_REPORT_MS = 60000
@@ -305,11 +305,12 @@ export class GptLiveCall {
   }
 
   // One at a time and in the order said: sent side by side, a question can be
-  // recorded after its answer (live conversation 43). A line waits at most
+  // recorded after its answer. A line waits at most
   // RECORD_PATIENCE_MS for the one before it.
   recordTurn(role, content) {
     const send = () => this.post(this.urls.turns, { role, content }).catch(() => {})
-    const previous = this.recording
+    // The call is over, and the page may be going: nothing waits.
+    const previous = this.ended ? null : this.recording
     const recording = previous
       ? Promise.race([ previous, new Promise((resolve) => setTimeout(resolve, RECORD_PATIENCE_MS)) ]).then(send)
       : send()
