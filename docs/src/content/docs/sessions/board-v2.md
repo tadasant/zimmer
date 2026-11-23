@@ -22,17 +22,29 @@ Deleting a category moves its sessions to Uncategorized. Nothing else about them
 
 | Do | How |
 | --- | --- |
-| Put a session in a category | Drag the card by its handle (the dots to its left) into the category. Drag it into Uncategorized to take it out. |
+| Put a session in a category | Drag the card by its grip, the grey tab down its left edge. While you drag, a **Drop on a category** bar appears at the bottom of the screen with every category and Uncategorized in it: drop the card on one. You can also drop it straight onto a category's own list. Drop it on Uncategorized to take it out. |
 | Reorder categories | Drag a category by the handle in its header. |
 | Collapse a category | The chevron in its header. Stored on the category, so it stays collapsed across reloads and devices. |
 | Snooze or backlog a category | The **Snooze** button in its header. See below. |
 
 Every session is drawn as the **Last Touched** card — the same partial, not a copy — with the drag
-handle beside it. So a card on v2 shows what it shows on Last Touched (status, title, agent root,
+grip beside it. So a card on v2 shows what it shows on Last Touched (status, title, agent root,
 genesis and class, cost, PR link) and has the same controls: Snooze and backlog in its **⋯** menu,
 Trash with Undo, and View. Your board's heavier row (the status summary, its freshness line, CarPlay
 fit, Merge, the precedence readout) is not on v2. Inside a category the cards wrap into the Last
 Touched grid, so a wide screen shows several side by side and a phone shows one column.
+
+### Why the drop bar
+
+Cards are tall, and Uncategorized is drawn first, so on a busy board most categories start
+several screens below the card you want to move. Carrying a card that far means holding it at the
+edge of the screen while the page scrolls, which on a phone is close to impossible. The bar puts
+every category within one short drag of wherever the card started. It is shown only while a card
+is in hand, and lists the categories that are on the board: a snoozed or backlogged category is not
+in it until you wake it.
+
+The grip takes the touch for the drag rather than for scrolling, so on a phone or tablet: press the
+grip, hold for a moment, then drag. Anywhere else on the card scrolls the page as usual.
 
 ## The order inside a category
 

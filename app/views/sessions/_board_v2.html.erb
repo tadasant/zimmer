@@ -25,8 +25,10 @@
     <div class="min-w-0 flex-1 basis-64">
       <h2 class="text-lg font-semibold text-gray-800">Your board v2</h2>
       <p class="mt-0.5 text-sm text-gray-500">
-        The same sessions as Your board, in categories you make. Drag a card by its handle into a
-        category. Inside each one the session you touched most recently is on top. Drag a
+        The same sessions as Your board, in categories you make. To move a session, drag its card by
+        the grey grip on its left edge. While you drag, every category shows up in a bar at the bottom
+        of the screen; drop the card on one. Inside each category the session you touched most
+        recently is on top. Drag a
         category's header to reorder categories. Snoozing a category takes it and everything in it
         off this board until then; it never changes when a session runs.
       </p>
@@ -54,6 +56,35 @@
     <% board.sections.each do |section| %>
       <%= render "sessions/board_v2_group", category: section.category, sessions: section.sessions %>
     <% end %>
+  </div>
+
+  <%# The drop bar. Shown only while a card is being dragged, pinned to the
+      bottom of the screen, with one target per group the card can go to. A
+      board of tall cards puts most categories screens away from the card in
+      hand, and holding a drag at the screen's edge while the page scrolls is
+      no way to file a session on a phone. Here every category is within reach
+      wherever the card started.
+
+      The targets are plain elements: board-v2 follows the pointer while a card
+      is in hand, lights up the target under it, and on release moves the card
+      into that category's real list and saves it. %>
+  <%# z-[70]: above the chat bubble (z-[60]–[67]), which sits in the same
+      corner; the bar is only on screen for the length of a drag. %>
+  <div class="pointer-events-none fixed inset-x-0 bottom-0 z-[70] hidden px-2 pb-12 sm:px-6"
+       data-board-v2-target="tray">
+    <div class="pointer-events-auto mx-auto max-w-4xl rounded-lg border border-indigo-200 bg-white p-3 shadow-xl">
+      <p class="mb-2 text-xs font-semibold text-gray-600">Drop on a category</p>
+      <div class="flex max-h-[40vh] flex-wrap gap-2 overflow-y-auto">
+        <% [ nil, *board.sections.map(&:category) ].each do |category| %>
+          <div class="relative flex min-h-[2.75rem] min-w-[7rem] max-w-full items-center rounded-md border-2 border-dashed border-gray-300 bg-gray-50 px-3 text-sm font-medium text-gray-700"
+              data-board-v2-target="dropZone"
+              data-board-v2-drop-zone
+              data-category-id="<%= category&.id %>">
+            <span class="truncate"><%= category ? category.name : "Uncategorized" %></span>
+          </div>
+        <% end %>
+      </div>
+    </div>
   </div>
 
   <% if board.tucked.any? %>

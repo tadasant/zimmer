@@ -10,6 +10,13 @@ import { csrfHeaders } from "lib/csrf"
 //   * a row dragged into another group — writes the session's category
 //     (PATCH /sessions/:id/board_category). Within a group a drag does nothing:
 //     the order there is most recently touched first, and the row settles back.
+//     While a row is in hand the drop bar (`tray`) is shown, pinned to the
+//     bottom of the screen with one target (`dropZone`) per group, so a
+//     category three screens away is still one short drag away. The targets
+//     are plain elements, not SortableJS lists: this controller follows the
+//     pointer while a row is in hand, lights up the target under it, and on
+//     release moves the row into that group's real list. (SortableJS's own
+//     touch path never put a row into a list inside the fixed bar.)
 //   * a category header dragged — writes the order of every category
 //     (PATCH /board_categories/reorder).
 //   * a category's chevron — collapses or expands it, and stores that on the
@@ -25,7 +32,7 @@ import { csrfHeaders } from "lib/csrf"
 export default class extends Controller {
   // `row` and `handle` are declared for the row partial, which names them; the
   // controller reads them through selectors.
-  static targets = ["list", "categories", "category", "total", "error", "row", "handle"]
+  static targets = ["list", "categories", "category", "total", "error", "row", "handle", "tray", "dropZone"]
   static values = {
     assignUrlTemplate: String,
     reorderUrl: String,
@@ -51,6 +58,7 @@ export default class extends Controller {
 
   disconnect() {
     if (this.categorySortable) this.categorySortable.destroy()
+    this.showTray(false)
   }
 
   // One Sortable and one observer per group's list, set up as each list
@@ -70,12 +78,18 @@ export default class extends Controller {
       delayOnTouchOnly: true,
       handle: "[data-board-v2-target='handle']",
       forceFallback: true,
+      fallbackClass: "board-v2-fallback",
       fallbackTolerance: 3,
       fallbackOnBody: true,
-      onStart: () => { this.dragging = true },
+      onStart: () => {
+        this.dragging = true
+        this.showTray(true)
+      },
       onEnd: (event) => {
         this.dragging = false
-        this.persistMove(event)
+        const zone = this.hoveredZone
+        this.showTray(false)
+        this.persistMove(event, zone)
       }
     })
 
@@ -95,12 +109,70 @@ export default class extends Controller {
     if (list.boardV2Observer) list.boardV2Observer.disconnect()
   }
 
+  // ---- The drop bar --------------------------------------------------------
+
+  showTray(shown) {
+    if (!this.hasTrayTarget) return
+    this.trayTarget.classList.toggle("hidden", !shown)
+    if (shown) {
+      this.trackPointer = (event) => this.hover(event)
+      for (const type of ["pointermove", "mousemove", "touchmove"]) {
+        document.addEventListener(type, this.trackPointer, { passive: true, capture: true })
+      }
+    } else if (this.trackPointer) {
+      for (const type of ["pointermove", "mousemove", "touchmove"]) {
+        document.removeEventListener(type, this.trackPointer, { capture: true })
+      }
+      this.trackPointer = null
+      this.highlight(null)
+    }
+  }
+
+  // The target under the pointer, if any, lit up; remembered for the drop.
+  hover(event) {
+    const point = event.touches ? event.touches[0] : event
+    if (!point) return
+    const hit = document.elementFromPoint(point.clientX, point.clientY)
+    const zone = hit && hit.closest("[data-board-v2-drop-zone]")
+    this.highlight(zone && this.element.contains(zone) ? zone : null)
+  }
+
+  highlight(zone) {
+    this.hoveredZone = zone
+    // Swapped in pairs rather than layered, so no two colours compete.
+    const pairs = [
+      ["border-dashed", "border-solid"],
+      ["border-gray-300", "border-indigo-500"],
+      ["bg-gray-50", "bg-indigo-50"],
+      ["text-gray-700", "text-indigo-800"]
+    ]
+    this.dropZoneTargets.forEach((target) => {
+      const on = target === zone
+      for (const [off, lit] of pairs) {
+        target.classList.toggle(off, !on)
+        target.classList.toggle(lit, on)
+      }
+    })
+  }
+
+  // The row list of a group: a category's, or Uncategorized's for "".
+  listFor(categoryId) {
+    return this.listTargets.find((list) => (list.dataset.categoryId || "") === (categoryId || ""))
+  }
+
   // ---- Moving a session between groups -------------------------------------
 
-  persistMove(event) {
+  persistMove(event, zone = null) {
     const row = event.item
     const from = event.from
-    const to = event.to
+    let to = event.to
+    // Released over the drop bar: into that group's own list, wherever
+    // SortableJS had last put the row behind it.
+    const zoneList = zone && this.listFor(zone.dataset.categoryId)
+    if (zoneList) {
+      zoneList.appendChild(row)
+      to = zoneList
+    }
     if (from === to) {
       // A drag inside one group: put the row back where the order says.
       this.sortList(to)
