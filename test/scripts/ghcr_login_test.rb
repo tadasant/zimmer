@@ -23,8 +23,12 @@ class GhcrLoginTest < ActiveSupport::TestCase
 
   # A fake `docker` with the given body, plus a no-op `sleep`, ahead of the real ones.
   # The stub records every invocation so a test can count attempts rather than infer them.
+  # It drains stdin first, as `docker login --password-stdin` does: a stub that exits before
+  # the script's `printf` has written the password kills that `printf` with SIGPIPE, and under
+  # `pipefail` a successful login then counts as a failed attempt.
   def stub_bin(dir, docker_body)
     docker = <<~SH
+      cat > /dev/null
       echo "$@" >> "$LOG"
       #{docker_body}
     SH
