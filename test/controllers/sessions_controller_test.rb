@@ -1896,6 +1896,34 @@ class SessionsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/Session restored from trash\. Ready to continue\./, response.body)
   end
 
+  test "unarchive turbo_stream puts the follow-up composer back" do
+    # The trash is the one status with no composer, so the restore has to bring
+    # it back itself — without this stream the composer only appeared on reload.
+    session = Session.create!(
+      git_root: "https://github.com/test/repo.git",
+      prompt: "Investigate the flaky test",
+      status: :archived,
+      archived_at: 1.hour.ago
+    )
+
+    post unarchive_session_url(session), as: :turbo_stream
+
+    assert_response :success
+    assert_equal "needs_input", session.reload.status
+    assert_match(/<turbo-stream\s+action="replace"\s+target="session_#{session.id}_follow_up_form"/, response.body)
+    assert_includes response.body, %(id="session_#{session.id}_follow_up_textarea")
+  end
+
+  test "an archived session's page keeps the composer's target for the restore to land on" do
+    session = sessions(:archived)
+
+    get session_url(session)
+
+    assert_response :success
+    assert_select "#session_#{session.id}_follow_up_form[hidden][data-live-region=replace]", count: 1
+    assert_select "#session_#{session.id}_follow_up_textarea", count: 0
+  end
+
   # zimmer#557: the web UI's Restore button runs the same code as the MCP
   # "unarchive" action, and a session archived before its agent process ever
   # launched failed on both with "Failed to restore: Session has no session_id".

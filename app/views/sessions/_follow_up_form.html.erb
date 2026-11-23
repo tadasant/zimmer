@@ -1,4 +1,11 @@
-<% unless agent_session.archived? %>
+<% if agent_session.archived? %>
+  <%# No composer in the trash, but the element stays. Restore swaps the composer
+      in by replacing this id — from #unarchive's own reply, from
+      Session#broadcast_follow_up_form, and from the live-region backfill — and a
+      replace whose target is missing is a silent no-op, so without this the
+      composer only appeared after a reload. %>
+  <div id="session_<%= agent_session.id %>_follow_up_form" data-live-region="replace" hidden></div>
+<% else %>
   <%# Whether the composer queues rather than sends. `Sessions::LiveTurn.underway?`
       and not `agent_session.running?`: since #1040 a turn that has been handed
       over but is still waiting for one of the `agents` lane's worker threads reads
