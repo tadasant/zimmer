@@ -158,6 +158,8 @@ Rails.application.routes.draw do
     # Read-only: a chunk is one slice of an append-only transcript, and editing one
     # through a generic form would corrupt the conversation rather than repair it.
     resources :session_transcript_chunks, only: [ :index, :show ]
+    # Read-only: a row says verified bytes are in object storage, which an edit cannot make true.
+    resources :transcript_copies, only: [ :index, :show ]
     resources :trigger_conditions
     resources :triggers
     # The roster of named humans. Full CRUD: this is where a Slack user ID is

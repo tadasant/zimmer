@@ -37,6 +37,15 @@ class HealthMonitorService
   # first backlog, which really is behind.
   LOG_RETENTION_OVERDUE_GRACE = 7.days
 
+  # How long a backlog may go without a single verified copy before
+  # transcript_storage_health says so: six ticks of TranscriptCopyJob.
+  TRANSCRIPT_COPY_STALL = 1.hour
+  TRANSCRIPT_COUNTS_TTL = 3.minutes
+  TRANSCRIPT_COUNTS_OFF = {
+    copied_sessions: 0, copied_bytes: 0, compressed_bytes: 0, conversation_measured_bytes: 0, conversation_bytes: 0,
+    awaiting_copy: 0, oldest_awaiting_since: nil, set_aside: 0, failing: 0, last_verified_at: nil
+  }.freeze
+
   # The database's disk, which the app cannot see on a managed cluster, so a deploy
   # states it. Unset means database_size_health reports sizes and never warns.
   DATABASE_CAPACITY_ENV = "DATABASE_CAPACITY_GIB"
@@ -385,6 +394,8 @@ class HealthMonitorService
       # Absent from the status list below on purpose — see #log_retention_health
       # for why a draining backlog must not turn the whole report yellow.
       log_retention_health: log_retention_health,
+      # Also absent — see #transcript_storage_health.
+      transcript_storage_health: transcript_storage_health,
       # Also absent — see #database_size_health.
       database_size_health: database_size_health,
       # Also absent from the status list — see #inbound_event_health.
@@ -780,6 +791,28 @@ class HealthMonitorService
     }
   end
 
+  # How far TranscriptCopyJob has got copying old transcripts to object storage.
+  #
+  # Off is healthy: a deployment with no bucket copies nothing, and nothing is counted. A
+  # bucket that is half configured warns, and so does a session that keeps failing, and a
+  # backlog with nothing copied in an hour. Not folded into `overall_status`: no session is
+  # affected, and nothing is deleted on the strength of these copies.
+  #
+  # The counts are held for a few minutes. They walk every archived session and this is
+  # read every thirty seconds for as long as a health page is open.
+  def transcript_storage_health
+    storage = TranscriptStorage.configuration
+    counts = storage.off? ? TRANSCRIPT_COUNTS_OFF : transcript_copy_counts(storage.bucket)
+    { configured: storage.configured?, bucket: storage.bucket, copy_after_days: TranscriptCopyJob.copy_after_days,
+      **counts, status: transcript_storage_status(storage, counts) }
+  rescue StandardError => e
+    @logger.warn("Transcript storage health could not be read", error: e.message)
+    {
+      configured: false, bucket: nil, **TRANSCRIPT_COUNTS_OFF,
+      status: HealthStatus.new(status: :warning, message: "Transcript storage status could not be read: #{e.message}")
+    }
+  end
+
   # How big the database is, how much of that is in use, and which tables make it so.
   #
   # Production's managed Postgres ran low on disk with nothing in Zimmer saying so:
@@ -939,6 +972,43 @@ class HealthMonitorService
 
     count = reltuples.to_i
     count.negative? ? nil : count
+  end
+
+  def transcript_copy_counts(bucket)
+    Rails.cache.fetch([ "health", "transcript_copies", bucket ], expires_in: TRANSCRIPT_COUNTS_TTL) do
+      copies = TranscriptCopy.where(bucket: bucket)
+      sums = copies.pick(
+        Arel.sql("COUNT(DISTINCT session_id)"), Arel.sql("COALESCE(SUM(transcript_byte_size), 0)"),
+        Arel.sql("COALESCE(SUM(transcript_compressed_bytes), 0)"),
+        Arel.sql("COALESCE(SUM(transcript_byte_size) FILTER (WHERE conversation_byte_size IS NOT NULL), 0)"),
+        Arel.sql("COALESCE(SUM(conversation_byte_size), 0)")
+      )
+      waiting, oldest = TranscriptCopyJob.candidates(bucket: bucket).pick(Arel.sql("COUNT(*)"), Arel.sql("MIN(sessions.archived_at)"))
+      {
+        copied_sessions: sums[0], copied_bytes: sums[1].to_i, compressed_bytes: sums[2].to_i,
+        conversation_measured_bytes: sums[3].to_i, conversation_bytes: sums[4].to_i,
+        awaiting_copy: waiting, oldest_awaiting_since: oldest && oldest + TranscriptCopyJob.copy_after_days.days,
+        set_aside: TranscriptCopyJob.skipped.count, failing: TranscriptCopyJob.failing.count,
+        last_verified_at: copies.maximum(:verified_at)
+      }
+    end
+  end
+
+  def transcript_storage_status(storage, counts)
+    return HealthStatus.new(status: :healthy, message: "Off: no transcript storage bucket is configured") if storage.off?
+    return HealthStatus.new(status: :warning, message: "Not copying: #{storage.problem}") unless storage.configured?
+
+    waiting = counts[:awaiting_copy]
+    stalled_since = TRANSCRIPT_COPY_STALL.ago
+    if waiting.positive? && counts[:oldest_awaiting_since] < stalled_since &&
+       (counts[:last_verified_at].nil? || counts[:last_verified_at] < stalled_since)
+      return HealthStatus.new(status: :warning, message: "#{waiting} transcript(s) waiting and none copied in the last hour")
+    end
+    if counts[:failing].positive?
+      return HealthStatus.new(status: :warning, message: "#{counts[:failing]} transcript(s) could not be copied and will be retried")
+    end
+
+    HealthStatus.new(status: :healthy, message: "#{waiting} transcript(s) waiting to be copied to #{storage.bucket}")
   end
 
   # [bytes on disk, one row per table in the current schema, largest first]

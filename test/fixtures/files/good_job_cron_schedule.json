@@ -185,6 +185,11 @@
       "class": "LogRetentionJob",
       "description": "Delete log rows past their retention window, so the logs table is bounded by time rather than by fleet activity"
     },
+    "transcript_copy": {
+      "cron": "5-59/10 * * * *",
+      "class": "TranscriptCopyJob",
+      "description": "Copy transcripts of sessions archived a week ago to object storage, verified; deletes nothing and is off until a bucket is configured"
+    },
     "root_data_retention": {
       "cron": "35 * * * *",
       "class": "RootDataRetentionJob",
@@ -542,6 +547,11 @@
       "class": "LogRetentionJob",
       "description": "Delete log rows past their retention window, so the logs table is bounded by time rather than by fleet activity"
     },
+    "transcript_copy": {
+      "cron": "5-59/10 * * * *",
+      "class": "TranscriptCopyJob",
+      "description": "Copy transcripts of sessions archived a week ago to object storage, verified; deletes nothing and is off until a bucket is configured"
+    },
     "root_data_retention": {
       "cron": "35 * * * *",
       "class": "RootDataRetentionJob",
@@ -858,6 +868,11 @@
       "cron": "*/10 * * * *",
       "class": "LogRetentionJob",
       "description": "Delete log rows past their retention window, so the logs table is bounded by time rather than by fleet activity"
+    },
+    "transcript_copy": {
+      "cron": "5-59/10 * * * *",
+      "class": "TranscriptCopyJob",
+      "description": "Copy transcripts of sessions archived a week ago to object storage, verified; deletes nothing and is off until a bucket is configured"
     },
     "root_data_retention": {
       "cron": "35 * * * *",

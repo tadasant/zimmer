@@ -353,6 +353,15 @@ module CronSchedule
       description: "Delete log rows past their retention window, so the logs table is bounded by time rather than by fleet activity",
       environments: %i[production staging development]
     },
+    # Everywhere, and inert wherever no bucket is configured. Every 10 minutes because the
+    # first run meets months of sessions and copies them a 3-minute slice at a time; after
+    # that a tick is the few sessions that crossed the week, or one query.
+    transcript_copy: {
+      cron: "5-59/10 * * * *",
+      class: "TranscriptCopyJob",
+      description: "Copy transcripts of sessions archived a week ago to object storage, verified; deletes nothing and is off until a bucket is configured",
+      environments: %i[production staging development]
+    },
     # Everywhere, for the same reason as log_retention: it is the only thing
     # that enforces a root data collection's `retention_days`. Hourly, so a
     # record outlives its window by at most an hour; a tick with nothing due is

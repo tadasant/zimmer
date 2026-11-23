@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_23_040100) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_23_160100) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -1374,6 +1374,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_040100) do
     t.index "((metadata ->> 'trigger_id'::text))", name: "index_sessions_on_trigger_id", where: "((metadata ->> 'trigger_id'::text) IS NOT NULL)"
     t.index "status, ((metadata ->> 'clone_path'::text))", name: "index_sessions_on_status_clone_path_expression", where: "((metadata ->> 'clone_path'::text) IS NOT NULL)"
     t.index ["agent_runtime"], name: "index_sessions_on_agent_runtime"
+    t.index ["archived_at", "id"], name: "index_sessions_on_transcript_copy_candidates", where: "((archived_at IS NOT NULL) AND (transcript_byte_size > 0))"
     t.index ["board_category_id"], name: "index_sessions_on_board_category_id"
     t.index ["carplay_fit"], name: "index_sessions_on_carplay_fit", where: "(carplay_fit IS NOT NULL)"
     t.index ["category_id"], name: "index_sessions_on_category_id"
@@ -1484,6 +1485,29 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_040100) do
     t.index ["feature", "called_at"], name: "index_token_usage_features_on_feature_and_called_at"
     t.index ["request_id", "feature"], name: "index_token_usage_features_on_request_id_and_feature", unique: true
     t.index ["session_id", "called_at"], name: "index_token_usage_features_on_session_id_and_called_at"
+  end
+
+  create_table "transcript_copies", force: :cascade do |t|
+    t.string "bucket", null: false
+    t.bigint "conversation_byte_size"
+    t.bigint "conversation_compressed_bytes"
+    t.datetime "created_at", null: false
+    t.bigint "manifest_generation", null: false
+    t.string "manifest_object", null: false
+    t.bigint "session_id", null: false
+    t.jsonb "subagents", default: [], null: false
+    t.string "subagents_fingerprint", null: false
+    t.bigint "transcript_byte_size", null: false
+    t.bigint "transcript_compressed_bytes", null: false
+    t.string "transcript_digest", null: false
+    t.bigint "transcript_generation", null: false
+    t.integer "transcript_line_count", null: false
+    t.string "transcript_object", null: false
+    t.datetime "updated_at", null: false
+    t.datetime "verified_at", null: false
+    t.index ["bucket", "manifest_object"], name: "index_transcript_copies_on_bucket_and_manifest_object", unique: true
+    t.index ["bucket", "verified_at"], name: "index_transcript_copies_on_bucket_and_verified_at"
+    t.index ["session_id", "transcript_digest"], name: "index_transcript_copies_on_session_id_and_transcript_digest"
   end
 
   create_table "trigger_conditions", force: :cascade do |t|

@@ -123,6 +123,13 @@ module ParameterStore
       end
     end
 
+    # Whether the private key can sign. `parse` checks only that there is one.
+    def usable_key?
+      OpenSSL::PKey::RSA.new(pem).private?
+    rescue OpenSSL::PKey::PKeyError
+      false
+    end
+
     private
 
     def mint(scope)
@@ -136,7 +143,7 @@ module ParameterStore
       end
 
       body = JSON.parse(response.body.to_s)
-      token = body["access_token"]
+      token = body["access_token"] if body.is_a?(Hash)
       raise AuthError.new("token exchange returned no access_token", 502) if token.blank?
 
       [ token, Time.current + (body["expires_in"] || 3600).to_i.seconds ]

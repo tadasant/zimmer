@@ -49,6 +49,9 @@ module CliSpawnEnv
     "ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON" =>
       "Reads every Parameter Store secret VALUE. Rails resolves ${VAR} with it and hands " \
       "a session only the results its own MCP servers need.",
+    "TRANSCRIPT_STORAGE_SERVICE_ACCOUNT_KEY_JSON" =>
+      "Reads every copied transcript. It belongs in the Parameter Store and no deploy sets it; " \
+      "a process that somehow has one must not pass it on.",
     "ZIMMER_PARAMS_WRITER_SERVICE_ACCOUNT_KEY_JSON" =>
       "Could rewrite or delete every Parameter Store secret. No deploy sets it; a process " \
       "that somehow has one must not pass it on.",

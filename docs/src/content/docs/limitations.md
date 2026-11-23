@@ -9911,6 +9911,14 @@ The pin to the approved commit is in the message the merging session gets (`gh p
 --match-head-commit`). Zimmer checks the head before it sends that message; after that, an agent that
 pushes and merges anyway is stopped only by the repository's branch protection.
 
+## Copied transcripts cannot be restored from inside Zimmer
+
+[Transcript storage](/operate/background-jobs/#transcript-storage) copies old transcripts to a bucket
+and Zimmer does not read them back: there is no restore, and nothing in Postgres is freed. Deleting a
+session does not delete its copy, and neither does anything else in Zimmer; a retention period is the
+bucket's to enforce. Sessions with subagent transcripts and no transcript of their own are not copied, and neither are
+the oldest archived sessions, whose rows predate `archived_at`.
+
 ## Open questions
 
 Things the code doesn't answer, flagged here rather than guessed at:
