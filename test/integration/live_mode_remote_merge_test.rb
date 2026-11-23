@@ -34,6 +34,7 @@ class LiveModeRemoteMergeTest < ActionDispatch::IntegrationTest
     AgentSessionJob.stubs(:enqueue_new_session).returns(stub(job_id: "job-1"))
     AgentSessionJob.stubs(:enqueue_with_prompt).returns(stub(job_id: "job-2"))
     LiveConversationReplyJob.stubs(:perform_later)
+    LiveConversations::AuthorizeMerge.any_instance.stubs(:pause)
 
     @remote = MergeAttestationHelpers::LoopbackRemote.new
     LiveConversations::CatalogServer.stubs(:find!).with("remote-zimmer").returns(@remote)
@@ -113,7 +114,40 @@ class LiveModeRemoteMergeTest < ActionDispatch::IntegrationTest
     Sessions::AuthorizeMerge.any_instance.unstub(:deliver_automated_message)
     again = call_function(conversation, phone, "authorize_merge", { session_id: driving_session.id, pr_url: PR })
     assert_not again["error"], again["output"]
-    assert_match(/\AREAD-BACK: /, again["output"], "nothing was authorized, so the question is asked again")
+    assert_match(/\AMerge authorized on remote\.test/, again["output"], "the yes still stands, at the same commit, so it is not asked again")
+    assert_equal 2, MergeAttestation.issued.count
+  end
+
+  # Live conversation 43's shape, on a PR another Zimmer holds: a trailing line,
+  # then the half of the question with the number recorded last.
+  test "a yes to a question whose lines were recorded late, cut and trailed by filler is signed" do
+    stub_github
+    conversation = create_live_conversation(mode: "voice")
+    phone = bearer(app_token)
+    call_function(conversation, phone, "authorize_merge", { session_id: driving_session.id, pr_url: PR })
+    say(conversation, phone, "user", "Yes")
+    say(conversation, phone, "assistant", "Say yes, and I'll do it.")
+    say(conversation, phone, "user", "Yes Okay, what's next")
+    say(conversation, phone, "assistant", "Just to confirm, should I merge example-repo pull request")
+
+    result = call_function(conversation, phone, "authorize_merge", { session_id: driving_session.id, pr_url: PR, confirm: true })
+    assert_not result["error"], result["output"]
+    assert_equal "delivered", MergeAttestation.issued.sole.outcome
+    again = call_function(conversation, phone, "authorize_merge", { session_id: driving_session.id, pr_url: PR, confirm: true })
+    assert_not again["error"], again["output"]
+    assert_match(/Already authorized/, again["output"])
+    assert_equal 1, MergeAttestation.issued.count
+  end
+
+  test "a yes before the question is not enough on another Zimmer: the question pins the commit" do
+    stub_github
+    conversation = create_live_conversation(mode: "voice")
+    phone = bearer(app_token)
+    say(conversation, phone, "assistant", "It's green. Do you want to merge it?")
+    say(conversation, phone, "user", "Yes, merge it")
+    asked = call_function(conversation, phone, "authorize_merge", { session_id: driving_session.id, pr_url: PR })
+    assert_match(/\AREAD-BACK: /, asked["output"])
+    assert_equal 0, MergeAttestation.count
   end
 
   test "behind a gateway that namespaces tools, the round trip calls the namespaced names" do
@@ -161,6 +195,12 @@ class LiveModeRemoteMergeTest < ActionDispatch::IntegrationTest
     assert read_back.present?
     assert_equal 0, MergeAttestation.count
     assert_empty driving_session.human_messages
+
+    asked = call_function(conversation, phone, "authorize_merge", { session_id: driving_session.id, pr_url: PR })
+    assert_includes asked["output"], "HEAD: #{'b' * 40}", "the new commit gets its own question"
+    result = call_function(conversation, phone, "authorize_merge", { session_id: driving_session.id, pr_url: PR, confirm: true })
+    assert_match(/has not answered since/, result["output"], "the yes to the old commit does not answer it")
+    assert_equal 0, MergeAttestation.count
   end
 
   test "an answer that is not a plain yes signs nothing" do
@@ -172,7 +212,7 @@ class LiveModeRemoteMergeTest < ActionDispatch::IntegrationTest
 
     result = call_function(conversation, phone, "authorize_merge", { session_id: driving_session.id, pr_url: PR, confirm: true })
     assert result["error"]
-    assert_match(/not a plain yes/, result["output"])
+    assert_match(/the person said "No, wait\."/, result["output"])
     assert_equal 0, MergeAttestation.count
   end
 

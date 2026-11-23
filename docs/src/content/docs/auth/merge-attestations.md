@@ -48,8 +48,9 @@ sequenceDiagram
    unmerged), the person is told so instead of being asked.
 2. **Confirm.** `authorize_merge(session_id, pr_url, confirm: true)` runs every check the
    [voice Merge](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_modeauthorize_merge)
-   makes on a local PR, unchanged: a fresh question, asked by number, a plain yes from one signed-in
-   person, nothing an agent wrote into the conversation. Then Zimmer asks the remote again. If the
+   makes on a local PR: a standing question, a clear yes to it from one signed-in person, nothing an
+   agent wrote into the conversation. (A yes from before the question does not count here, because the
+   question pins the commit.) Then Zimmer asks the remote again. If the
    head has moved since the question, it signs nothing. Otherwise it records the yes as a `live_mode`
    HumanMessage on the driving session, signs the token, and hands it to the remote's
    `submit_merge_attestation` from Rails. The live model sees neither the token nor the call.
@@ -86,7 +87,7 @@ Payload:
 | `approver_name` | string | Their display name on the issuer, for the record |
 | `channel` | string | `live_mode`, the only channel that mints today |
 | `surface`, `heard` | string | `web` / `ios` / `carplay`; `spoken` or `typed` |
-| `read_back` | string | The question Zimmer composed and the person said yes to |
+| `read_back` | string | The question Zimmer composed for the Live Mode assistant to ask, in its own words, and the person said yes to |
 | `answer` | string | What the person said |
 | `approved_at` | string | ISO 8601 time of the yes |
 | `issuer_session_url`, `human_message_id` | string, integer | Where the issuer recorded the yes |

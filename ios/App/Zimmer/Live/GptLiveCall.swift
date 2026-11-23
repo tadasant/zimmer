@@ -56,6 +56,7 @@ final class GptLiveCall {
     private var inputTiming = GptLiveInputTiming()
     /// Nil once `LiveCall` let go of this call: nothing more reaches it.
     private var signal: ((Signal) -> Void)?
+    private let turns = LiveTurnQueue()
     private var usage: [LiveUsageEvent] = []
     private var flushing: Task<Void, Never>?
     private var ticking: Task<Void, Never>?
@@ -148,7 +149,7 @@ final class GptLiveCall {
             case let .record(role, text):
                 let api = self.api
                 let conversation = self.conversation
-                Task { [weak self] in
+                turns.add { [weak self] in
                     _ = try? await api.recordLiveTurn(conversation, role: role, content: text, gated: false)
                     self?.signal?(.recorded)
                 }

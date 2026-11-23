@@ -81,6 +81,12 @@
 # Every method is best-effort: a capture failure must never break the delivery
 # of the message it was describing. A missing record is a safe outcome.
 class HumanMessageCapture
+  # What live_mode_words answers. `declined` is a sentence fragment saying why
+  # there are no words to record ("this conversation has …"), or nil.
+  LiveModeWords = Data.define(:turns, :replying_to, :declined) do
+    def self.declined(reason) = new(turns: [], replying_to: nil, declined: reason)
+  end
+
   class << self
     # Record a message typed by a human into the Zimmer web UI.
     #
@@ -156,12 +162,6 @@ class HumanMessageCapture
     # Characters kept of the assistant line a person's words were answering.
     LIVE_MODE_REPLYING_TO_LIMIT = 1_000
 
-    # What live_mode_words answers. `declined` is a sentence fragment saying why
-    # there are no words to record ("this conversation has …"), or nil.
-    LiveModeWords = Data.define(:turns, :replying_to, :declined) do
-      def self.declined(reason) = new(turns: [], replying_to: nil, declined: reason)
-    end
-
     # Record a message the Live Mode assistant delivered into a session, as the
     # words of the person it was talking to.
     #
@@ -220,15 +220,15 @@ class HumanMessageCapture
     # strength of it. The voice counterpart of the app's Merge button, and recorded
     # in the session holding the PR, the way the button's click is.
     #
-    # The caller has already established `words` (the person's answers since the
-    # assistant asked about the PR, `replying_to` that asking line) and checked
-    # they say yes. This only writes the record, with
-    # what makes a short reply's referent checkable: the PR Zimmer named, the
-    # read-back Zimmer composed, and the line the assistant actually said.
+    # The caller has already established `words` (the person's yeses, and as
+    # `replying_to` the nearest assistant line about merging) and checked them.
+    # This only writes the record, with what makes a short reply's referent
+    # checkable: the PR Zimmer named, the question Zimmer composed, and the line
+    # the assistant actually said.
     #
     # @param words [LiveModeWords] the person's answer, not declined
-    # @param pr_url [String] the PR Zimmer read back and the session was told to merge
-    # @param read_back [String] the sentence Zimmer composed and told the model to say
+    # @param pr_url [String] the PR Zimmer named and the session was told to merge
+    # @param read_back [String, nil] the question Zimmer composed, when it composed one
     # @param relayed [String] what was delivered into the session
     def record_live_mode_merge_approval(session:, conversation:, words:, pr_url:, read_back:, relayed:, occurred_at: Time.current)
       return nil if conversation.nil? || words.nil? || words.declined
@@ -285,6 +285,27 @@ class HumanMessageCapture
       )
     end
 
+    # Why nothing in this conversation can be recorded as a person's, however
+    # they say it, or nil. See live_mode_words.
+    def live_mode_taint(conversation)
+      if (old = conversation.unattributable_user_turns.order(:id).pluck(:id)).any?
+        return "this conversation has #{old.size == 1 ? 'a line' : "#{old.size} lines"} that no sign-in vouches for " \
+               "(turn#{'s' if old.size > 1} #{old.first(5).join(', ')}#{', …' if old.size > 5}), written by an agent or " \
+               "typed before Zimmer recorded who typed what, so nothing relayed from it counts as the person's. " \
+               "A new Live conversation does not have this problem"
+      end
+      if conversation.agent_wrote_scratchpad?
+        return "an agent wrote this conversation's scratchpad, which the live model reads every turn, so nothing relayed " \
+               "from it counts as the person's. A new Live conversation does not have this problem"
+      end
+      if LiveSettingChange.guidance_written_by_an_agent?
+        return "the Live mode guidance was last written by an agent session, so nothing relayed " \
+               "counts as the person's until a person saves the guidance again"
+      end
+
+      nil
+    end
+
     # The person's words a Live Mode delivery would be recorded as, or why there
     # are none.
     #
@@ -311,27 +332,10 @@ class HumanMessageCapture
     # (LiveSettingChange.guidance_written_by_an_agent?). Then the run has to be
     # one person's alone, and fresh.
     #
-    # @param after_turn_id [Integer, nil] only turns after this one count as the
-    #   person's words, so an answer to a question is never something said
-    #   before the question
     # @return [LiveModeWords]
-    def live_mode_words(conversation, now: Time.current, after_turn_id: nil)
-      if (old = conversation.unattributable_user_turns.order(:id).pluck(:id)).any?
-        return LiveModeWords.declined(
-          "this conversation has #{old.size == 1 ? 'a line' : "#{old.size} lines"} that no sign-in vouches for " \
-          "(turn#{'s' if old.size > 1} #{old.first(5).join(', ')}#{', …' if old.size > 5}), written by an agent or " \
-          "typed before Zimmer recorded who typed what, so nothing relayed from it counts as the person's. " \
-          "A new Live conversation does not have this problem"
-        )
-      end
-      if conversation.agent_wrote_scratchpad?
-        return LiveModeWords.declined("an agent wrote this conversation's scratchpad, which the live model reads every " \
-                                      "turn, so nothing relayed from it counts as the person's. A new Live conversation " \
-                                      "does not have this problem")
-      end
-      if LiveSettingChange.guidance_written_by_an_agent?
-        return LiveModeWords.declined("the Live mode guidance was last written by an agent session, so nothing relayed " \
-                                      "counts as the person's until a person saves the guidance again")
+    def live_mode_words(conversation, now: Time.current)
+      if (tainted = live_mode_taint(conversation))
+        return LiveModeWords.declined(tainted)
       end
 
       run = []
@@ -353,10 +357,8 @@ class HumanMessageCapture
       end
 
       fresh = run.select { |turn| turn.created_at >= now - LIVE_MODE_WORDS_FRESH_FOR }
-      fresh = fresh.select { |turn| turn.id > after_turn_id } if after_turn_id
       if fresh.empty?
-        return LiveModeWords.declined(after_turn_id ? "the person has not answered since that was said" :
-                                        "the person's latest words are more than #{LIVE_MODE_WORDS_FRESH_FOR.inspect} old")
+        return LiveModeWords.declined("the person's latest words are more than #{LIVE_MODE_WORDS_FRESH_FOR.inspect} old")
       end
 
       LiveModeWords.new(turns: fresh, replying_to: replying_to, declined: nil)

@@ -240,8 +240,8 @@ shares one API key. For what the live model does on its own, it is a real one. I
 what an agent the model starts through `quick_router` can do: see
 [limitations](/limitations/#live-modes-narrow-surface-waits-on-a-catalog-change).
 
-**Merging is never a follow-up.** `authorize_merge` is the only route, and needs a fresh yes to one short
-question naming the PR. `action_session` `follow_up` and `quick_router` both refuse a prompt carrying the
+**Merging is never a follow-up.** `authorize_merge` is the only route, and needs one fresh yes to merging
+a PR Zimmer named. `action_session` `follow_up` and `quick_router` both refuse a prompt carrying the
 `[HUMAN-AUTHORIZED MERGE]` marker, in any spelling inside brackets, and say to use `authorize_merge`.
 Both descriptions say so in their first sentence.
 
@@ -285,8 +285,9 @@ A delivery more than five minutes after your last line records nothing either. A
 had a typed line before this was recorded stays barred, so start a new one; old spoken lines do not
 bar it. When a delivery is not recorded as yours, the live model is told why and says so.
 
-To merge, the live model uses `authorize_merge`, the iOS app's Merge by voice: the model asks you once,
-naming the PR by its number, and only your yes to that question sends the merge. See
+To merge, the live model uses `authorize_merge`, the iOS app's Merge by voice: Zimmer names the PR, and
+one clear yes from you sends the merge, whether you give it to the assistant's own "want to merge it?"
+or to the one question Zimmer composes. See
 [Merging by voice](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_modeauthorize_merge).
 When the PR is held by a session on another Zimmer that a session here drives, the model passes the
 PR's URL as `pr_url`: the question and the yes are the same, and Zimmer sends that deployment a signed
@@ -840,6 +841,12 @@ sentences. The dock appends the answer to the call as commentary for GPT-Live to
 the GPT-Live session with the browser's WebRTC offer, so the OpenAI key and the session config stay
 on the server, and the audio goes between the browser and OpenAI as it does on the default engine.
 Claude reads the thread and the request as text; no audio goes to Anthropic.
+
+GPT-Live and Claude do not share a script: Claude makes the tool calls, GPT-Live says its own words
+between them, and a line of either side ends wherever the other starts, sometimes mid-sentence. Each
+finished line is posted to `turns` in the order it was said, one at a time (a line waits at most three
+seconds for the one before it), so the recorded thread keeps the spoken order across a slow network. A
+line can still land after a tool call that answers it.
 
 **On the phone and in the car** the call is the same, with the iOS app in the dock's place. GPT-Live
 takes a WebSocket only from a server holding the OpenAI key, so the app makes a WebRTC offer too

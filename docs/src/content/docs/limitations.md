@@ -5401,31 +5401,28 @@ records nothing either: only the web page and the iOS app stamp an author on a L
 ### A voice Merge trusts a transcript and a word list
 
 The [voice Merge](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_modeauthorize_merge)
-(`authorize_merge`) checks that, after Zimmer composed the question, an assistant sentence says
-"merge" as a request and the PR's number right after "pull request", "PR" or the repository, with
-nothing negating it outside a quoted title, and that everything the person said after it is a plain
-yes. That line is the call's transcript of what the model said. Zimmer cannot
-check the audio itself: a transcript that names the PR while the speech said something else would
-pass. The number is matched in digits and in the ways a transcript spells it out ("thirty six
-hundred", "three thousand six hundred", "three six zero zero", "fourteen oh five"); a spelling it does
-not know is refused, and the model asks again. The repository can be left out of the spoken
-question, so on a call juggling two PRs with the same number in different repositories, the person
-hears only the number and title words; Zimmer still merges only the PR it named to the model.
+(`authorize_merge`) establishes who said yes, when, and which PR Zimmer named. It does not establish
+what the person heard. The model chooses its own words, on a GPT-Live call the transcript of them is cut
+and recorded out of order, and a gate on that transcript refused every merge confirmed there. So a model
+steered by text it read mid-call could have Zimmer name a PR, ask about something else in words Zimmer
+does not recognise as another offer, and pass on the yes. What stands in its way: the yes is a person's,
+fresh, in a conversation no agent wrote into; merging has to have come up aloud, though possibly from
+before the question or about another PR; an offer of another action or another PR's number just before
+the yes is recognised from a word list; and a no, a condition or a correction stops it. A yes to the
+weather merges nothing only because nobody mentioned merging.
 
-The model chooses the words of the question. A model steered by text it read mid-call could ask "Merge
-pull request 1490?" and then fold an unrelated request into the same line; a yes to that line counts.
-A *separate* line after it ends the confirmation, and so does any answer that is not a plain yes.
-Filler is a closed word list ("okay", "sure", "merging", "here's the full read-back"), so any other
-line ends it, which fails closed. Negation is a word list too ("not", "won't", "already"…), so a
-question phrased as a negative ("Why not merge pull request 1490?") is not counted as asking, and a
-paraphrased title that negates something ("…so it doesn't page twice") has to be quoted or left out.
-And all of it reads words, not meaning: a line that says "merge pull request 1490" as a request and
-asks nothing else counts, whatever the model meant by it.
+A yes before any question is bound by the last session Zimmer showed the model, not by a number the
+person heard. A model that opened one session and talked about another would merge the one it opened.
 
-Whether the person said yes is a closed word list: at most six words, every one of them from "yes",
-"yeah", "okay", "do it", "merge it", "please", "great" and the like, at least one a real yes, and
-no question. So "yes, why not", "sure, but after the deploy" and "please say that again" are
-refused, and so is an answer the transcript garbled. All of this fails closed: nothing merges.
+Whether the person said yes is still read from words: an assent, and every other word one that goes with
+it. A yes the transcript garbled ("Yet proved") is not one, and is asked about. "Yes, and bump the
+version" is not one either. A refusal word anywhere since the question, even about something else
+("no other questions"), or a condition after the yes ("ask what happened after the restart"), costs
+one more question. The session's title, up to eight words of it, adds to the words that may sit beside
+an assent.
+
+A local merge is not pinned to a commit, as the button's is not: a push between the question and the
+merge, up to thirteen minutes, is covered by the yes if the PR is still open and green.
 
 A conversation that had a `typed` line before authors were recorded (2026-11-12T20:23Z) can never
 carry a Live Mode human message or a voice Merge, because nothing on the row says whether a person

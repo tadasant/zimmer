@@ -278,6 +278,35 @@ const delegation = (id) => ({ type: "session.delegation.created", delegation: { 
   report("line_spent", run)
 }
 
+// The first line is slow to reach Zimmer: the lines after it wait, then go in
+// the order they were said. The third hangs, and holds up the fourth only for
+// the patience.
+{
+  const run = call()
+  const landed = []
+  const held = {}
+  run.gpt.post = (url, body) => new Promise((resolve) => {
+    const land = () => { landed.push(body.content); resolve({ ok: true }) }
+    if (["Merge pull request 1490?", "Merging."].includes(body.content)) held[body.content] = land
+    else land()
+  })
+  run.gpt.handle({ type: "session.started" })
+  run.gpt.handle(output("Merge pull request 1490?"))
+  run.gpt.handle(input("Yes"))
+  run.gpt.handle(output("Merging."))
+  await drain()
+  landed.push("|")
+  held["Merge pull request 1490?"]()
+  await drain()
+  run.gpt.handle(input("Thanks"))
+  run.gpt.handle(output("Sure."))
+  await drain()
+  landed.push("|")
+  advance(3000)
+  await drain()
+  console.log(JSON.stringify({ name: "lines_in_order", heard: landed, closed: false }))
+}
+
 // The rule itself, line by line.
 console.log(JSON.stringify({
   name: "ends_the_call",

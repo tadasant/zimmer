@@ -916,7 +916,8 @@ per card:
   `relayed_message` is what the Live Mode assistant delivered into the session. `replying_to` is
   the Live Mode assistant line the person's words answered, and `confirmed_pr_url` and `read_back`
   are set on a voice Merge sign-off (`entry_point` `live_mode.authorize_merge`): the PR Zimmer named
-  and the read-back it composed. All three are null otherwise.
+  and the question it composed (`read_back` is null when the person had already said yes to the PR the
+  conversation had open). All three are null otherwise.
 - `human_message_capture_gaps` — the input channels this hierarchy came in through that capture
   cannot write for, each with `channel`, `channel_label`, `genesis`, `session_ids`, `reason` and
   `remedy`. Normally empty.
