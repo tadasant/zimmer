@@ -30,8 +30,8 @@ So the store is not a source for anything an agent can read:
 | `${VAR}`s Zimmer resolves after AIR (injected Zimmer servers, anything AIR left) | `SecretsInterpolator.for_agent_surface`: X tokens, encrypted `mcp_secrets`, then `ENV` (no store link) |
 | The clone's `.env` | encrypted `mcp_secrets` only, narrowed by `SessionSecretScope` |
 
-The backend chain below keeps the store first. Connector status, readiness probes, Slack, email,
-WhatsApp, Live Mode and Zimmer's own settings all read it there. A catalog `${VAR}` kept **only** in
+The backend chain below keeps the store first. Connector status, readiness probes, Slack,
+Live Mode and Zimmer's own settings all read it there. A catalog `${VAR}` kept **only** in
 the store therefore fails a session with `air_secret_unresolvable`, by design. Route that server
 through strad, or put the value in `mcp_secrets` if a long-lived credential in the agent's reach is
 acceptable for it.

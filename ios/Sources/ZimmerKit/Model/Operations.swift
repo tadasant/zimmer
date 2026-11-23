@@ -87,8 +87,6 @@ public struct TriggerSummary: Hashable, Sendable, Decodable, Identifiable {
             case "ao_event": return "Zimmer Event"
             case "github_label", "github_issue": return "GitHub"
             case "system_event": return "System Event"
-            case "whatsapp": return "WhatsApp"
-            case "email": return "Email"
             case let other?: return other.split(separator: "_").map { $0.capitalized }.joined(separator: " ")
             case nil: return "Condition"
             }

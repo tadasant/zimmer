@@ -39,7 +39,7 @@ module Mcp
       # (wake_me_up_when_session_changes_state) remain the right way to create a
       # SESSION-scoped one-shot wake; what this opens up is the broadcast form, and
       # the account events, which no wake tool covers.
-      TRIGGER_TYPES = %w[slack schedule ao_event github_label github_issue system_event whatsapp email mcp_event].freeze
+      TRIGGER_TYPES = %w[slack schedule ao_event github_label github_issue system_event mcp_event].freeze
 
       # The cap applied to a BROADCAST SESSION ao_event trigger created here when the
       # caller names none.
@@ -128,25 +128,6 @@ module Mcp
           `thread_ts` (a thread's parent timestamp, alongside its channel_id) scopes a `new_message`
           or `bot_mention` condition to that thread's replies — for `bot_mention`, only replies that
           @mention Zimmer, with no DMs and nothing else in the channel.
-        - **whatsapp**: Triggered by new messages in one WhatsApp chat, read through the WhatsApp bridge
-          MCP server. `{"chat_id": "120363012345678901@g.us", "chat_name": "Party", "mode": "listen"}` —
-          `mode` is required: `listen` fires on every new message, `addressed` only on a batch where
-          someone @mentions the linked account, replies to it, or writes one of `keywords` (default
-          `["zimmer"]`). `include_from_me: true` also fires on the linked account's own phone messages.
-          Messages from one poll (a minute) fire once, together; pair with `reuse_session: true` so one
-          session owns the chat. search_triggers with include_whatsapp_chats lists chat ids. The
-          template can name {{chat_id}} and {{message_id}} (the newest message in the batch).
-          `"chat_id": "*"` watches EVERY chat the account is in and fires once per chat, so a first
-          message from someone new fires too. It refuses `reuse_session: true`, and because anyone with
-          the number can write, its template must write `{{text|untrusted}}`, `{{author|untrusted}}` and
-          `{{channel|untrusted}}`.
-        - **email**: Triggered by new mail in the mailbox Zimmer polls (EMAIL_MCP_URL, a Gmail-tool MCP
-          server). `{"query": "in:inbox", "include_automated": false}` — both optional. `query` is a Gmail
-          search narrowing what counts (default `in:inbox`); the mailbox's own mail never fires, and bulk,
-          list, bounce and auto-reply mail fires only with `include_automated: true`. One session per mail
-          thread with new mail. The mail is untrusted: the template must write `{{text|untrusted}}`,
-          `{{author|untrusted}}` and `{{title|untrusted}}` (subject) — a bare one is refused. {{message_id}}
-          and {{thread_id}} (Gmail ids, for get_email_conversation) and {{link}} may be bare.
         - **mcp_event**: Triggered by an event a catalog MCP server publishes through the MCP Events
           extension, polled about once a minute with the credentials a session would get for that server.
           `{"server": "slack-zimmer", "event_name": "slack-zimmer__message_posted", "arguments": {...},
@@ -921,8 +902,7 @@ module Mcp
           [ condition_type, config["event_type"].presence || "new_message",
             config["channel_id"].presence, config["thread_ts"].presence ]
         else
-          [ condition_type, config.except(*TriggerCondition::GITHUB_POLL_STATE_KEYS, *TriggerCondition::WHATSAPP_POLL_STATE_KEYS, *TriggerCondition::EMAIL_POLL_STATE_KEYS,
-                                  *TriggerCondition::MCP_EVENT_POLL_STATE_KEYS) ]
+          [ condition_type, config.except(*TriggerCondition::GITHUB_POLL_STATE_KEYS, *TriggerCondition::MCP_EVENT_POLL_STATE_KEYS) ]
         end
       end
 

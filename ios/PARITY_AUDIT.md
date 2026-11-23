@@ -22,9 +22,9 @@ This audit was derived from the web app's source instead: every HTML route a sig
 | A Settings & account | 16 | 19 | 125 | 3 | 163 |
 | B Session page | 90 | 18 | 20 | 3 | 131 |
 | C Board & starting sessions | 79 | 24 | 11 | 1 | 115 |
-| D Operations | 34 | 29 | 84 | 3 | 150 |
+| D Operations | 34 | 29 | 82 | 3 | 148 |
 | E Global chrome | 21 | 5 | 10 | 8 | 44 |
-| **Total** | **240** | **95** | **250** | **18** | **603** |
+| **Total** | **240** | **95** | **248** | **18** | **601** |
 
 Counted from the rows below after removing the 44 duplicate copies of items two areas both rowed. Four rows in B are `present` only with #1282, and two in C are `partial` only with #1284, both open; the counts take them as those PRs leave them. The 205 Administrate routes under `/supervisor` and the GoodJob mount are one `web-only` row each in D, not 206.
 
@@ -47,7 +47,7 @@ Ranked within each group by how often a person on a phone runs into it. The area
 
 **Needs a route opened to the app's token (`accepts_native_app_tokens`)**
 
-11. Trigger create, edit and delete, plus the Slack channel and WhatsApp chat pickers — `POST/PATCH/DELETE /api/v1/triggers`, `#channels`, `#whatsapp_chats` exist and permit every form field (D `triggers/_form.html.erb`, `_condition_fields.html.erb`).
+11. Trigger create, edit and delete, plus the Slack channel picker — `POST/PATCH/DELETE /api/v1/triggers` and `#channels` exist and permit every form field (D `triggers/_form.html.erb`, `_condition_fields.html.erb`).
 12. The two trigger switches, Enqueue messages and Resuscitate archived — the API half is in #1318; the app half is not written (D `triggers/show.html.erb:264-287`).
 13. Health's operator actions: clean up orphans, retry failed, trash old, enter/exit queue recovery, re-arm post-deploy tasks, discard/reschedule queued jobs — all exist under `/api/v1/health` (D `_health_content:69, 138, 607`, `_queue_recovery_mode`, `_queued_job_maintenance`, `_post_deploy_tasks:112`).
 14. CLIs: status, the attention badge, refresh and clear cache — `api/v1/clis#status/refresh/clear_cache` exist (A `clis/*`, E nav badge).
@@ -622,13 +622,13 @@ Ranked within each group by how often a person on a phone runs into it. The area
 
 ### D Operations
 
-150 rows: 34 present, 29 partial, 83 missing, 4 web-only.
+148 rows: 34 present, 29 partial, 81 missing, 4 web-only.
 
 #### Triggers
 
 | Web location | What it does | iOS equivalent | Status | Note |
 | --- | --- | --- | --- | --- |
-| triggers/index.html.erb:16,34 (`triggers#new`) | "New Trigger" button → form | — | missing | needs API: open `triggers#create` (+ `#channels`, `#whatsapp_chats`) to the native token; `POST /api/v1/triggers` already permits every form field. PARITY_AUDIT G22 calls this "browser by choice" — that is not a reason. |
+| triggers/index.html.erb:16,34 (`triggers#new`) | "New Trigger" button → form | — | missing | needs API: open `triggers#create` (+ `#channels`) to the native token; `POST /api/v1/triggers` already permits every form field. PARITY_AUDIT G22 calls this "browser by choice" — that is not a reason. |
 | triggers/_trigger.html.erb:98 | Trigger name, links to show | OperationsViews.swift:267-275 TriggerRow | present |  |
 | _trigger:100-112 | Enabled / Failed / Disabled badge | TriggerRow (dims when off; `lastError` line in warning ink), TriggerDetailView:53 TriggerStatusBadge | partial | List row never prints the word "Failed"; the detail page does. |
 | _trigger:117-122 | "Agent root not in catalog" badge | TriggerDetailView:154-160 | partial | Detail only; the list row shows the root name in normal ink. Field `agent_root_missing_from_catalog` is decoded. |
@@ -664,10 +664,8 @@ Ranked within each group by how often a person on a phone runs into it. The area
 | show:470-477 | Prompt template + variable legend | TriggerDetailView:186-197 | present | Legend text not shown; the template is. |
 | show:480-514 | Recent sessions (10): title, created, status, link | TriggerDetailView:199-233 | present |  |
 | triggers/_form.html.erb:38 | Name | — | missing | All form rows: needs API: open `triggers#create`/`#update` to the native token (see first row). |
-| _form:47-62, _condition_fields:22-37 (Stimulus `trigger-form`) | Add / remove conditions; type select: Slack, WhatsApp, Email, Schedule, Zimmer Event, System Event, GitHub Label, GitHub Issue | — | missing | `trigger_conditions_attributes` permitted on the API. |
+| _form:47-62, _condition_fields:22-37 (Stimulus `trigger-form`) | Add / remove conditions; type select: Slack, Schedule, Zimmer Event, System Event, GitHub Label, GitHub Issue | — | missing | `trigger_conditions_attributes` permitted on the API. |
 | _condition_fields:39-108 (`triggers#channels`) | Slack: channel picker (fetched), channel id, event type (new_message / bot_mention / dm_message / passive thread / passive channel), thread_ts | — | missing | needs API: open `triggers#channels` to the native token. |
-| _condition_fields:110-168 (`triggers#whatsapp_chats`) | WhatsApp: chat picker (fetched), mode listen/addressed, keywords, include_from_me | — | missing | needs API: open `triggers#whatsapp_chats`. |
-| _condition_fields:171-197 | Email: Gmail search query, include_automated | — | missing |  |
 | _condition_fields:199-305 | Schedule: recurring (interval+unit, day_of_week, time, timezone) or one-time (scheduled_at, timezone) | — | missing |  |
 | _condition_fields:308-332 | Zimmer event: event_name (needs_input/failed/archived/account_needs_reauth), watched_session_id | — | missing |  |
 | _condition_fields:335-347 | System event: quota_available / no_sessions_in_progress | — | missing |  |

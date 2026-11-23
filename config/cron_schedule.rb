@@ -201,18 +201,6 @@ module CronSchedule
       description: "Poll Slack channels for triggers and create sessions",
       environments: %i[production staging development]
     },
-    whatsapp_trigger_poller: {
-      cron: "* * * * *", # Every minute — one bridge status call, then one read per watched chat
-      class: "WhatsappTriggerPollerJob",
-      description: "Poll the WhatsApp bridge for new messages in watched chats and create sessions",
-      environments: %i[production staging development]
-    },
-    email_trigger_poller: {
-      cron: "* * * * *", # Every minute — one mailbox search per email condition, one read per new message
-      class: "EmailTriggerPollerJob",
-      description: "Poll the mailbox for new mail and create a session per new thread",
-      environments: %i[production staging development]
-    },
     schedule_reachability_probe: {
       cron: "* * * * *", # Every minute — one tools/list per server a reachability-gated schedule names
       class: "ScheduleReachabilityProbeJob",

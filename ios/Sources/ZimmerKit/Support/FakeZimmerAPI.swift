@@ -1440,8 +1440,6 @@ extension FakeZimmerAPI {
 
     public func triggerChannels() async throws -> [SlackChannel] { Self.sampleChannels }
 
-    public func whatsappChats() async throws -> [WhatsAppChat] { Self.sampleChats }
-
     /// The server's own reasons, in its words (`Trigger` and `TriggerCondition` validations as
     /// `errors.full_messages` prints them), for the cases the web form shows.
     static func refuse(_ draft: TriggerDraft, existing: TriggerSummary?) throws {
@@ -1471,12 +1469,6 @@ extension FakeZimmerAPI {
                 }
                 if !c.threadTS.isEmpty, c.channelID.isEmpty { messages.append(prefix + "thread_ts requires a channel_id") }
                 if !c.threadTS.isEmpty, !["new_message", "bot_mention"].contains(c.eventType) { messages.append(prefix + "thread_ts is not supported for \(c.eventType) conditions") }
-            case "whatsapp":
-                if c.chatID.isEmpty {
-                    messages.append(prefix + "must include chat_id for WhatsApp conditions")
-                } else if !c.chatID.contains("@") {
-                    messages.append(prefix + "chat_id must be a WhatsApp chat id such as 120363012345678901@g.us")
-                }
             case "schedule":
                 if condition.scheduleMode == .oneTime {
                     if c.scheduledAt.isEmpty { messages.append(prefix + "scheduled_at must be a valid datetime (ISO 8601 format)") }
@@ -1526,10 +1518,8 @@ extension FakeZimmerAPI {
             }
             // A condition the edit kept keeps its own history.
             let before = existing?.conditions.first { $0.id == serverID }
-            var configuration = condition.configuration
-            if condition.type == "whatsapp", configuration.keywords.isEmpty { configuration.keywords = [] }
             return TriggerSummary.Condition(id: serverID, type: condition.type, description: condition.description,
-                                            lastTriggeredAt: before?.lastTriggeredAt, configuration: configuration)
+                                            lastTriggeredAt: before?.lastTriggeredAt, configuration: condition.configuration)
         }
         let hasSlack = draft.hasSlackCondition
         let reuse = draft.reuseSession
@@ -1561,12 +1551,6 @@ extension FakeZimmerAPI {
         SlackChannel(id: "C0SUPPORT1", name: "support", memberCount: 40),
         SlackChannel(id: "C0OPSPRIV1", name: "ops-private", isPrivate: true, memberCount: 4),
         SlackChannel(id: "C0GENERAL1", name: "general", memberCount: 58),
-    ]
-
-    /// The chats the fixture's WhatsApp account is in, as `GET /api/v1/triggers/whatsapp_chats` lists them.
-    static let sampleChats: [WhatsAppChat] = [
-        WhatsAppChat(id: "120363012345678901@g.us", name: "Ops on call", isGroup: true, participantCount: 5),
-        WhatsAppChat(id: "15551234567@s.whatsapp.net", name: "Tadas", isGroup: false),
     ]
 
     /// One week of spend whatever the window, narrowed as the server narrows: a root keeps

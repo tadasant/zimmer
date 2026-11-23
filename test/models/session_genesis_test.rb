@@ -101,8 +101,8 @@ class SessionGenesisTest < ActiveSupport::TestCase
 
   # --- which kinds a setting can still move -----------------------------------
 
-  test "the trigger-backed kinds are exactly the ones a condition type produces" do
-    assert_equal SessionGenesis::CONDITION_TYPE_KINDS.values.uniq.sort,
+  test "the trigger-backed kinds are exactly the ones a condition type produces or once produced" do
+    assert_equal (SessionGenesis::CONDITION_TYPE_KINDS.values + SessionGenesis::RETIRED_TRIGGER_KEYS).uniq.sort,
       SessionGenesis::TRIGGER_BACKED_KEYS.sort
   end
 

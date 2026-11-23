@@ -22,16 +22,6 @@
 # - "github_issue": Fires when a new issue is opened in a watched repo, unless the issue
 #     carries one of the excluded labels — the opt-out an author sets at creation time.
 #     { "repos" => ["owner/a"], "exclude_labels" => ["hold issue work gate"] }
-# - "whatsapp": Fires when new messages land in one WhatsApp chat (usually a group), read
-#     through a WhatsApp bridge MCP server (WhatsappService) by WhatsappTriggerPollerJob.
-#     { "chat_id" => "1203...@g.us", "chat_name" => "Party", "mode" => "listen" }
-#     `mode` "listen" fires on every new message; "addressed" only on a batch in which someone
-#     @mentions the linked account, replies to it, or writes one of `keywords`.
-# - "email": Fires once per mail thread when new mail lands in a mailbox, read through a
-#     Gmail-tool MCP server (EmailService) by EmailTriggerPollerJob.
-#     { "query" => "in:inbox", "include_automated" => false }
-#     `query` narrows what counts (a Gmail search, default `in:inbox`). The mailbox's own mail
-#     never fires, and bulk, mailing-list and auto-reply mail fires only with `include_automated`.
 # - "mcp_event": Fires once per event a catalog MCP server publishes through the MCP Events
 #     extension (McpEvents), polled by McpEventTriggerPollerJob with the credentials a session
 #     would get for that server.
@@ -48,7 +38,7 @@
 # it stores back into `configuration` (GITHUB_POLL_STATE_KEYS). See that job for the
 # state-to-event semantics those keys implement.
 class TriggerCondition < ApplicationRecord
-  CONDITION_TYPES = %w[slack schedule ao_event github_label github_issue system_event whatsapp email mcp_event].freeze
+  CONDITION_TYPES = %w[slack schedule ao_event github_label github_issue system_event mcp_event].freeze
 
   # The passive-listening event types, in the order the UI offers them. They are
   # two separate conditions on purpose: a Trigger ORs its conditions, so carrying
@@ -150,52 +140,8 @@ class TriggerCondition < ApplicationRecord
     thread_recheck_cursors channel_access_errors
   ].freeze
 
-  # How a `whatsapp` condition decides that a batch of new messages is worth a session.
-  #
-  #   listen     every new message from somebody else. The session is listening in and decides
-  #              for itself whether to say anything.
-  #   addressed  only a batch containing a message that @mentions the linked account, replies to
-  #              one of its messages, or contains one of `keywords`. The other messages of that
-  #              batch still ride along in the prompt as context.
-  #
-  # Required rather than defaulted: a missing mode read as "listen" would be a silent widening.
-  WHATSAPP_MODES = %w[listen addressed].freeze
-
-  # The words an `addressed` condition treats as calling for Zimmer when none are configured.
-  DEFAULT_WHATSAPP_KEYWORDS = %w[zimmer].freeze
-
-  # A WhatsApp JID: a group (`…@g.us`), a person (`…@s.whatsapp.net`), or a privacy-preserving
-  # linked id (`…@lid`).
-  WHATSAPP_CHAT_ID_FORMAT = /\A[0-9A-Za-z.:_-]+@(g\.us|s\.whatsapp\.net|lid)\z/
-
-  # The `chat_id` that watches every chat the linked account is in, one fire per chat. It is how a
-  # dedicated Zimmer number hears from people nobody created a trigger for.
-  WHATSAPP_ALL_CHATS = "*"
-
-  # The poller's keys inside a `whatsapp` condition's configuration, merged back across an edit
-  # for the same reason SLACK_POLL_STATE_KEYS are. The cursor's timestamp is last_message_ts;
-  # `seen_messages` is id => timestamp for every message read inside the poller's look-back
-  # window (WhatsappTriggerPollerJob::LOOKBACK), since each poll re-reads that window.
-  # An all-chats condition keeps one cursor per chat instead, under `chats`
-  # (#whatsapp_chat_states).
-  WHATSAPP_POLL_STATE_KEYS = %w[seen_messages chats].freeze
-
-  # The Gmail search an `email` condition watches when it names none.
-  DEFAULT_EMAIL_QUERY = "in:inbox"
-
-  # A condition's own query is a Gmail search the poller ANDs its own terms onto, so it is one
-  # line and short.
-  MAX_EMAIL_QUERY_LENGTH = 500
-
-  # The email poller's keys inside an `email` condition's configuration, merged back across an
-  # edit like WHATSAPP_POLL_STATE_KEYS. The cursor is last_message_ts (the UNIX second the mailbox
-  # has been read up to); `seen_messages` is message id => the second the poller first read it,
-  # for every message inside its look-back window (EmailTriggerPollerJob::LOOKBACK);
-  # `failed_reads` is message id => ticks in a row the mailbox server would not return it.
-  EMAIL_POLL_STATE_KEYS = %w[seen_messages failed_reads].freeze
-
   # The MCP event poller's keys inside an `mcp_event` condition's configuration, merged back across
-  # an edit like EMAIL_POLL_STATE_KEYS. `cursor` is the server's opaque cursor — absent means the
+  # an edit like SLACK_POLL_STATE_KEYS. `cursor` is the server's opaque cursor — absent means the
   # condition has not been baselined; `next_poll_at` is when the server asked to be polled next
   # (`nextPollMs`); `failures` counts polls in a row that raised; `last_truncated_at` is the last
   # time the server said it skipped events.
@@ -241,8 +187,6 @@ class TriggerCondition < ApplicationRecord
   before_validation :preserve_github_poll_state, if: :github_condition?
   before_validation :preserve_slack_poll_state, if: -> { condition_type == "slack" }
   before_validation :rebaseline_on_thread_change, if: -> { condition_type == "slack" }
-  before_validation :preserve_whatsapp_poll_state, if: -> { condition_type == "whatsapp" }
-  before_validation :preserve_email_poll_state, if: -> { condition_type == "email" }
   before_validation :normalize_mcp_event_configuration, if: -> { condition_type == "mcp_event" }
   before_validation :preserve_mcp_event_poll_state, if: -> { condition_type == "mcp_event" }
   before_validation :normalize_schedule_gate_configuration, if: -> { condition_type == "schedule" }
@@ -258,8 +202,6 @@ class TriggerCondition < ApplicationRecord
   scope :schedule, -> { where(condition_type: "schedule") }
   scope :ao_event, -> { where(condition_type: "ao_event") }
   scope :github, -> { where(condition_type: GITHUB_CONDITION_TYPES) }
-  scope :whatsapp, -> { where(condition_type: "whatsapp") }
-  scope :email, -> { where(condition_type: "email") }
   scope :mcp_event, -> { where(condition_type: "mcp_event") }
 
   # Slack configuration accessors
@@ -446,84 +388,6 @@ class TriggerCondition < ApplicationRecord
   # stays tracked.
   def participating_threads
     Array(configuration["participating_threads"])
-  end
-
-  # WhatsApp configuration accessors
-  def whatsapp_chat_id
-    configuration["chat_id"].to_s.strip.presence
-  end
-
-  def whatsapp_chat_name
-    configuration["chat_name"].presence
-  end
-
-  def whatsapp_all_chats?
-    condition_type == "whatsapp" && whatsapp_chat_id == WHATSAPP_ALL_CHATS
-  end
-
-  def whatsapp_mode
-    configuration["mode"].presence
-  end
-
-  def whatsapp_addressed_only?
-    whatsapp_mode == "addressed"
-  end
-
-  # The keywords an `addressed` condition matches, lower-cased. The form submits them as one
-  # textarea (one per line, or comma-separated), the API as an array; both land here as a flat list.
-  def whatsapp_keywords
-    words = Array(configuration["keywords"])
-      .flat_map { |entry| entry.to_s.split(/[\r\n,]+/) }
-      .filter_map { |entry| entry.strip.downcase.presence }
-      .uniq
-    words.presence || DEFAULT_WHATSAPP_KEYWORDS
-  end
-
-  # Whether messages the linked account itself sent (from its phone, not through the bridge)
-  # fire. Off by default: on a dedicated Zimmer number there are none, and on a personal number
-  # they are the owner's own words, which usually should not wake anyone.
-  def whatsapp_include_from_me?
-    ActiveModel::Type::Boolean.new.cast(configuration["include_from_me"]) == true
-  end
-
-  # id => UNIX-seconds timestamp of the messages the poller has already read.
-  def whatsapp_seen_messages
-    seen = configuration["seen_messages"]
-    seen.is_a?(Hash) ? seen.transform_values(&:to_i) : {}
-  end
-
-  # An all-chats condition's per-chat cursors: chat id (as the bridge names it on a read) =>
-  # { "last_message_ts" => seconds, "seen_messages" => { id => seconds }, "aliases" => [ids] }.
-  # `aliases` are the other ids the chat list shows for the same chat (a person's `@lid` beside
-  # their phone-number id), so the chat is read once per tick under its own cursor.
-  def whatsapp_chat_states
-    chats = configuration["chats"]
-    chats.is_a?(Hash) ? chats.select { |_id, state| state.is_a?(Hash) } : {}
-  end
-
-  # Email configuration accessors
-
-  # The Gmail search this condition watches — DEFAULT_EMAIL_QUERY when blank.
-  def email_query
-    configuration["query"].to_s.squish.presence || DEFAULT_EMAIL_QUERY
-  end
-
-  # Whether bulk, mailing-list and auto-reply mail fires too. Off by default: an inbox that wakes a
-  # session for every newsletter and out-of-office reply is a loop waiting to happen.
-  def email_include_automated?
-    ActiveModel::Type::Boolean.new.cast(configuration["include_automated"]) == true
-  end
-
-  # message id => UNIX second the poller first read it.
-  def email_seen_messages
-    seen = configuration["seen_messages"]
-    seen.is_a?(Hash) ? seen.transform_values(&:to_i) : {}
-  end
-
-  # message id => ticks in a row the mailbox server failed to return it.
-  def email_failed_reads
-    failed = configuration["failed_reads"]
-    failed.is_a?(Hash) ? failed.transform_values(&:to_i) : {}
   end
 
   # MCP event configuration accessors
@@ -995,12 +859,6 @@ class TriggerCondition < ApplicationRecord
       else
         channel_name.present? ? "Slack: ##{channel_name}" : "Slack trigger"
       end
-    when "whatsapp"
-      chat = whatsapp_all_chats? ? "all chats" : (whatsapp_chat_name.presence || whatsapp_chat_id || "(no chat)")
-      whatsapp_addressed_only? ? "WhatsApp: messages addressing Zimmer in #{chat}" : "WhatsApp: every message in #{chat}"
-    when "email"
-      automated = email_include_automated? ? ", automated mail included" : ""
-      "Email: new mail matching #{email_query}#{automated}"
     when "mcp_event"
       filtered = mcp_event_payload_filters.any? ? ", filtered on #{mcp_event_payload_filters.keys.join(', ')}" : ""
       coalesced = mcp_event_coalesce_key ? ", coalesced by #{mcp_event_coalesce_key}" : ""
@@ -1268,48 +1126,6 @@ class TriggerCondition < ApplicationRecord
     end
 
     SCHEDULE_GATE_STATE_KEYS.each do |key|
-      next if configuration.key?(key)
-      configuration[key] = configuration_was[key] if configuration_was.key?(key)
-    end
-  end
-
-  # The WhatsApp poller's cursor survives a UI save the same way the Slack one does. Changing the
-  # chat drops it: ids seen in one chat say nothing about another, and last_message_ts is reset so
-  # the new chat is baselined rather than replayed.
-  def preserve_whatsapp_poll_state
-    return if new_record?
-    return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
-    return unless configuration_changed?
-
-    if configuration["chat_id"].to_s.strip != configuration_was["chat_id"].to_s.strip
-      WHATSAPP_POLL_STATE_KEYS.each { |key| configuration.delete(key) }
-      self.last_message_ts = nil
-      return
-    end
-
-    WHATSAPP_POLL_STATE_KEYS.each do |key|
-      next if configuration.key?(key)
-      configuration[key] = configuration_was[key] if configuration_was.key?(key)
-    end
-  end
-
-  # The email poller's cursor survives a UI save the same way. Changing what the poller fires on —
-  # the query, or include_automated, which decides whether automated mail fires — drops it, so the
-  # new condition is baselined rather than replayed: mail that already matched it before the edit
-  # is not new mail.
-  def preserve_email_poll_state
-    return if new_record?
-    return unless configuration.is_a?(Hash) && configuration_was.is_a?(Hash)
-    return unless configuration_changed?
-
-    before = TriggerCondition.new(condition_type: "email", configuration: configuration_was)
-    if email_query != before.email_query || email_include_automated? != before.email_include_automated?
-      EMAIL_POLL_STATE_KEYS.each { |key| configuration.delete(key) }
-      self.last_message_ts = nil
-      return
-    end
-
-    EMAIL_POLL_STATE_KEYS.each do |key|
       next if configuration.key?(key)
       configuration[key] = configuration_was[key] if configuration_was.key?(key)
     end
@@ -1691,10 +1507,6 @@ class TriggerCondition < ApplicationRecord
       validate_system_event_configuration
     when "github_label", "github_issue"
       validate_github_configuration
-    when "whatsapp"
-      validate_whatsapp_configuration
-    when "email"
-      validate_email_configuration
     when "mcp_event"
       validate_mcp_event_configuration
     end
@@ -1738,28 +1550,6 @@ class TriggerCondition < ApplicationRecord
     coalesce_key = configuration["coalesce_key"]
     if !coalesce_key.nil? && !(coalesce_key.is_a?(String) && coalesce_key.match?(MCP_EVENT_FIELD_FORMAT))
       errors.add(:configuration, "coalesce_key must be a payload field name, such as chat_id")
-    end
-  end
-
-  def validate_email_configuration
-    query = configuration["query"].to_s
-    if query.match?(/[\r\n]/)
-      errors.add(:configuration, "query must be a single line")
-    elsif query.length > MAX_EMAIL_QUERY_LENGTH
-      errors.add(:configuration, "query must be at most #{MAX_EMAIL_QUERY_LENGTH} characters")
-    end
-  end
-
-  def validate_whatsapp_configuration
-    chat_id = whatsapp_chat_id
-    if chat_id.blank?
-      errors.add(:configuration, "must include chat_id for WhatsApp conditions")
-    elsif chat_id != WHATSAPP_ALL_CHATS && !chat_id.match?(WHATSAPP_CHAT_ID_FORMAT)
-      errors.add(:configuration, "chat_id must be a WhatsApp chat id such as 120363012345678901@g.us, or #{WHATSAPP_ALL_CHATS} for all chats")
-    end
-
-    unless WHATSAPP_MODES.include?(whatsapp_mode)
-      errors.add(:configuration, "mode must be one of: #{WHATSAPP_MODES.join(', ')}")
     end
   end
 

@@ -27,8 +27,6 @@ module PollerHeartbeat
   CACHE_KEYS = {
     github: "github_trigger_poller:last_successful_poll_at",
     slack: "slack_trigger_poller:last_successful_poll_at",
-    whatsapp: "whatsapp_trigger_poller:last_successful_poll_at",
-    email: "email_trigger_poller:last_successful_poll_at",
     mcp_event: "mcp_event_trigger_poller:last_successful_poll_at"
   }.freeze
 

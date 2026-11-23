@@ -160,8 +160,6 @@ public struct ConditionDraft: Hashable, Sendable, Identifiable {
     /// The condition types, with the web form's labels, in its order.
     public static let types: [(id: String, label: String)] = [
         ("slack", "Slack - Channel messages or @mentions"),
-        ("whatsapp", "WhatsApp - Messages in a chat"),
-        ("email", "Email - New mail in a mailbox"),
         ("schedule", "Schedule - Time-based (recurring or one-time)"),
         ("ao_event", "Zimmer Event - Internal system event"),
         ("system_event", "System Event - The deployment changed state"),
@@ -194,11 +192,6 @@ public struct ConditionDraft: Hashable, Sendable, Identifiable {
 
     public static let githubTargets: [(id: String, label: String)] = [("pull_request", "Pull requests"), ("issue", "Issues")]
 
-    public static let whatsappModes: [(id: String, label: String)] = [
-        ("listen", "Listen - every new message"),
-        ("addressed", "Addressed - only when someone @mentions, replies to, or names Zimmer"),
-    ]
-
     /// Whether the Slack channel field is shown: a DM condition watches DMs and never a channel.
     public var showsSlackChannel: Bool { configuration.eventType != "dm_message" }
     /// Units whose schedule names a time of day (and so a time zone).
@@ -226,10 +219,6 @@ public struct ConditionDraft: Hashable, Sendable, Identifiable {
             ]
             if !c.allowedUserIDs.isEmpty { json["allowed_user_ids"] = c.allowedUserIDs }
             return json
-        case "whatsapp":
-            return ["chat_id": c.chatID, "chat_name": c.chatName, "mode": c.mode, "keywords": c.keywords, "include_from_me": c.includeFromMe]
-        case "email":
-            return ["query": c.query, "include_automated": c.includeAutomated]
         case "schedule":
             switch scheduleMode {
             case .oneTime:
@@ -278,11 +267,6 @@ public struct ConditionDraft: Hashable, Sendable, Identifiable {
             default:
                 return c.channelName.isEmpty ? "Slack trigger" : "Slack: #\(c.channelName)"
             }
-        case "whatsapp":
-            let chat = c.chatName.isEmpty ? (c.chatID.isEmpty ? "(no chat)" : c.chatID) : c.chatName
-            return c.mode == "addressed" ? "WhatsApp: messages addressing Zimmer in \(chat)" : "WhatsApp: every message in \(chat)"
-        case "email":
-            return "Email: new mail matching \(c.query.isEmpty ? "in:inbox" : c.query)\(c.includeAutomated ? ", automated mail included" : "")"
         case "schedule":
             if scheduleMode == .oneTime { return "Once at \(c.scheduledAt.replacingOccurrences(of: "T", with: " ")) (\(c.timezone))" }
             let interval = Int(c.interval) ?? 0
@@ -357,15 +341,6 @@ public struct ConditionConfiguration: Hashable, Sendable, Decodable {
     public var target = "pull_request"
     public var labels: [String] = []
     public var excludeLabels: [String] = []
-    // WhatsApp
-    public var chatID = ""
-    public var chatName = ""
-    public var mode = "listen"
-    public var keywords: [String] = []
-    public var includeFromMe = false
-    // Email
-    public var query = ""
-    public var includeAutomated = false
 
     public init() {}
 
@@ -390,13 +365,6 @@ public struct ConditionConfiguration: Hashable, Sendable, Decodable {
         target = text("target") ?? "pull_request"
         labels = list("labels")
         excludeLabels = list("exclude_labels")
-        chatID = text("chat_id") ?? ""
-        chatName = text("chat_name") ?? ""
-        mode = text("mode") ?? "listen"
-        keywords = list("keywords")
-        includeFromMe = raw["include_from_me"]?.flag ?? false
-        query = text("query") ?? ""
-        includeAutomated = raw["include_automated"]?.flag ?? false
     }
 }
 
@@ -565,42 +533,6 @@ public struct SlackChannel: Hashable, Sendable, Decodable, Identifiable {
     public var label: String { isPrivate ? "🔒 \(name)" : "#\(name)" }
 }
 
-/// A WhatsApp chat the bridge's account is in (`GET /api/v1/triggers/whatsapp_chats`).
-public struct WhatsAppChat: Hashable, Sendable, Decodable, Identifiable {
-    public var id: String
-    public var name: String
-    public var isGroup: Bool
-    public var lastMessageAt: Date?
-    public var participantCount: Int?
-
-    enum CodingKeys: String, CodingKey {
-        case id, name
-        case isGroup = "is_group"
-        case lastMessageAt = "last_message_at"
-        case participantCount = "participant_count"
-    }
-
-    public init(id: String, name: String, isGroup: Bool = false, lastMessageAt: Date? = nil, participantCount: Int? = nil) {
-        self.id = id
-        self.name = name
-        self.isGroup = isGroup
-        self.lastMessageAt = lastMessageAt
-        self.participantCount = participantCount
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(String.self, forKey: .id)
-        name = (try? container.decodeIfPresent(String.self, forKey: .name)) ?? id
-        isGroup = ((try? container.decodeIfPresent(Bool.self, forKey: .isGroup)) ?? nil) ?? false
-        lastMessageAt = try? container.decodeIfPresent(Date.self, forKey: .lastMessageAt)
-        participantCount = try? container.decodeIfPresent(Int.self, forKey: .participantCount)
-    }
-
-    /// As the web's option prints it.
-    public var label: String { isGroup ? "\(name) (group)" : name }
-}
-
 /// What a trigger write came back with: the trigger, and what the web page would flash.
 public struct TriggerWrite: Hashable, Sendable {
     public var trigger: TriggerSummary
@@ -652,6 +584,3 @@ struct SlackChannelsResponse: Decodable {
     let channels: [SlackChannel]
 }
 
-struct WhatsAppChatsResponse: Decodable {
-    let chats: [WhatsAppChat]
-}

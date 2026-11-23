@@ -59,8 +59,6 @@ class TriggersHelperTest < ActionView::TestCase
     "github_label" => { "repos" => [ "tadasant/zimmer" ], "target" => "pull_request", "labels" => [ "ready to merge" ] },
     "github_issue" => { "repos" => [ "tadasant/zimmer" ], "exclude_labels" => [ "hold issue work gate" ] },
     "system_event" => { "event_name" => "quota_available" },
-    "whatsapp" => { "chat_id" => "120363012345678901@g.us", "chat_name" => "Party", "mode" => "listen" },
-    "email" => { "query" => "in:inbox" },
     "mcp_event" => { "server" => "slack-zimmer", "event_name" => "slack-zimmer__message_posted" }
   }.freeze
 

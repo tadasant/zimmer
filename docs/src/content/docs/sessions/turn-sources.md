@@ -37,8 +37,11 @@ name, IP address or location is stored or rendered.
 
 `trigger` and `agent` are the machine surfaces. Their note reads "Written by …" and says no reply
 style is implied, so an agent never mistakes a router's follow-up or a scheduled prompt for a person
-waiting on the other end. Slack, email and WhatsApp are people writing elsewhere and relayed by a
-trigger, so their note names that surface and says it came "via a Zimmer trigger".
+waiting on the other end. Slack is people writing elsewhere and relayed by a trigger, so its note
+names that surface and says it came "via a Zimmer trigger". `email` and `whatsapp` are the surfaces of
+the retired native email and WhatsApp conditions. No trigger delivers them, and they stay on the list
+so the turns those conditions delivered keep their labels. An `mcp_event` fire on a Gmail or WhatsApp
+event is `trigger`.
 
 ## Where each boundary gets its source
 
@@ -53,7 +56,7 @@ The credential, or the code path, decides the surface. A client header can only 
 | MCP on a connection stamped with its session | `agent` | `unknown` |
 | MCP over an OAuth connector, or an unstamped API key | `mcp` | `unknown` |
 | A Live Mode delegation (start_session, follow_up, quick_router, … through the tool bridge) | the client last driving the conversation: `web`, `ios`, `carplay` or `mcp` | `live_voice` or `live_text`, from the conversation's mode when the tool runs |
-| A trigger fire or a trigger's follow-up | `slack`, `email` or `whatsapp` for those condition types, else `trigger` | `text` for the three people surfaces |
+| A trigger fire or a trigger's follow-up | `slack` for a Slack condition, else `trigger` | `text` for `slack` |
 | A Slack message folded into a running session | `slack` | `text` |
 | `message_parent` (a child reporting to its parent) | `agent` | `unknown` |
 

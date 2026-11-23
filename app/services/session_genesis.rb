@@ -26,9 +26,11 @@
 # The defaults below are policy, not physics — but where you change them depends
 # on the kind, and the split is deliberate:
 #
-#   - Nine of the twelve kinds (`slack`, `whatsapp`, `email`, `mcp_event`, `github_issue`,
+#   - Nine of the twelve kinds are trigger-backed. Seven (`slack`, `mcp_event`, `github_issue`,
 #     `github_label`, `schedule`, `ao_event`, `system_event`) are restatements of trigger condition
-#     types. Their
+#     types; `whatsapp` and `email` are RETIRED_TRIGGER_KEYS, the kinds of the native WhatsApp and
+#     email conditions that MCP event conditions replaced, kept because sessions those conditions
+#     fired still carry them. Their
 #     selector lives on the Trigger row (Trigger#scheduling_class), so one noisy
 #     `slack` trigger can be spot without demoting the eleven others that carry a
 #     human waiting for an answer. `#trigger_backed?` marks them.
@@ -171,19 +173,22 @@ module SessionGenesis
     "system_event" => "system_event",
     "github_label" => "github_label",
     "github_issue" => "github_issue",
-    "whatsapp" => "whatsapp",
-    "email" => "email",
     "mcp_event" => "mcp_event"
   }.freeze
 
   # Which genesis wins when one trigger carries several condition types. The
   # human-facing kinds come first, so a mixed trigger is never silently demoted
   # to spot on the strength of a condition that did not fire.
-  CONDITION_TYPE_PRECEDENCE = %w[slack whatsapp system_event email mcp_event github_label github_issue ao_event schedule].freeze
+  CONDITION_TYPE_PRECEDENCE = %w[slack system_event mcp_event github_label github_issue ao_event schedule].freeze
 
-  # The kinds a trigger can produce. Their class is chosen per trigger, so there
+  # The kinds of trigger condition types Zimmer no longer has. No trigger produces them now, but
+  # sessions those conditions fired still carry them, and Session validates its genesis against
+  # KEYS, so they stay in the taxonomy — as trigger-backed, never as a per-kind setting.
+  RETIRED_TRIGGER_KEYS = [ WHATSAPP, EMAIL ].freeze
+
+  # The kinds a trigger produces or once produced. Their class is chosen per trigger, so there
   # is no per-kind setting for them.
-  TRIGGER_BACKED_KEYS = CONDITION_TYPE_KINDS.values.uniq.freeze
+  TRIGGER_BACKED_KEYS = (CONDITION_TYPE_KINDS.values + RETIRED_TRIGGER_KEYS).uniq.freeze
 
   # The kinds nothing triggers — the only ones /inference and `action_spot_policy`
   # can still move as a whole.

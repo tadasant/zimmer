@@ -85,16 +85,6 @@
       "class": "SlackTriggerPollerJob",
       "description": "Poll Slack channels for triggers and create sessions"
     },
-    "whatsapp_trigger_poller": {
-      "cron": "* * * * *",
-      "class": "WhatsappTriggerPollerJob",
-      "description": "Poll the WhatsApp bridge for new messages in watched chats and create sessions"
-    },
-    "email_trigger_poller": {
-      "cron": "* * * * *",
-      "class": "EmailTriggerPollerJob",
-      "description": "Poll the mailbox for new mail and create a session per new thread"
-    },
     "schedule_reachability_probe": {
       "cron": "* * * * *",
       "class": "ScheduleReachabilityProbeJob",
@@ -447,16 +437,6 @@
       "class": "SlackTriggerPollerJob",
       "description": "Poll Slack channels for triggers and create sessions"
     },
-    "whatsapp_trigger_poller": {
-      "cron": "* * * * *",
-      "class": "WhatsappTriggerPollerJob",
-      "description": "Poll the WhatsApp bridge for new messages in watched chats and create sessions"
-    },
-    "email_trigger_poller": {
-      "cron": "* * * * *",
-      "class": "EmailTriggerPollerJob",
-      "description": "Poll the mailbox for new mail and create a session per new thread"
-    },
     "schedule_reachability_probe": {
       "cron": "* * * * *",
       "class": "ScheduleReachabilityProbeJob",
@@ -793,16 +773,6 @@
       "cron": "* * * * *",
       "class": "SlackTriggerPollerJob",
       "description": "Poll Slack channels for triggers and create sessions"
-    },
-    "whatsapp_trigger_poller": {
-      "cron": "* * * * *",
-      "class": "WhatsappTriggerPollerJob",
-      "description": "Poll the WhatsApp bridge for new messages in watched chats and create sessions"
-    },
-    "email_trigger_poller": {
-      "cron": "* * * * *",
-      "class": "EmailTriggerPollerJob",
-      "description": "Poll the mailbox for new mail and create a session per new thread"
     },
     "schedule_reachability_probe": {
       "cron": "* * * * *",
