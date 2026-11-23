@@ -98,7 +98,7 @@ class PiMcpConfigPostProcessor < RuntimeConfigPostProcessor
   end
 
   # Pi's entries are seeded under the canonical token, not the short id.
-  def brokered_config_key(server) = server.name
+  def config_key_for(name) = name
 
   # Translate a catalog Server into an `.mcp.json` entry.
   #

@@ -673,6 +673,7 @@ class Session < ApplicationRecord
     working_directory
     process_pid
     runtime_started
+    brokered_config_entries
   ].freeze
 
   # The four reset policies, in one place.

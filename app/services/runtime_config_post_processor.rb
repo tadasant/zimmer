@@ -388,7 +388,7 @@ class RuntimeConfigPostProcessor
     @brokered_entry_names = []
     return discard_brokered_leftovers!(servers) unless TokenBroker.enabled?
 
-    owned = servers.keys.map(&:to_s) - injected_mcp_servers.map(&:to_s)
+    owned = servers.keys.map(&:to_s) - zimmer_injected_keys
     plan = begin
       TokenBroker.plan_config(owned, selected: selected_mcp_servers) { |server| brokered_config_key(server) }
     rescue AirCatalogService::CatalogError => e
@@ -397,7 +397,10 @@ class RuntimeConfigPostProcessor
     end
     return false if plan.empty?
 
-    remember_brokered_entries!(plan.remove | plan.serve.keys | plan.refused.keys)
+    # What the session selected, which a later prepare has to put back. A key it did
+    # not select is not recorded: the broker never wrote it, so once off there is
+    # nothing of the broker's to take out of it.
+    remember_brokered_entries!(plan.serve.keys | (plan.refused.keys & selected_config_keys))
     plan.remove.each { |key| servers.delete(key) }
     plan.refused.each { |name, cause| @brokered_token_result.failures[name] = cause }
     unselected = plan.remove - plan.serve.keys - plan.refused.keys
@@ -433,7 +436,7 @@ class RuntimeConfigPostProcessor
   end
 
   # The key this runtime's config uses for a catalog server. AIR writes the short id.
-  def brokered_config_key(server) = ArtifactIdentity.short_id(server.name)
+  def brokered_config_key(server) = config_key_for(server.name)
 
   def brokered_entry(server, token)
     replaced = [ "authorization", ELICITATION_URL_HEADER.downcase ]
@@ -444,16 +447,54 @@ class RuntimeConfigPostProcessor
     entry
   end
 
-  # With the broker off, remove what it left under a key the session does not
-  # select: nothing else rewrites those, and they hold a revoked token. A selected
-  # entry is AIR's to write back, or Pi's seeding, which reads the same record.
+  # With the broker off, remove what it left that nothing else will rewrite: a key
+  # the session no longer selects, and a selected one still carrying one of the
+  # session's child tokens, which AIR was not given (it has gone from the catalog).
+  # Anything else selected is AIR's to write back, or Pi's seeding, which reads the
+  # same record. Never a server Zimmer injected.
   def discard_brokered_leftovers!(servers)
-    record = brokered_entries_on_record
+    record = brokered_entries_on_record - zimmer_injected_keys
     return false if record.empty?
 
-    selected = selected_mcp_servers.flat_map { |name| [ name.to_s, ArtifactIdentity.short_id(name.to_s) ] }
-    (record - selected).count { |key| servers.delete(key) }.positive?
+    keep = selected_config_keys
+    tokens = nil
+    record.count do |key|
+      next false unless servers.key?(key)
+
+      if keep.include?(key)
+        tokens ||= brokered_tokens_of_session
+        next false unless tokens.include?(bearer_of(servers[key]))
+      end
+      servers.delete(key).present?
+    end.positive?
   end
+
+  def bearer_of(entry)
+    headers = entry.is_a?(Hash) ? entry[http_headers_key] : nil
+    headers.is_a?(Hash) ? headers["Authorization"].to_s.delete_prefix("Bearer ") : nil
+  end
+
+  # This session's children, and, for a fork, its source's: the clone was copied.
+  def brokered_tokens_of_session
+    ids = [ session.id, session.metadata["forked_from_session_id"] ].compact
+    McpBrokeredToken.for_sessions.where(session_id: ids).filter_map do |row|
+      row.token
+    rescue ActiveRecord::Encryption::Errors::Base
+      nil
+    end.to_set
+  end
+
+  # The servers Zimmer puts in the config itself, on this prepare or an earlier one,
+  # unless the session also selected one by that name.
+  def zimmer_injected_keys
+    earlier = session.respond_to?(:custom_metadata) ? Array(session.custom_metadata&.dig("injected_mcp_servers")) : []
+    injected_mcp_servers.map(&:to_s) | (earlier.map(&:to_s) - selected_config_keys)
+  end
+
+  def selected_config_keys = selected_mcp_servers.map { |name| config_key_for(name.to_s) }
+
+  # The config key a stored server name is written under.
+  def config_key_for(name) = ArtifactIdentity.short_id(name)
 
   def selected_mcp_servers
     session.respond_to?(:user_selected_mcp_servers) ? Array(session.user_selected_mcp_servers) : []
@@ -476,7 +517,14 @@ class RuntimeConfigPostProcessor
   def forget_brokered_entries!
     return if Array(@brokered_entry_names).any? || brokered_entries_on_record.empty? || !session.persisted?
 
-    session.merge_metadata!({}, [ BROKERED_ENTRIES_KEY ])
+    # Off: nothing the broker did can still be why one of these is missing, including
+    # a child token the server itself rejected mid-turn.
+    unless TokenBroker.enabled?
+      names = brokered_entries_on_record
+      kept = session.degraded_mcp_servers.reject { |entry| names.include?(entry["name"]) || names.include?(config_key_for(entry["name"].to_s)) }
+      updates = kept.size == session.degraded_mcp_servers.size ? {} : { "mcp_degraded_servers" => kept }
+    end
+    session.merge_metadata!(updates || {}, [ BROKERED_ENTRIES_KEY ])
   end
 
   def brokered_entries_on_record

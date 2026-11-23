@@ -739,6 +739,89 @@ class TokenBrokerSwitchTest < ActiveSupport::TestCase
     end
   end
 
+  test "a refusal is recorded, so a retry after the switch goes off puts the entry back" do
+    turn_token_broker_on
+    stub_mcp_catalog(ArtifactIdentity.canonicalize("@a/c/image-diff" => brokered_strad_entry("image-diff"), OTHER_X => static_strad_entry("image-diff")))
+    prepared(:claude, true)
+    assert_equal [ "image-diff" ], @session.reload.metadata[RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY]
+    turn_token_broker_off
+    expect_reprepare { remint }
+  end
+
+  # --- what the off switch must not take with it -------------------------------
+
+  test "on then off: a server Zimmer injects is never removed, even after a turn on which the catalog could not be read" do
+    %i[claude codex].each do |runtime|
+      [ true, false ].each do |baseline|
+        fs = MockFileSystemAdapter.new
+        @session.update_columns(mcp_servers: %w[image-diff], custom_metadata: { "injected_mcp_servers" => [ "zimmer" ] })
+        turn_token_broker_on
+        with_catalog(declared: true) do
+          write_entries(runtime, fs, "zimmer" => { "url" => "http://localhost:3000/mcp" }, "image-diff" => { "url" => catalog_url })
+          ServersConfig.stubs(:all!).raises(AirCatalogService::CatalogError, "down")
+          table = server_table(runtime, prepared(runtime, true, fs: fs, keep: true))
+          assert table.key?("zimmer"), "#{runtime}: Zimmer's own server survives an unreadable catalog"
+          refute table.key?("image-diff"), runtime
+          ServersConfig.unstub(:all!)
+        end
+        @session.merge_metadata!(RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY => %w[image-diff zimmer])
+        @session.update_columns(mcp_servers: []) if baseline
+        turn_token_broker_off
+        with_catalog(declared: true) do
+          assert server_table(runtime, prepared(runtime, true, fs: fs, keep: true, baseline: baseline)).key?("zimmer"), "#{runtime} baseline=#{baseline}"
+        end
+      end
+    end
+  end
+
+  test "on then off: an entry the repository wrote under an unselected brokered name is not deleted once off" do
+    RUNTIMES.each_key do |runtime|
+      fs = MockFileSystemAdapter.new
+      with_grant(extra: { "svg-tracer" => brokered_strad_entry("svg-tracer") }) do
+        write_entries(runtime, fs, "svg-tracer" => { "url" => "https://repo.example.com/mcp" })
+        prepared(runtime, true, fs: fs, keep: true)
+        turn_token_broker_off
+        fresh = MockFileSystemAdapter.new
+        write_entries(runtime, fresh, "svg-tracer" => { "url" => "https://repo.example.com/mcp" })
+        assert_includes prepared(runtime, true, fs: fresh, keep: true), "https://repo.example.com/mcp", runtime
+      end
+      McpBrokerGrant.destroy_all
+    end
+  end
+
+  test "on then off: a selected entry AIR was not given back is removed, not kept with its revoked token" do
+    %i[claude codex].each do |runtime|
+      fs = MockFileSystemAdapter.new
+      with_grant { assert_includes prepared(runtime, true, fs: fs), "strad_oat_" }
+      turn_token_broker_off
+      stub_mcp_catalog("other" => static_strad_entry("other"))
+      refute_includes prepared(runtime, true, fs: fs, keep: true), "strad_oat_", runtime
+      McpBrokerGrant.destroy_all
+    end
+  end
+
+  test "pi, on then off: an entry is not protected by another catalog's entry with the same short id" do
+    fs = MockFileSystemAdapter.new
+    with_grant { assert_includes prepared(:pi, true, fs: fs), "strad_oat_" }
+    turn_token_broker_off
+    with_contested(local: false, other: false, selected: [ OTHER_X ]) { refute_includes prepared(:pi, true, fs: fs), "strad_oat_" }
+  end
+
+  test "on then off: a server degraded because its child token was rejected mid-turn is no longer recorded as lost" do
+    fs = MockFileSystemAdapter.new
+    with_grant do
+      prepared(:claude, true, fs: fs)
+      @session.reload.merge_metadata!("mcp_degraded_servers" => [ { "name" => "image-diff", "error" => "HTTP 401" }, { "name" => "granola", "error" => "timeout" } ])
+      turn_token_broker_off
+      prepared(:claude, true, fs: fs)
+    end
+    assert_equal %w[granola], @session.reload.degraded_mcp_servers.map { |entry| entry["name"] }
+  end
+
+  test "a restart from scratch forgets the record with the clone it was about" do
+    assert_includes Session::SETUP_ARTIFACT_KEYS, RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY
+  end
+
   test "a resource keeps its userinfo, port and path, so it never equals a different one" do
     base = TokenBroker.normalize_resource("https://strad.example.com/mcp")
     %w[https://user@strad.example.com/mcp https://strad.example.com:8443/mcp https://strad.example.com/mcp2 https://strad.example.com/mcp/x

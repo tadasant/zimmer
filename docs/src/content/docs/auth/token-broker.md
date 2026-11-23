@@ -56,16 +56,19 @@ does can cause it.
 :::
 
 Turning the broker off takes it out of a session's config at the session's next prepare. Zimmer records
-in the session's metadata (`brokered_config_entries`, which a fork inherits) which config keys the
-broker wrote or removed. A selected server goes back to what the catalog says, also on Pi, whose file
-AIR does not rewrite, and on the reused-clone path, which otherwise runs no prepare. A key the session
-does not select is removed. A server the broker had left out stops being recorded as degraded. A turn
+in the session's metadata (`brokered_config_entries`, which a fork inherits and a restart from scratch
+drops) which of the session's servers the broker wrote or left out. A selected server goes back to what
+the catalog says, also on Pi, whose file AIR does not rewrite, and on the reused-clone path, which
+otherwise runs no prepare. A recorded server the session has since dropped, or one nothing writes back
+and that still carries a child token, is removed. A server Zimmer injects itself never is. A server
+the broker had left out, or whose child token was rejected, stops being recorded as degraded. A turn
 that is already running keeps what it started with.
 
 Two things are not restored. An entry the *repository* or the *agent* wrote under a brokered server's
-name is replaced by the catalog's while the broker is on, and is not brought back. With an unreadable
-catalog every server in the config, declared or not, is left out of that turn, because any of them
-could be brokered. Selected ones return with the catalog.
+name is taken out of the clone's config while the broker is on, and comes back only when something
+writes it again. With an unreadable catalog every server in the config except Zimmer's own is left out
+of that turn, declared or not, because any of them could be brokered. Selected ones return with the
+catalog.
 
 ## Cutover
 
