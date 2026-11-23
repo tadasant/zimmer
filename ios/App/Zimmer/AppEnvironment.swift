@@ -49,6 +49,9 @@ final class AppEnvironment {
     /// `-ZimmerFixtureCancelSignIn`: the fixture's add-a-deployment sign-in is closed unfinished,
     /// as a person closing the sign-in sheet does.
     let fixtureCancelsSignIn: Bool
+    /// `-ZimmerFixtureEdgeNeedsAppHost`: the fixture's add-a-deployment sign-in, with the App host
+    /// left empty, is refused as a web origin behind Cloudflare Access refuses the token call.
+    let fixtureEdgeNeedsAppHost: Bool
 
     private let transport = URLSessionTransport()
     private let store: DeploymentStore
@@ -63,6 +66,7 @@ final class AppEnvironment {
         if arguments.contains("-ZimmerFixture") {
             isFixture = true
             fixtureCancelsSignIn = arguments.contains("-ZimmerFixtureCancelSignIn")
+            fixtureEdgeNeedsAppHost = arguments.contains("-ZimmerFixtureEdgeNeedsAppHost")
             let fixture = Self.fixture(arguments: arguments, transport: transport)
             store = InMemoryDeploymentStore(fixture.list)
             deployments = fixture.list
@@ -77,6 +81,7 @@ final class AppEnvironment {
 
         isFixture = false
         fixtureCancelsSignIn = false
+        fixtureEdgeNeedsAppHost = false
         store = UserDefaultsDeploymentStore()
         deployments = DeploymentList.load(from: store) {
             KeychainTokenStore(account: Deployment.migratedAccount).load()

@@ -19,6 +19,11 @@ public enum ZimmerError: Error, Equatable, Sendable {
     /// (`EdgeRefusal`), and a fresh edge login did not fix it. Not a problem with the
     /// Zimmer sign-in, which is kept.
     case edgeRefused
+    /// An access proxy refused a request sent to the web origin, because no app host is set.
+    /// Behind Cloudflare Access the web origin answers a machine call with a 401 carrying
+    /// `cf-access-aud`; the phone has no edge credential to renew there, so the fix is the
+    /// app host the operator gave out, not another edge sign-in.
+    case edgeNeedsAppHost
     /// The edge's tunnel answered 404 for a path that is not on the app host's allow-list.
     /// A bug in the edge or in the app, never something to retry.
     case edgeNotRouted(String)
@@ -36,6 +41,16 @@ public enum ZimmerError: Error, Equatable, Sendable {
         return .transport(String(describing: error))
     }
 
+    /// The access proxy's refusal, as the deployment's addresses explain it: with an app host,
+    /// that host's edge credential was refused (`edgeRefused`); without one, the request went to
+    /// the web origin, which has no edge sign-in to redo (`edgeNeedsAppHost`).
+    public static func edgeRefusal(for origins: ServerOrigins?) -> ZimmerError {
+        origins?.isSplit == false ? .edgeNeedsAppHost : .edgeRefused
+    }
+
+    /// Either of the edge's refusals.
+    public var isEdgeRefusal: Bool { self == .edgeRefused || self == .edgeNeedsAppHost }
+
     /// Gateway timeouts: the proxy's own 504 and Cloudflare's 524 ("a timeout occurred").
     static let gatewayTimeoutStatuses: Set<Int> = [504, 524]
 
@@ -47,6 +62,9 @@ public enum ZimmerError: Error, Equatable, Sendable {
         case .edgeRefused:
             return "The network edge in front of Zimmer refused this phone. "
                 + "Sign in to the edge again from Settings; your Zimmer sign-in is kept."
+        case .edgeNeedsAppHost:
+            return "This deployment's network edge refused the app. It likely needs an app host: "
+                + "expand \"App host\" on Add a deployment and enter the address your operator gave you."
         case let .edgeNotRouted(path):
             return "The app host does not serve \(path). This is a bug in the app or its edge."
         case let .http(status, message): return message ?? "Zimmer answered \(status)."

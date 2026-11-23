@@ -692,6 +692,14 @@ A deployment can serve the app from two origins:
 
 A deployment without an app host uses one origin for both, and there is no edge sign-in.
 
+The App host field sits under a collapsed row on the sign-in and Add a deployment screens, so it is
+easy to leave empty on a deployment that needs one. When that happens, the token call goes to the web
+origin, and its Access application refuses it with a 401 carrying `cf-access-aud`. With no app host
+set there is no edge sign-in to redo, so the app says so: the deployment likely needs an app host. On
+the sign-in and Add a deployment screens the App host row opens with its field focused. The "sign in
+to the edge again" message is kept for a deployment that has an app host whose edge credential was
+refused.
+
 ## Signing in
 
 On a deployment with an app host, the app signs in twice, and the two credentials stay independent.

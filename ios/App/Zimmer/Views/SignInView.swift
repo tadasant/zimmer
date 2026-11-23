@@ -25,6 +25,9 @@ struct SignInView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var server = ""
     @State private var appHost = ""
+    /// The App host row, opened by hand or by an edge refusal that an app host would fix.
+    @State private var showsAppHost = false
+    @FocusState private var appHostFocused: Bool
     @State private var isSigningIn = false
     @State private var confirmingRemove = false
 
@@ -104,6 +107,13 @@ struct SignInView: View {
             server = origins.web.absoluteString
             appHost = origins.isSplit ? origins.api.absoluteString : ""
         }
+        // The web origin's edge refused the app because no app host was given: the field that
+        // fixes it comes out from under its collapsed row, ready to type into.
+        .onChange(of: workspaces.addError) { _, error in
+            guard error == .edgeNeedsAppHost, asksForAddress else { return }
+            showsAppHost = true
+            appHostFocused = true
+        }
     }
 
     private var asksForAddress: Bool {
@@ -175,7 +185,7 @@ struct SignInView: View {
                 .autocorrectionDisabled()
                 .modifier(SignInField())
                 .accessibilityIdentifier("signin.server")
-            DisclosureGroup {
+            DisclosureGroup(isExpanded: $showsAppHost) {
                 VStack(alignment: .leading, spacing: 6) {
                     TextField("Same as the server", text: $appHost)
                         .textContentType(.URL)
@@ -183,6 +193,7 @@ struct SignInView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .modifier(SignInField())
+                        .focused($appHostFocused)
                         .accessibilityIdentifier("signin.apphost")
                     Text("Only for a deployment that serves the app from its own hostname.")
                         .font(.caption)
@@ -239,11 +250,11 @@ struct ErrorBanner: View {
     let error: ZimmerError
 
     var body: some View {
-        let tone = error == .edgeRefused ? Theme.status(.waiting).text : Theme.danger
+        let tone = error.isEdgeRefusal ? Theme.status(.waiting).text : Theme.danger
         Label {
             Text(error.userMessage).foregroundStyle(Theme.ink)
         } icon: {
-            Image(systemName: error == .edgeRefused ? "network.slash" : "exclamationmark.triangle.fill")
+            Image(systemName: error.isEdgeRefusal ? "network.slash" : "exclamationmark.triangle.fill")
                 .foregroundStyle(tone)
         }
         .font(.callout)
@@ -251,6 +262,6 @@ struct ErrorBanner: View {
         .padding(14)
         .themeCard(radius: Theme.smallRadius)
         .overlay(alignment: .leading) { tone.frame(width: 3).padding(.vertical, 12) }
-        .accessibilityIdentifier(error == .edgeRefused ? "error.edge" : "error.banner")
+        .accessibilityIdentifier(error.isEdgeRefusal ? "error.edge" : "error.banner")
     }
 }
