@@ -79,6 +79,7 @@ final class FakeWritesTests: XCTestCase {
 
         try Data().write(to: directory.appendingPathComponent("visibility.answer"))
         _ = try await write.value
+        XCTAssertFalse(FileManager.default.fileExists(atPath: held), "nothing is held now")
         let taken = try await api.session(1038).session
         XCTAssertEqual(taken.visibility, .hidden, "let go, it is")
         // Let go is let go: the same write again is not held.
@@ -98,7 +99,9 @@ final class FakeWritesTests: XCTestCase {
             XCTFail("a held read was answered though nobody let it go")
         } catch is CancellationError {}
 
+        let asked = Task { try await api.openSession(1038) }
         try Data().write(to: directory.appendingPathComponent("open_session.answer"))
-        _ = try await api.openSession(1038)
+        let opened = try await asked.value.session
+        XCTAssertEqual(opened.id, 1038)
     }
 }

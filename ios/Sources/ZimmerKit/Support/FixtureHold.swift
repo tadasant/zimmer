@@ -8,8 +8,8 @@ import Foundation
 /// an answer six seconds away was overtaken by two queries (actions/runs/45309598346).
 ///
 /// The signal is a pair of files in `directory`, because a UI test runs in another process:
-/// `<name>.held` appears when the app asks for the answer, and it is given once `<name>.answer`
-/// is there. `FixtureHold.swift` in `ZimmerUITests` is the other end.
+/// `<name>.held` is there while the app waits for the answer, and it is given once
+/// `<name>.answer` is there. `FixtureHold.swift` in `ZimmerUITests` is the other end.
 public struct FixtureHold: Sendable {
     /// What is held: the names of writes (`FakeZimmerAPI.refusableWrites`), or `openSession`.
     public let names: Set<String>
@@ -29,7 +29,10 @@ public struct FixtureHold: Sendable {
         let files = FileManager.default
         let answer = directory.appendingPathComponent("\(name).answer").path
         try files.createDirectory(at: directory, withIntermediateDirectories: true)
-        try Data().write(to: directory.appendingPathComponent("\(name).held"))
+        let held = directory.appendingPathComponent("\(name).held")
+        try Data().write(to: held)
+        // Answered, or the asking given up: either way no longer held.
+        defer { try? files.removeItem(at: held) }
         while !files.fileExists(atPath: answer) {
             try await Task.sleep(for: .milliseconds(50))
         }
