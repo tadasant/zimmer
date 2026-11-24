@@ -92,15 +92,22 @@ class SessionEvents::FeedTest < ActiveSupport::TestCase
     assert_empty poll(cursor: result[:cursor])[:events]
   end
 
-  test "a cursor older than the log, or past the database's transactions, is truncated and reset" do
+  test "a cursor older than the log is truncated and served what is kept; one past the database's transactions starts from now" do
     say "kept"
     old = poll(cursor: from_the_start(now: 20.days.ago))
     assert old[:truncated]
-    assert_empty old[:events]
+    assert_equal [ "kept" ], old[:events].map { |event| event[:data]["message"] }
 
     ahead = poll(cursor: "1.#{@txid + 1_000_000}.0.#{Time.current.to_i}")
     assert ahead[:truncated]
     assert_equal "1.#{@horizon.first}", ahead[:cursor].split(".").first(2).join(".")
+  end
+
+  test "a cursor in the middle of a backlog is as old as the row it stands on" do
+    3.times { |i| say("m#{i}").update_columns(created_at: 13.days.ago) }
+    page = poll(cursor: from_the_start, maxEvents: 1)
+    assert page[:hasMore]
+    assert poll(cursor: page[:cursor], now: 2.days.from_now)[:truncated]
   end
 
   test "maxAgeMs starts later than the cursor and says so when it skipped something" do
@@ -119,8 +126,8 @@ class SessionEvents::FeedTest < ActiveSupport::TestCase
       assert_equal code, error.code
     end
     [ { arguments: { reason: "nope" } }, { arguments: { session_id: "7" } }, { arguments: [] }, { maxEvents: 0 },
-      { maxAgeMs: -1, cursor: from_the_start } ].each do |params|
-      assert_equal :invalid_params, assert_raises(SessionEvents::Feed::Refused) { poll(**{ cursor: nil }.merge(params)).then { poll(cursor: from_the_start, **params.except(:cursor)) } }.code
+      { maxAgeMs: -1 }, { maxAgeMs: 10**400 } ].each do |params|
+      assert_equal :invalid_params, assert_raises(SessionEvents::Feed::Refused, params.inspect) { poll(cursor: from_the_start, **params) }.code
     end
     assert_equal :invalid_params, assert_raises(SessionEvents::Feed::Refused) { poll(cursor: "garbage") }.code
   end

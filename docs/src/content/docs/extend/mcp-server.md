@@ -717,8 +717,8 @@ follow-up `change_hooks` — which, for a clone-only session, would race the job
 ### MCP Events: what sessions do, as events
 
 Zimmer's server publishes [MCP Events](/sessions/mcp-events-spec-pin/) (SEP-3415). A connection that can
-read sessions — it carries `get_session`, so the default surface, `sessions`, `sessions_readonly` and
-`self_session` — finds `io.modelcontextprotocol/events` in its `initialize` capabilities and can call
+read sessions — it carries `get_session`, so the default surface, `sessions`, `sessions_readonly`,
+`self_session` and `live_mode` — finds `io.modelcontextprotocol/events` in its `initialize` capabilities and can call
 `events/list` and `events/poll`. Any other connection is offered nothing and answers `events/*` with
 Method not found. A connection fenced by `allowed_agent_roots` gets those roots' events and no others.
 
@@ -739,16 +739,17 @@ curl -s https://your-zimmer.example.com/mcp -H "X-API-Key: $ZIMMER_API_KEY" \
 
 Delivery is **poll only**. A `null` cursor means "from now" and returns none; after that each answer's
 cursor is the next request's. Events are kept 14 days (`SessionEvent::RETENTION`,
-`InboundEventRetentionJob`), and a cursor older than that is answered `truncated: true`. Events are served
+`InboundEventRetentionJob`), and a cursor older than that is answered `truncated: true` with what is still kept. Events are served
 in commit order, once every older transaction has finished, so a poller never steps over a row that
 committed late (`SessionEvents::Feed`). `Mcp-Name` is required, as the SEP says: a poll without it is a
 400 `HeaderMismatch`.
 
 **A parent does not poll.** An agent session is not running when the event happens, so Zimmer is the
 events client on its behalf. Spawning a session under a parent writes the parent's subscription to it
-(`SessionEventSubscription`), and a `session.message` is delivered through that subscription into the
-parent's conversation, waking it. The delivery and the published event commit together: a report the
-parent could not be given is not published. A parent's subscription covers `session.message` only. To
+(`SessionEventSubscription`). A `session.message` goes into the parent's conversation, waking it, and the
+subscription records it. `parent_session_id` decides who the parent is; the subscription follows it. The
+delivery and the published event commit together, so a report the parent could not be given is not
+published. `force_immediate` is the exception: the interrupt comes first and the event is written after it. A parent's subscription covers `session.message` only. To
 be woken when a session stops, arm `wake_me_up_when_session_changes_state` as before.
 
 Both tables are listed read-only at `/supervisor/session_events` and
@@ -788,7 +789,7 @@ cannot settle itself), `other`. The parent is told what to do with it accordingl
 child's id, title, URL and reason code — so a report is never mistaken for a human speaking.
 
 The report is published as a `session.message` [MCP event](#mcp-events-what-sessions-do-as-events) and
-delivered through the parent's subscription. That delivery is the ordinary follow-up routing rather than
+recorded on the parent's subscription. The delivery is the ordinary follow-up routing rather than
 a second path: a `running` parent takes the
 report on its queue and reads it at the end of its turn, and a `waiting` or `needs_input` parent
 takes it now. **Queuing is the default**, and `force_immediate` is opt-in, because the parent of a

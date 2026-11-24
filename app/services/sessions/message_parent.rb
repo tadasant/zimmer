@@ -4,10 +4,11 @@ module Sessions
   # A child session's one route back to the session that spawned it.
   #
   # **What travels is an MCP event.** A report is published as a `session.message`
-  # occurrence (SessionEvents) and delivered through the subscription the parent
+  # occurrence (SessionEvents) and recorded on the subscription the parent
   # has held since it spawned the child (SessionEventSubscription). Publishing and
-  # delivering commit together: a refused report is not published, and a published
-  # one was delivered. Anybody else who may read the session can poll the same
+  # delivering commit together, except when the delivery is an interrupt, which no
+  # transaction can undo: a refused report is not published, and a published one
+  # was delivered. Anybody else who may read the session can poll the same
   # event off POST /mcp.
   #
   # The asymmetry this closes: a parent has always been able to reach a child
@@ -398,8 +399,13 @@ module Sessions
       end
 
       # After the interrupt, not with it: terminating a turn is not something a
-      # transaction can undo.
-      publish
+      # transaction can undo. The report has landed, so a failure to publish it
+      # must not read as one — a child that retried would interrupt again.
+      begin
+        ActiveRecord::Base.transaction { publish }
+      rescue StandardError => e
+        ErrorReporter.report_exception(e, context: { source: "Sessions::MessageParent#interrupt_parent", session_id: child.id })
+      end
       log_both("delivered to parent session ##{parent.id} as an interrupt")
       # Deliberately NOT `enqueued_message: result.enqueued_message`. A successful interrupt
       # drains the queue through EnqueuedMessageProcessorService, which destroys

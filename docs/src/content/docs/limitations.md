@@ -5972,7 +5972,8 @@ a parent is unaffected.
 
 Publishing a report that interrupts its parent (`force_immediate`) is not in one transaction with the
 interrupt, which cannot be undone. A crash between the two delivers the report and leaves the event out of
-the log.
+the log. `session.state_changed` is published by a job after the transition; one whose job is lost, during a
+deploy for example, is not published later. Waiting on a session is still `wake_me_up_when_session_changes_state`.
 
 ### MCP event triggers follow an unmerged draft, with poll and webhook but no push
 

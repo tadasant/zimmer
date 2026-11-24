@@ -8,13 +8,15 @@ module SessionEvents
   # position that has been passed can never gain a row behind it, and an answer
   # with nothing in it still moves the cursor up to that line.
   #
-  # `truncated` is set when the cursor is older than the log keeps (RETENTION),
-  # or names a position past the database's newest transaction — a database
-  # restored elsewhere counts transactions again from a lower number — or when
-  # `maxAgeMs` starts later than the cursor does.
+  # `truncated` is set when the cursor is older than the log keeps (RETENTION):
+  # what is still kept is served from there. It is also set when the cursor names a
+  # position past the database's newest transaction — a database restored elsewhere
+  # counts transactions again from a lower number — which restarts it from now, and
+  # when `maxAgeMs` starts later than the cursor does.
   class Feed
     DEFAULT_MAX = 50
     LIMIT_MAX = 200
+    MAX_AGE_MS = 366.days.in_milliseconds
     NEXT_POLL_MS = 5_000
     CURSOR = /\A1\.(\d{1,19})\.(\d{1,19})\.(\d{1,12})\z/
 
@@ -50,8 +52,9 @@ module SessionEvents
       return result([], horizon) if @params["cursor"].nil?
 
       position, issued_at = read_cursor
-      truncated = issued_at < @now - SessionEvent::RETENTION || position.first > horizon.first
-      position = horizon if truncated
+      unknown = position.first > horizon.first
+      truncated = unknown || issued_at < @now - SessionEvent::RETENTION
+      position = horizon if unknown
 
       floor = age_floor
       scope = filtered(descriptor[:name], arguments)
@@ -67,16 +70,17 @@ module SessionEvents
       rows = rows.first(limit)
       reached = has_more ? [ rows.last.txid, rows.last.id ] : horizon
       visible = rows.select { |row| @readable.call(row.agent_root) }
-      result(visible, reached, truncated: truncated, has_more: has_more)
+      # A cursor in the middle of a backlog is as old as where it stands.
+      result(visible, reached, truncated: truncated, has_more: has_more, issued_at: has_more ? rows.last.created_at : @now)
     end
 
     private
 
-    def result(rows, reached, truncated: false, has_more: false)
+    def result(rows, reached, truncated: false, has_more: false, issued_at: @now)
       {
         resultType: "complete",
         events: rows.map(&:as_occurrence),
-        cursor: "1.#{reached.first}.#{reached.last}.#{@now.to_i}",
+        cursor: "1.#{reached.first}.#{reached.last}.#{issued_at.to_i}",
         truncated: truncated,
         hasMore: has_more,
         nextPollMs: NEXT_POLL_MS
@@ -99,7 +103,7 @@ module SessionEvents
     def age_floor
       ms = @params["maxAgeMs"]
       return nil if ms.nil?
-      raise Refused.new(:invalid_params, "maxAgeMs must be a non-negative integer") unless ms.is_a?(Integer) && ms >= 0
+      raise Refused.new(:invalid_params, "maxAgeMs must be an integer from 0 to #{MAX_AGE_MS}") unless ms.is_a?(Integer) && ms.between?(0, MAX_AGE_MS)
 
       @now - (ms / 1000.0)
     end

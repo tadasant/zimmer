@@ -750,8 +750,8 @@ otherwise never learn. **Queuing is the default rather than interrupting**: the 
 child is usually a router mid-delegation, and ending that turn to say "child #N cannot do this"
 costs the other delegations in flight while the news itself keeps a few minutes.
 
-The report is also published as a `session.message` MCP event, in the same transaction as the delivery:
-a refused report is not published. See [MCP
+The report is also published as a `session.message` MCP event, in the same transaction as the delivery
+(after it, for `force_immediate`): a refused report is not published. See [MCP
 Events](/extend/mcp-server/#mcp-events-what-sessions-do-as-events).
 
 Because it is the ordinary queue, it is inside the ordinary accounting. The row's `origin` is

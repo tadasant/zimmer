@@ -66,7 +66,7 @@ Zimmer's `POST /mcp` publishes `session.message` and `session.state_changed`
 | `events/list` | Both event types, one page, `delivery: ["poll"]` |
 | `events/poll` (`name`, `arguments`, `cursor`, `maxEvents`, `maxAgeMs`) | `SessionEvents::Feed`; `maxEvents` defaults to 50, at most 200 |
 | `null` cursor means "from now" | Yes |
-| `hasMore`, `nextPollMs` (5 seconds), `truncated` | Yes; `truncated` past 14 days of retention, past a `maxAgeMs` floor that skipped events, or on a cursor from a database whose transaction counter was reset |
+| `hasMore`, `nextPollMs` (5 seconds), `truncated` | Yes; `truncated` past 14 days of retention (what is kept is still served), past a `maxAgeMs` floor that skipped events, or on a cursor from a database whose transaction counter was reset |
 | Stable `eventId` | `session:<id>:…`; a retried publish writes one row |
 | `Mcp-Name` required on `events/poll` | 400 and `HeaderMismatch` (`-32020`) when missing or wrong |
 | `InvalidParams`, `NotFound` (`data.kind`) | Yes |

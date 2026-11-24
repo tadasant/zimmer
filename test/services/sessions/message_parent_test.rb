@@ -379,4 +379,73 @@ class Sessions::MessageParentTest < ActiveSupport::TestCase
       assert_match(/reason: wrong_scope/, line)
     end
   end
+
+  # --- The event it travels as ------------------------------------------------
+
+  def messages_from(child) = SessionEvent.where(session: child, name: SessionEvents::MESSAGE)
+
+  test "queued and direct deliveries each publish one event, recorded on the parent's subscription" do
+    { "running" => :queued, "needs_input" => :sent }.each do |status, delivery|
+      parent = create_session(status: status)
+      child = create_session(parent: parent)
+
+      assert_equal delivery, report(child, message: "done it", reason: "done").delivery
+      event = messages_from(child).sole
+      assert_equal "done it", event.data["message"]
+      assert_equal event.event_id, child.event_subscriptions.sole.last_event_id
+    end
+  end
+
+  test "a report that cannot be published is not delivered" do
+    SessionEvents::Publish.stubs(:message).raises(ActiveRecord::StatementInvalid, "no")
+    %w[running needs_input].each do |status|
+      parent = create_session(status: status)
+      child = create_session(parent: parent)
+
+      assert_raises(ActiveRecord::StatementInvalid) { report(child) }
+      assert_empty parent.reload.enqueued_messages
+      assert_equal status, parent.status
+      assert_nil parent.metadata["pending_follow_up_prompt"]
+    end
+  end
+
+  test "an interrupt that landed is a success even when its event could not be written" do
+    parent = create_session(status: "running")
+    child = create_session(parent: parent)
+    Sessions::InterruptWithFollowUp.stubs(:call).returns(Sessions::InterruptWithFollowUp::Result.new(success: true, withdrawn: false))
+    report(child, force_immediate: true)
+    assert_equal 1, messages_from(child).count
+
+    SessionEvents::Publish.stubs(:message).raises(ActiveRecord::StatementInvalid, "no")
+    ErrorReporter.expects(:report_exception).once
+    assert report(child, force_immediate: true).success?
+  end
+
+  test "a child from before subscriptions, or whose parent changed, has exactly its parent's" do
+    first = create_session(status: "running")
+    second = create_session(status: "running")
+    child = create_session(parent: first)
+    child.event_subscriptions.delete_all
+    report(child)
+    assert_equal first, child.event_subscriptions.reload.sole.subscriber
+
+    child.update_column(:parent_session_id, second.id)
+    report(child.reload)
+    assert_equal second, child.event_subscriptions.reload.sole.subscriber
+  end
+
+  test "a refusal publishes nothing" do
+    [ create_session, create_session(parent: create_session(status: "archived")), create_session(parent: create_session(status: "failed")) ].each do |child|
+      assert_not report(child).success?
+      assert_equal 0, messages_from(child).count
+    end
+  end
+
+  test "the parent is told what to do with each kind of report" do
+    child = create_session(parent: create_session(status: "running"))
+    { "done" => /not proof/, "update" => /still working/, "question" => /follow_up` on session ##{child.id}/, "wrong_scope" => /re-delegate/ }.each do |reason, text|
+      report(child, reason: reason)
+      assert_match text, child.parent_session.enqueued_messages.order(:id).last.content
+    end
+  end
 end

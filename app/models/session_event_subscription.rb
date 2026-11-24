@@ -21,12 +21,14 @@ class SessionEventSubscription < ApplicationRecord
 
   # The parent's subscription to +child+. A session from before subscriptions
   # existed, or one whose parent changed since, gets its row here; the edge
-  # itself (`parent_session_id`) is what decides who the parent is.
+  # itself (`parent_session_id`) decides who the parent is, and a row for an
+  # earlier parent goes.
   #
   # @return [SessionEventSubscription, nil] nil when the child has no parent
   def self.for_parent!(child)
     return nil if child.parent_session_id.blank? || child.parent_session_id == child.id
 
+    where(session_id: child.id, subscriber_type: "Session").where.not(subscriber_id: child.parent_session_id).delete_all
     subscribe!(session_id: child.id, subscriber_type: "Session", subscriber_id: child.parent_session_id,
                event_names: [ SessionEvents::MESSAGE ])
   end

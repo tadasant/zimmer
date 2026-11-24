@@ -16,11 +16,18 @@ class SessionStateEventJob < ApplicationJob
     "session_archived" => "archived"
   }.freeze
 
-  def perform(event_name, session_id, key, settle_marker = nil)
+  # @param occurred_at [String] when the transition happened, ISO 8601
+  def perform(event_name, session_id, key, occurred_at, settle_marker = nil)
     state = STATES_BY_EVENT.fetch(event_name)
     subject = AoEventSubject.resolve(event_name, session_id, settle_marker)
-    return if subject.nil? || subject.stale? || subject.session.status_summary_fork?
+    return if subject.nil? || subject.session.status_summary_fork?
 
-    SessionEvents::Publish.state_changed(subject.session, state: state, key: key)
+    # Under the row lock, so a session that archives now cannot have its earlier
+    # needs_input published after it.
+    subject.session.with_lock do
+      next if subject.stale?
+
+      SessionEvents::Publish.state_changed(subject.session, state: state, key: key, occurred_at: Time.iso8601(occurred_at))
+    end
   end
 end

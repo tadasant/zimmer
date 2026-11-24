@@ -41,8 +41,9 @@ module Mcp
     end
 
     def poll(params, context, mcp_name, on_header_mismatch)
+      params = {} unless params.is_a?(Hash)
       name = params[:name] || params["name"]
-      unless mcp_name.to_s == name.to_s
+      unless mcp_name.present? && mcp_name == name.to_s
         on_header_mismatch.call
         raise MCP::Server::RequestHandlerError.new(
           "The Mcp-Name header is missing or does not match params.name", params,
