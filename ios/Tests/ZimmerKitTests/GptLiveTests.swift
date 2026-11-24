@@ -492,3 +492,80 @@ final class GptLiveConductorTests: XCTestCase {
         XCTAssertNil(GptLiveConductor.billedSeconds(nil))
     }
 }
+
+/// Work coming back from the background during a call (`LiveBackgroundResults`): the web dock's
+/// `lib/live_background_results.js` rules.
+final class LiveBackgroundResultsTests: XCTestCase {
+    private let result = LiveBackgroundResult(id: 1, text: "It finished.")
+
+    func testAClaimIsMadeOnlyWhenSomethingIsWaitingAndTheCallIsIdle() {
+        var results = LiveBackgroundResults(call: "call-1234")
+        XCTAssertNil(results.claim(waiting: 0, idle: true))
+        XCTAssertNil(results.claim(waiting: 1, idle: false))
+        XCTAssertEqual(results.claim(waiting: 1, idle: true), "call-1234:1")
+        XCTAssertNil(results.claim(waiting: 1, idle: true), "one at a time")
+    }
+
+    func testALostAnswerIsAskedForAgainWithTheSameClaim() {
+        var results = LiveBackgroundResults(call: "call-1234")
+        XCTAssertEqual(results.claim(waiting: 1, idle: true), "call-1234:1")
+        results.failed()
+        XCTAssertEqual(results.claim(waiting: 0, idle: true), "call-1234:1", "whatever the count says: Zimmer no longer counts what this call claimed")
+        results.answered([result])
+        XCTAssertNil(results.claim(waiting: 1, idle: true), "what is in hand goes first")
+    }
+
+    func testAResultIsHandedOverOnceAndOnlyWhileIdle() {
+        var results = LiveBackgroundResults(call: "call-1234")
+        _ = results.claim(waiting: 1, idle: true)
+        results.answered([result])
+        XCTAssertNil(results.next(idle: false))
+        XCTAssertEqual(results.next(idle: true), "It finished.")
+        results.delivered()
+        XCTAssertNil(results.next(idle: true))
+        XCTAssertEqual(results.unreported, [1], "Zimmer is told, until it has heard")
+        results.reported([1])
+        XCTAssertEqual(results.unreported, [])
+
+        XCTAssertEqual(results.claim(waiting: 1, idle: true), "call-1234:2")
+        results.answered([result])
+        XCTAssertNil(results.next(idle: true), "already handed over")
+    }
+
+    func testTheOverviewCarriesTheCountAndAClaimIsPosted() async throws {
+        let transport = ScriptedTransport([
+            { _ in Fixtures.json(200, ["live_conversations": [], "current_id": 7, "background_results": 2]) },
+            { _ in Fixtures.json(200, ["results": [["id": 1, "text": "It finished."]]]) },
+        ])
+        let api = ZimmerHTTPClient(auth: AuthSession(store: Fixtures.signedIn(), transport: transport), transport: transport)
+
+        let overview = try await api.liveConversations(call: "call-1234")
+        XCTAssertEqual(overview.backgroundResults, 2)
+        XCTAssertEqual(transport.sent[0].url.query, "call=call-1234")
+
+        let claimed = try await api.claimLiveBackgroundResults(7, claim: "call-1234:1")
+        XCTAssertEqual(claimed, [result])
+        XCTAssertEqual(transport.sent[1].url.path, "/api/v1/live_conversations/7/background_results")
+    }
+
+    func testGptLiveTakesItAsQuietContextWhileIdle() {
+        var conductor = GptLiveConductor(callKey: "k")
+        XCTAssertFalse(conductor.idle, "not started")
+        _ = conductor.handle(.object(["type": .string("session.started")]), at: 0)
+        XCTAssertTrue(conductor.idle)
+        let event = conductor.context("It finished.")
+        XCTAssertEqual(event["type"]?.string, "session.thinking.append")
+        XCTAssertEqual(event["delegation_id"], .null)
+        XCTAssertEqual(event["content"]?.string, "It finished.")
+
+        _ = conductor.handle(.object(["type": .string("session.input_transcript.delta"), "delta": .string("Hi")]), at: 1)
+        XCTAssertFalse(conductor.idle, "the person is talking")
+    }
+
+    func testRealtimeTakesItAsASystemItemAndAsksForNoReply() {
+        XCTAssertTrue(RealtimeConductor().idle)
+        let event = RealtimeConductor.context("It finished.")
+        XCTAssertEqual(event["type"]?.string, "conversation.item.create")
+        XCTAssertEqual(event["item"]?["role"]?.string, "system")
+    }
+}

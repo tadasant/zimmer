@@ -6,6 +6,14 @@
       <p class="font-medium"><%= live_settings_change_title(turn) %> · <%= link_to "Live settings", live_settings_path, class: "underline" %></p>
       <p class="mt-1 whitespace-pre-wrap break-words"><%= live_settings_change_text(turn).truncate(2_000) %></p>
     </div>
+  <% elsif live_background_result?(turn) %>
+    <%# Something started earlier came back by itself. An agent wrote it, so it never looks like a line either side said. %>
+    <div class="max-w-full w-full sm:w-auto sm:max-w-[85%] rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900" data-live-background-result>
+      <p class="font-medium break-words">Came back: <%= live_background_result_title(turn) %> <%= link_to "Open", session_path(turn.tool_arguments["session_id"]), class: "underline" if turn.tool_arguments.is_a?(Hash) && turn.tool_arguments["session_id"] %></p>
+      <% if live_background_result_text(turn).present? %>
+        <p class="mt-1 whitespace-pre-wrap break-words"><%= live_linkify(live_background_result_text(turn).truncate(2_000)) %></p>
+      <% end %>
+    </div>
   <% elsif turn.tool? %>
     <details class="max-w-full w-full sm:w-auto sm:max-w-[85%] rounded-md border <%= turn.tool_error ? 'border-red-200 bg-red-50' : 'border-gray-200 bg-gray-50' %> px-3 py-2 text-xs">
       <summary class="cursor-pointer text-gray-600 break-all">

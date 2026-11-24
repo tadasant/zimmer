@@ -8,10 +8,13 @@
 # subscription (Session#subscribe_parent_to_events), and delivering an event to a
 # subscriber is handing it that subscriber's own inbox.
 #
+# A Live conversation is subscribed the same way to the sessions it starts and
+# messages, and its inbox is LiveConversations::BackgroundResults.
+#
 # The row exists at most once per (session, subscriber), and records the last
 # event it delivered, so "did the parent hear about this" has an answer.
 class SessionEventSubscription < ApplicationRecord
-  SUBSCRIBER_TYPES = %w[Session].freeze
+  SUBSCRIBER_TYPES = %w[Session LiveConversation].freeze
 
   belongs_to :session
   belongs_to :subscriber, polymorphic: true
@@ -41,8 +44,9 @@ class SessionEventSubscription < ApplicationRecord
     find_by!(edge)
   end
 
+  # `updated_at` is left alone: it is when the subscriber last asked to listen.
   def delivered!(event)
-    update_columns(last_event_id: event.event_id, last_event_at: Time.current, updated_at: Time.current)
+    update_columns(last_event_id: event.event_id, last_event_at: Time.current)
   end
 
   private

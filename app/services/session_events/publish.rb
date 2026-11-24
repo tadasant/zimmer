@@ -33,7 +33,7 @@ module SessionEvents
     end
 
     def write(session, name, event_id:, data:, occurred_at: Time.current)
-      SessionEvent.create!(
+      event = SessionEvent.create!(
         event_id: event_id, name: name, session: session, parent_session_id: session.parent_session_id,
         agent_root: session.metadata&.dig("agent_root_key"), occurred_at: occurred_at,
         data: {
@@ -44,7 +44,17 @@ module SessionEvents
           sessionUrl: "#{AppUrl.base_url.chomp('/')}/sessions/#{session.id}"
         }.merge(data)
       )
+      ActiveRecord.after_all_transactions_commit { tell_live_mode(event) }
+      event
     end
     private_class_method :write
+
+    # Never at the cost of the event, or of the delivery it commits with.
+    def tell_live_mode(event)
+      LiveBackgroundResultJob.perform_later(event.id)
+    rescue StandardError => e
+      ErrorReporter.report_exception(e, context: { source: "SessionEvents::Publish", session_event_id: event.id })
+    end
+    private_class_method :tell_live_mode
   end
 end

@@ -1314,6 +1314,7 @@ Voice — the relay a client holding the audio connection makes:
   `session` when the call changed a Live setting an open call can take. Send `session` as a
   `session.update` when it is there, otherwise send `tools` in one. Send `output` back as a
   `function_call_output` item.
+- `POST /live_conversations/:id/background_results` → `{results: [{id, text}]}`: claim [work that came back by itself](/sessions/live/#work-coming-back-by-itself) for a voice call to hand its model. `claim` is `<call id>:<number>`; the same claim answers the same results. With `delivered` (result ids) it claims nothing and records that the call's model has been handed those. `GET /live_conversations?call=<call id>` says how many are waiting (`background_results`).
 - `POST /live_conversations/:id/session_update` → `{session}`: the `session.update` payload that
   brings an open call up to the current Live settings and guidance. Send it after the settings
   changed somewhere else, such as the app's own settings screen. `model` records the model the call

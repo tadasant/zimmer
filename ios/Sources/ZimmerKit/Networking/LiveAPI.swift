@@ -11,6 +11,13 @@ public protocol LiveAPI: Sendable {
     func liveAvailability() async throws -> LiveAvailability
     /// The newest conversations and the open one.
     func liveConversations() async throws -> LiveOverview
+    /// The same, for a call asking whether something came back from the background: `call` is the
+    /// call's own id (`LiveBackgroundResults.call`), whose own results do not count.
+    func liveConversations(call: String) async throws -> LiveOverview
+    /// Voice: claim what came back from the background, to hand the call's model as context.
+    func claimLiveBackgroundResults(_ id: Int, claim: String) async throws -> [LiveBackgroundResult]
+    /// Voice: the call's model has been handed these.
+    func reportLiveBackgroundResults(_ id: Int, claim: String, delivered: [Int]) async throws
     /// One conversation with its turns; `afterTurn` reads only turns newer than that one.
     func liveConversation(_ id: Int, afterTurn: Int?) async throws -> LiveConversation
     /// Start a fresh conversation, typed or spoken from the start, ending the open one.
@@ -100,6 +107,7 @@ struct LiveIndexResponse: Decodable {
     let live_conversations: [LiveConversation]
     let current_id: Int?
     let current: [String: Int?]?
+    let background_results: Int?
 
     var currentID: Int? { current_id ?? current?.values.compactMap { $0 }.max() }
 }
@@ -113,6 +121,20 @@ extension ZimmerHTTPClient {
     public func liveConversations() async throws -> LiveOverview {
         let response: LiveIndexResponse = try await get("/api/v1/live_conversations")
         return LiveOverview(conversations: response.live_conversations, current: response.currentID)
+    }
+
+    public func liveConversations(call: String) async throws -> LiveOverview {
+        let response: LiveIndexResponse = try await get("/api/v1/live_conversations", query: ["call": call])
+        return LiveOverview(conversations: response.live_conversations, current: response.currentID, backgroundResults: response.background_results ?? 0)
+    }
+
+    public func claimLiveBackgroundResults(_ id: Int, claim: String) async throws -> [LiveBackgroundResult] {
+        let response: LiveBackgroundResultsResponse = try await post("/api/v1/live_conversations/\(id)/background_results", json: ["claim": claim])
+        return response.results
+    }
+
+    public func reportLiveBackgroundResults(_ id: Int, claim: String, delivered: [Int]) async throws {
+        let _: LiveBackgroundResultsResponse = try await post("/api/v1/live_conversations/\(id)/background_results", json: ["claim": claim, "delivered": delivered])
     }
 
     public func liveConversation(_ id: Int, afterTurn: Int?) async throws -> LiveConversation {

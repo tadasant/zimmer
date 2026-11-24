@@ -98,6 +98,8 @@ Rails.application.routes.draw do
     # Read-only: what Zimmer's MCP server publishes as MCP Events, and who hears it (SessionEvents).
     resources :session_events, only: [ :index, :show ]
     resources :session_event_subscriptions, only: [ :index, :show ]
+    # Read-only: LiveConversations::BackgroundResults writes every row.
+    resources :live_background_results, only: [ :index, :show ]
     # Read-only: Github::PrWebhookIngest writes every row from a verified delivery.
     resources :github_pr_signals, only: [ :index, :show ]
     # Read-only: McpEventSubscriptionsJob owns every row (see McpEventWebhookSubscriptionDashboard).
@@ -282,6 +284,7 @@ Rails.application.routes.draw do
           post :tool_calls
           post :turns
           post :session_update
+          post :background_results
         end
         # Its scratchpad (LiveConversations::Scratchpad); every route takes the app's sign-in.
         resources :scratchpad_entries, only: %i[index create update destroy], controller: "live_scratchpad_entries" do
@@ -690,6 +693,7 @@ Rails.application.routes.draw do
       post :tool_calls
       post :turns
       post :session_update
+      post :background_results
     end
     # The conversation's scratchpad (LiveConversations::Scratchpad): the index
     # is the page that edits it.

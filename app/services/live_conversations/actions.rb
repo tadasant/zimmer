@@ -254,7 +254,27 @@ module LiveConversations
       turn = @conversation.turns.create!(role: role.to_s, source: "spoken", content: content.truncate(MESSAGE_MAX_LENGTH),
                                          **(role.to_s == "user" ? authorship : {}))
       @conversation.touch_activity!
+      BackgroundResults.note_spoken_line(@conversation) if turn.assistant?
       Heard.new(turn: turn, respond: true, listening: mode)
+    end
+
+    # Voice: what came back from the background for the call to hand its model as
+    # silent context (BackgroundResults). `claim` is the call's own id and a
+    # number, "<call>:<n>": the same claim gets the same answer, a new one what is
+    # waiting now. `delivered`: the ids this call's model has been handed, which
+    # claims nothing more.
+    def background_results(claim:, delivered: nil)
+      require_active!
+      raise Refused, "claim is not valid." unless BackgroundResults::CLAIM_FORMAT.match?(claim.to_s)
+
+      ids = Array(delivered).filter_map { |id| Integer(id, exception: false) }.first(50)
+      if ids.any?
+        BackgroundResults.deliver(@conversation, call: claim.split(":").first, ids: ids)
+        return { results: [] }
+      end
+
+      rows = BackgroundResults.offer(@conversation, claim: claim.to_s)
+      { results: rows.map { |row| { id: row.id, text: BackgroundResults.text_for(row) } } }
     end
 
     def finish

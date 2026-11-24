@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_24_170000) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_24_180000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -523,6 +523,31 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_24_170000) do
     t.bigint "session_id", null: false
     t.datetime "updated_at", null: false
     t.index ["session_id", "occurred_at", "id"], name: "index_human_messages_on_session_id_and_occurred_at_and_id"
+  end
+
+  create_table "live_background_results", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.bigint "delivered_after_turn_id"
+    t.datetime "delivered_at"
+    t.string "drop_reason"
+    t.datetime "dropped_at"
+    t.string "event_id", null: false
+    t.string "kind", null: false
+    t.bigint "live_conversation_id", null: false
+    t.text "message"
+    t.datetime "occurred_at", null: false
+    t.datetime "offered_at"
+    t.string "offered_claim"
+    t.bigint "offered_conversation_id"
+    t.bigint "offered_turn_id"
+    t.datetime "raised_at"
+    t.bigint "root_session_id", null: false
+    t.bigint "session_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["created_at"], name: "index_live_background_results_waiting", where: "((raised_at IS NULL) AND (dropped_at IS NULL))"
+    t.index ["live_conversation_id", "event_id"], name: "index_live_background_results_once", unique: true
+    t.index ["live_conversation_id"], name: "index_live_background_results_on_live_conversation_id"
+    t.index ["session_id"], name: "index_live_background_results_on_session_id"
   end
 
   create_table "live_conversation_turns", force: :cascade do |t|
@@ -1729,6 +1754,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_24_170000) do
   add_foreign_key "gate_decision_feedbacks", "gate_decisions"
   add_foreign_key "gate_decisions", "sessions", column: "writing_session_id", on_delete: :nullify
   add_foreign_key "human_messages", "sessions", on_delete: :cascade
+  add_foreign_key "live_background_results", "live_conversations", on_delete: :cascade
+  add_foreign_key "live_background_results", "sessions", on_delete: :cascade
   add_foreign_key "live_conversation_turns", "live_conversations", on_delete: :cascade
   add_foreign_key "live_scratchpad_entries", "live_conversations", on_delete: :cascade
   add_foreign_key "live_setting_changes", "live_conversations", on_delete: :nullify

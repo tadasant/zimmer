@@ -79,7 +79,9 @@ Zimmer's `POST /mcp` publishes `session.message` and `session.state_changed`
 - **A parent's subscription is held by Zimmer, not by the parent's runtime.** In the SEP the client owns
   its subscriptions. An agent session cannot hold a cursor between turns, so Zimmer is the client for it:
   the subscription is a `session_event_subscriptions` row written at spawn, and the event is handed to the
-  parent's message queue in the transaction that publishes it, not polled.
+  parent's message queue in the transaction that publishes it, not polled. A Live conversation's
+  subscription is held the same way and covers the sessions started under the one it names, which an
+  `events/poll` filter cannot express.
 - **The server answers `initialize`, at whatever revision the client asks for.** The extension is defined
   for 2026-07-28 and `server/discover`; the capability is declared on `initialize`, where Zimmer's own
   client and strad's read it.

@@ -5959,6 +5959,18 @@ is a `bot_mention` condition at least as wide as the passive ones; nothing enfor
 logs one `info` line naming the message and the condition that declined it, which is the only signal
 you get.
 
+### What comes back to Live Mode is told to the voice model, not proven said
+
+A result is marked said when the assistant next answers the person. Zimmer does not check that the answer
+mentions it: on a call the voice model was told to and may not. The result stays on the thread and the
+session on the board either way. GPT-Live's own handling of silent context is not something CI can run, so
+the tests stop at what the client sends it.
+
+A result waits while any session in the tree is `waiting`, which includes one asleep on a pull request the
+merge gate has not rated: "the PR is open" is not brought up until it is merged, held or finished with.
+Lineage is the spawn edge only, so work a router hands to an existing session by `follow_up` does not come
+back through it.
+
 ### Zimmer's own MCP events are poll only, and wait for the oldest open write
 
 [What Zimmer's server publishes](/extend/mcp-server/#mcp-events-what-sessions-do-as-events) is served by

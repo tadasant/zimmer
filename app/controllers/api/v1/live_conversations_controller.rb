@@ -19,6 +19,7 @@
 #   POST /api/v1/live_conversations/:id/usage          voice: the call's measured cost and timings, into the ledger (events)
 #   POST /api/v1/live_conversations/:id/tool_calls     voice: run a function call (name, arguments, call_id)
 #   POST /api/v1/live_conversations/:id/turns          voice: record a transcript line (role, content) → respond?
+#   POST /api/v1/live_conversations/:id/background_results voice: claim what came back from the background (claim), or say the call's model has it (delivered)
 #   POST /api/v1/live_conversations/:id/session_update voice: the `session.update` for the current Live settings (model: record the call's)
 #        /api/v1/live_conversations/:id/scratchpad_entries  its scratchpad (Api::V1::LiveScratchpadEntriesController)
 #
@@ -35,7 +36,7 @@ class Api::V1::LiveConversationsController < Api::BaseController
   accepts_native_app_tokens
 
   INDEX_LIMIT = 20
-  PERSON_ACTIONS = %i[create switch finish mode messages client_secret gpt_live_session delegations usage tool_calls turns session_update].freeze
+  PERSON_ACTIONS = %i[create switch finish mode messages client_secret gpt_live_session delegations usage tool_calls turns session_update background_results].freeze
 
   before_action :require_a_person_on_the_app, only: PERSON_ACTIONS
   before_action :set_conversation, except: %i[modes index create switch]
@@ -52,7 +53,10 @@ class Api::V1::LiveConversationsController < Api::BaseController
     render json: {
       live_conversations: LiveConversation.recent_first.limit(INDEX_LIMIT).map(&:as_api_json),
       current_id: current&.id,
-      current: current ? { current.mode => current.id } : {}
+      current: current ? { current.mode => current.id } : {},
+      # How many results a call on the current conversation could be handed
+      # (`call`: its own id, whose own do not count).
+      background_results: current ? LiveConversations::BackgroundResults.waiting_count(current, call: params[:call].presence) : 0
     }
   end
 
@@ -111,6 +115,11 @@ class Api::V1::LiveConversationsController < Api::BaseController
   # `prewarm=1`: the CarPlay app minting ahead of a tap (Actions#client_secret).
   def client_secret
     render json: actions.client_secret(prewarm: ActiveModel::Type::Boolean.new.cast(params[:prewarm]) == true)
+  end
+
+  # Voice: what came back from the background, for the call to hand its model.
+  def background_results
+    render json: actions.background_results(claim: params[:claim], delivered: params[:delivered])
   end
 
   # Voice, `gpt_live_claude`: the app's WebRTC offer in, OpenAI's answer out.

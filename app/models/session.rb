@@ -86,6 +86,7 @@ class Session < ApplicationRecord
   # What this session has published as MCP Events, and who hears it (SessionEvents).
   has_many :session_events, dependent: :delete_all
   has_many :event_subscriptions, class_name: "SessionEventSubscription", dependent: :delete_all
+  has_many :live_background_results, dependent: :delete_all
   has_many :event_subscriptions_held, as: :subscriber, class_name: "SessionEventSubscription", dependent: :delete_all
   has_many :child_sessions, class_name: "Session", foreign_key: :parent_session_id, dependent: :nullify
 

@@ -97,6 +97,14 @@ final class GptLiveCall {
     /// The backend ended the call and its goodbye is being said: the call is over in a moment.
     var hangingUp: Bool { conductor.hangingUp }
 
+    /// Nothing running, being said or being heard.
+    var idle: Bool { conductor.idle }
+
+    /// Context GPT-Live does not speak; false when it could not be sent.
+    func addContext(_ text: String) -> Bool {
+        link.send(conductor.context(text).encoded())
+    }
+
     func setMuted(_ muted: Bool) {
         link.setMuted(muted)
     }

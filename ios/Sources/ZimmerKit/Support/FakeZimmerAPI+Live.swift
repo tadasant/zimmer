@@ -114,6 +114,14 @@ extension FakeZimmerAPI {
         return LiveOverview(conversations: all, current: all.first { $0.status.isOpen }?.id)
     }
 
+    public func liveConversations(call: String) async throws -> LiveOverview {
+        try await liveConversations()
+    }
+
+    public func claimLiveBackgroundResults(_ id: Int, claim: String) async throws -> [LiveBackgroundResult] { [] }
+
+    public func reportLiveBackgroundResults(_ id: Int, claim: String, delivered: [Int]) async throws {}
+
     public func liveConversation(_ id: Int, afterTurn: Int?) async throws -> LiveConversation {
         guard let conversation = liveState.conversations[id] else { throw ZimmerError.http(status: 404, message: "Live conversation not found") }
         let turns = (liveState.turns[id] ?? []).filter { afterTurn == nil || $0.id > afterTurn! }

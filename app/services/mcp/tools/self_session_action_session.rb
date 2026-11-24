@@ -218,6 +218,8 @@ module Mcp
       end
 
       def message_parent_result(child, result)
+        return live_conversation_result(child) if result.delivery == :live_conversation
+
         parent = result.parent
         headline = case result.delivery
         when :queued then "queued for your parent — it will read it when its current turn ends"
@@ -242,6 +244,18 @@ module Mcp
                  "(`wake_me_up_later`, or `wake_me_up_when_session_changes_state` on ##{parent.id}) rather than " \
                  "ending your turn on the assumption that it arrived."
         lines.join("\n")
+      end
+
+      def live_conversation_result(child)
+        [
+          "## Report Sent to the Live Conversation That Started You",
+          "",
+          "- **Delivery:** queued — the Live Mode assistant brings it up on the person's next turn in that conversation",
+          "- **Reported by:** session ##{child.id}",
+          "",
+          "Nobody reads it before that turn, and it is not on the person's action queue. If you need an answer from " \
+          "them, come to rest in needs_input as well."
+        ].join("\n")
       end
 
       # The narrowed schema does not advertise `halt`, and this is what makes

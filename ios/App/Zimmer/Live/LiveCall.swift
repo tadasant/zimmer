@@ -111,6 +111,8 @@ final class LiveCall: ObservableObject {
     /// When this call last asked which conversation is current.
     private var lookedForMove: TimeInterval = 0
     private static let followEvery: TimeInterval = 5
+    /// Work from the background coming back to this call.
+    private var results = LiveBackgroundResults()
     private let log = Logger(subsystem: "com.tadasant.zimmer", category: "live-call")
     private let telemetry = LiveTelemetry.shared
     private var timeline = LiveCallTimeline()
@@ -268,6 +270,7 @@ final class LiveCall: ObservableObject {
         mintedFor = surface
         pendingOpening = opening.map { (text: $0, recorded: true) }
         lookedForMove = Self.now
+        results = LiveBackgroundResults()
         saidGoodbye = false
         lastError = nil
         blocked = nil
@@ -597,6 +600,7 @@ final class LiveCall: ObservableObject {
         warmLink = nil
         pendingOpening = (text: RealtimeConductor.switchedOpening, recorded: false)
         lookedForMove = Self.now
+        results = LiveBackgroundResults()
         lastError = nil
         state = .connecting
         watch(generation: mine)
@@ -630,13 +634,43 @@ final class LiveCall: ObservableObject {
     /// call turns voice on, because the driver is the one talking.
     private func followCurrent(generation mine: Int) {
         Task {
-            guard let overview = try? await api.liveConversations(), mine == generation else { return }
+            guard let overview = try? await api.liveConversations(call: results.call), mine == generation else { return }
             switch overview.move(forCallOn: conversationID) {
-            case .stay: return
+            case .stay: await takeResults(waiting: overview.backgroundResults, generation: mine)
             case let .follow(conversation): await reattach(to: conversation)
             case .end: fail("The call ended: Live Mode moved to a typed conversation.", generation: mine)
             }
         }
+    }
+
+    /// Work the person started earlier came back: hand it to the model as context it does not
+    /// speak, for their next turn. A hand-over that cannot be made now is made on the next look.
+    private func takeResults(waiting: Int, generation mine: Int) async {
+        guard let conversation = conversationID else { return }
+        if let claim = results.claim(waiting: waiting, idle: idleForContext) {
+            let answer = try? await api.claimLiveBackgroundResults(conversation, claim: claim)
+            // A call that has moved on has a fresh `results`, and its own claim to make.
+            guard mine == generation else { return }
+            if let answer { results.answered(answer) } else { results.failed() }
+        }
+        while let text = results.next(idle: idleForContext) {
+            if let gptLive {
+                guard gptLive.addContext(text) else { break }
+            } else {
+                send(RealtimeConductor.context(text))
+            }
+            results.delivered()
+        }
+        let delivered = results.unreported
+        guard !delivered.isEmpty,
+              (try? await api.reportLiveBackgroundResults(conversation, claim: results.currentClaim, delivered: delivered)) != nil,
+              mine == generation else { return }
+        results.reported(delivered)
+    }
+
+    /// Nothing is being said, heard, run or asked for.
+    private var idleForContext: Bool {
+        state == .listening && (gptLive?.idle ?? (conductor.idle && !conductor.canEndTurn))
     }
 
     /// The call is up once the microphone is open and OpenAI has answered, in either order.

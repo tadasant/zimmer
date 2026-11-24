@@ -599,6 +599,26 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/no connection to pre-warm/, response.parsed_body["message"])
   end
 
+  test "the app is told something came back and claims it; an API key reads the count and cannot claim" do
+    conversation = create_live_conversation(mode: "voice")
+    session = Session.create!(agent_runtime: "claude_code", prompt: "work", git_root: "https://github.com/test/repo.git", branch: "main", title: "Build")
+    LiveConversations::BackgroundResults.subscribe(conversation, session)
+    LiveConversations::BackgroundResults.receive(SessionEvents::Publish.message(session, reason: "done", message: "Green."))
+    url = "/api/v1/live_conversations/#{conversation.id}/background_results"
+
+    post url, params: { claim: "call-12345678:1" }, headers: @key_headers, as: :json
+    assert_response :forbidden
+    get "/api/v1/live_conversations", params: { call: "call-12345678" }, headers: @key_headers
+    assert_equal 1, response.parsed_body["background_results"]
+
+    post url, params: { claim: "call-12345678:1" }, headers: @headers, as: :json
+    id = response.parsed_body["results"].sole["id"]
+    post url, params: { claim: "call-12345678:2", delivered: [ id ] }, headers: @headers, as: :json
+    assert_response :success
+    get "/api/v1/live_conversations", params: { call: "call-12345678" }, headers: @headers
+    assert_equal 0, response.parsed_body["background_results"]
+  end
+
   test "an API key cannot start a GPT-Live session, ask Claude, or write the cost ledger" do
     conversation = create_live_conversation(mode: "voice")
     base = "/api/v1/live_conversations/#{conversation.id}"

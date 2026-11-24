@@ -27,6 +27,8 @@ import Foundation
 ///                *heard* (and thinking), each delegation in flight is a running tool (the
 ///                *working* loop, through any filler GPT-Live says over it), and a delegation
 ///                Zimmer could not answer is a failure
+///   results      work that came back from the background, as quiet `session.thinking.append`
+///                while the call is idle (`LiveBackgroundResults`)
 ///   cost         the session's billed seconds every `sessionReportEvery` and at the end, each
 ///                turn's time to first audio, and the call's length → `.report` for the ledger
 ///   end          `session.close`, then `session.closed` (its usage) or `closeGrace`, whichever
@@ -78,6 +80,17 @@ public struct GptLiveConductor: Sendable {
     public private(set) var ended = false
     /// The backend said the call is ending (`end_call`): the next answer to stop sounding ends it.
     public var hangingUp: Bool { goodbyePending || saidGoodbye }
+
+    /// Nothing running, being said or being heard: context added now is what the person's next turn
+    /// starts from, and cancels no acknowledgement of a delegation.
+    public var idle: Bool {
+        startedAt != nil && !ended && !closing && !hangingUp && delegations.isEmpty && lastOutput == nil && !personTalking
+    }
+
+    /// Context GPT-Live does not speak: a result that came back from the background.
+    public mutating func context(_ text: String) -> JSONValue {
+        .object(["type": .string("session.thinking.append"), "event_id": .string(eventID()), "delegation_id": .null, "content": .string(text)])
+    }
 
     private let callKey: String
     private var seq = 0

@@ -148,6 +148,8 @@ module Mcp
     # @return [HumanMessage, nil]
     def capture_assistant_message(session, content, entry_point)
       if @live_conversation
+        # What comes of it comes back to the conversation by itself.
+        LiveConversations::BackgroundResults.subscribe(@live_conversation, session)
         message = HumanMessageCapture.record_live_mode_message(
           session: session, conversation: @live_conversation, content: content,
           entry_point: entry_point.to_s.sub(/\Aoauth\./, "live_mode.")

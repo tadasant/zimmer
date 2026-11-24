@@ -33,6 +33,9 @@ import { LiveUsageReporter } from "lib/live_usage_reporter"
 //                thinking), each delegation in flight is a running tool (the
 //                working loop, through any filler GPT-Live says over it), and a
 //                delegation Zimmer could not answer is actionFailed → onCue
+//   results      work that came back from the background, as quiet
+//                `session.thinking.append` while the call is idle
+//                (lib/live_background_results)
 //   cost         the session's seconds, each turn's time to first audio, and
 //                the call's length → POST usage (lib/live_usage_reporter)
 //   end          `session.close`, then wait for `session.closed` (its usage)
@@ -265,6 +268,21 @@ export class GptLiveCall {
 
   commentary(delegationId, content) {
     if (content) this.send({ type: "session.commentary.append", event_id: this.eventId(), delegation_id: delegationId, content })
+  }
+
+  // Nothing running, being said or being heard: context added now is what the
+  // next turn starts from, and cancels no acknowledgement of a delegation.
+  idle() {
+    return Boolean(this.startedAt) && !this.ended && !this.closing && !this.goodbyePending && !this.hangingUp &&
+      this.delegations.size === 0 && !this.saying && !this.personTalking
+  }
+
+  // Context the model does not speak: a result that came back from the
+  // background, for the person's next turn.
+  addContext(content) {
+    if (this.channel?.readyState !== "open") return false
+    this.send({ type: "session.thinking.append", event_id: this.eventId(), delegation_id: null, content })
+    return true
   }
 
   // The backend asked to end the call (a hang-up, or a spend cap): let the

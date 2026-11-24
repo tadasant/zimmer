@@ -752,6 +752,9 @@ delivery and the published event commit together, so a report the parent could n
 published. `force_immediate` is the exception: the interrupt comes first and the event is written after it. A parent's subscription covers `session.message` only. To
 be woken when a session stops, arm `wake_me_up_when_session_changes_state` as before.
 
+A Live conversation is subscribed the same way, to both events of the sessions it starts and messages; see
+[Work coming back by itself](/sessions/live/#work-coming-back-by-itself).
+
 Both tables are listed read-only at `/supervisor/session_events` and
 `/supervisor/session_event_subscriptions`; a subscription's `last_event_at` is when it last delivered.
 
@@ -804,7 +807,8 @@ archive retires it to `undelivered` and pages. It cannot be accepted and then si
 An **archived** parent is refused rather than delivered to, since nothing delivers a message to a
 session in the trash — the error names `unarchive_parent: true`, which restores that session and then
 delivers. That is opt-in on purpose: it interrupts a session that considered its work finished. A
-**failed** parent, a session with **no parent** at all, and a session recorded as **its own** parent
+**failed** parent, a session with **no parent** at all (unless a Live conversation started it: that
+conversation is told, see [Work coming back by itself](/sessions/live/#work-coming-back-by-itself)), and a session recorded as **its own** parent
 (`parent_session_id` is client-supplied, and the model checks existence rather than identity) are
 refused outright, and each error says what to do instead. One more error is a retry rather than a
 refusal: a queue **position conflict**, which means another writer of the parent's queue won a race

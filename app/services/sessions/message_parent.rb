@@ -47,7 +47,8 @@ module Sessions
   # child has to be able to act on the answer:
   #
   # * **No parent.** A root session was started by a human or a trigger. Nothing
-  #   is upstream of it, and the child should say so to its human instead.
+  #   is upstream of it, and the child should say so to its human instead. The
+  #   exception is one a Live conversation started: that conversation is told.
   # * **The parent is archived.** Its work is over, and delivering into the trash
   #   is exactly the silent loss this exists to end. Refused by default and
   #   `unarchive_parent` is the deliberate override, which restores the parent
@@ -142,6 +143,7 @@ module Sessions
       return invalid if invalid
 
       @parent = child.parent_session
+      return report_to_live_conversation if parent.nil? && live_listener?
       return no_parent if parent.nil?
       return parent_is_self if parent.id == child.id
 
@@ -259,6 +261,22 @@ module Sessions
         "has to restart it. Report to your human instead.",
         error_code: :conflict
       )
+    end
+
+    # --- A session a Live conversation started --------------------------------
+
+    # It has no parent session, and the conversation that started it is who is
+    # waiting. The event is the whole delivery: the conversation brings it up on
+    # the person's next turn (LiveConversations::BackgroundResults).
+    def live_listener?
+      SessionEventSubscription.where(session: child, subscriber_type: "LiveConversation")
+                              .where(updated_at: LiveConversations::BackgroundResults::LISTEN_FOR.ago..).exists?
+    end
+
+    def report_to_live_conversation
+      SessionEvents::Publish.message(child, reason: reason, message: message)
+      child.logs.create!(content: "Session ##{child.id} reported to the Live conversation that started it (reason: #{reason}) [#{source}]", level: "info")
+      Result.new(success?: true, parent: nil, delivery: :live_conversation, unarchived: false)
     end
 
     # --- Delivery -------------------------------------------------------------

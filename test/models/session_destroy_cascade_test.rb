@@ -60,6 +60,7 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     [ "outcome_analysis_batches", "started_by_session_id", :nullify ],
     # Cascade: an event, and a subscription to a session's events, are about a
     # session that is gone.
+    [ "live_background_results", "session_id", :cascade ],
     [ "session_event_subscriptions", "session_id", :cascade ],
     [ "session_events", "session_id", :cascade ],
     # Cascade: an experimental-setting label describes one session's run and is
