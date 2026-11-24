@@ -613,6 +613,22 @@ final class CarPlayTests: XCTestCase {
         }
     }
 
+    /// An old tap's repeat, getting through after the driver has gone on to another conversation.
+    func testALateRepeatOfANewThatWasLeftEndsNothing() async throws {
+        let api = FakeZimmerAPI()
+        let kept = try await api.liveStandby()
+        _ = try await api.startLiveConversation(.voice, standby: kept.id, again: false)
+        let later = try await api.startLiveConversation(.voice)
+        do {
+            _ = try await api.conversation(for: .startNew, unanswered: kept.id)
+            XCTFail("left since")
+        } catch let ZimmerError.http(status, _) {
+            XCTAssertEqual(status, 409)
+        }
+        let current = try await api.liveConversations().current
+        XCTAssertEqual(current, later.id)
+    }
+
     func testContinueWithNothingOpenFindsNothingAndStartsNothing() async throws {
         let api = FakeZimmerAPI()
         _ = try await api.finishLiveConversation(21)

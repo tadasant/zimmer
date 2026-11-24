@@ -143,6 +143,9 @@ extension FakeZimmerAPI {
         }
         let kept = standby.flatMap { liveState.conversations[$0] }
         if let kept, kept.status.isOpen, again || liveState.turns[kept.id]?.isEmpty != false { return kept }
+        if again, let kept, kept.status != .standby {
+            throw ZimmerError.http(status: 409, message: "That conversation was started and has ended. Start a new one.")
+        }
         for (id, conversation) in liveState.conversations where conversation.status.isOpen {
             liveState.conversations[id] = conversation.with(status: .ended)
         }

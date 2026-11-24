@@ -86,11 +86,12 @@ sequenceDiagram
   microphone and no audio session before the tap.
 - **Zimmer is told behind the call** (`LiveCall.settle`). Until it answers (`settled`), the call follows
   no other conversation, and its lines, its delegations and its ledger rows wait. A request that gets
-  no answer is sent again after 1 s and 3 s (`LiveCall.asking`), which is safe: a New asked for again
+  no answer is sent again after 1 s and 3 s (`LiveCall.repeating`), which is safe: a New asked for again
   (`again=1`) is answered the same. If Zimmer never answers, the call ends saying so, because a call on a
   conversation Zimmer does not have can do nothing. The car's retry of that New asks for the same
-  conversation, or goes back to it if Zimmer answered late (`LiveCall.lastNew`), so a retry never ends
-  the conversation the driver just asked for. Another call beginning stops the asking.
+  conversation, or goes back to it if Zimmer answered late (`LiveNew`), so a retry never ends
+  the conversation the driver just asked for. Another call beginning stops the asking, and a repeat
+  that gets through for a conversation already left is refused (409) and ends nothing.
 - **A session still on its way up is taken too**, and finishes coming up as the call's. It is seconds
   ahead of one started at the tap. It gets 6 s.
 - **Anything that goes wrong with the connection before the call is up starts it from cold**, on the

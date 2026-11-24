@@ -18,10 +18,12 @@ module LiveConversations
   # With `standby_id`, the conversation started is the one kept ready for this
   # (Standby), so a call the app already has open on it is a call on the
   # conversation that is current. Asking again (`again`) for one already taken
-  # answers with it, so a request whose answer was lost can be sent twice; one that
-  # is gone is not missed, and the conversation started is a new one like any other.
+  # answers with it, so a request whose answer was lost can be sent twice, and for one
+  # taken and left since is refused (Left), so a late repeat ends nothing. Without
+  # `again`, one that is gone is not missed, and the conversation started is a new one like any other.
   class Start
     class Unavailable < StandardError; end
+    class Left < StandardError; end
 
     # @param client_surface [String, nil] the TurnSource surface of the client
     #   starting it (web, ios, carplay, mcp), so a delegation the live model makes
@@ -53,6 +55,7 @@ module LiveConversations
 
     # @return [LiveConversation]
     # @raise [Unavailable] with a message naming what is missing
+    # @raise [Left] for a repeat of a New that was answered, and its conversation ended
     # @raise [KeyError] for a mode that is neither text nor voice
     def call
       raise Unavailable, @availability.reasons.join(" ") unless @availability.available?
@@ -68,6 +71,10 @@ module LiveConversations
           taken = true
           next standby
         end
+
+        # Answered before and left since: a late repeat of an old tap must not end
+        # whatever the person went on to.
+        raise Left, "That conversation was started and has ended. Start a new one." if @again && standby && !standby.standby?
 
         LiveConversation.unfinished.lock.each(&:end!)
         seeded = self.class.seed(root)

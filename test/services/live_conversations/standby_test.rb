@@ -103,6 +103,18 @@ class LiveConversations::StandbyTest < ActiveSupport::TestCase
     assert standby.reload.ended?
   end
 
+  test "a late repeat of a tap whose conversation has been left since ends nothing and starts nothing" do
+    standby = LiveConversations::Standby.prepare
+    LiveConversations::Start.call("voice", standby_id: standby.id)
+    later = LiveConversations::Start.call("voice")
+    assert standby.reload.ended?
+
+    assert_no_difference(-> { LiveConversation.count }) do
+      assert_raises(LiveConversations::Start::Left) { LiveConversations::Start.call("voice", standby_id: standby.id, again: true) }
+    end
+    assert_equal later, LiveConversation.current
+  end
+
   test "it cannot be finished, and nothing left on it comes with it" do
     standby = LiveConversations::Standby.prepare
     standby.scratchpad_entries.create!(body: "A note", written_by: "mcp")

@@ -328,6 +328,18 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_equal LiveConversations::VoiceEngine.mode_for("gpt_live_claude"), standby.voice_mode, "written here: a held session never asks for another"
   end
 
+  test "a late repeat of a New that was answered and left is a 409" do
+    stub_live_root
+    stub_live_key
+    left = create_live_conversation(mode: "voice", status: LiveConversation::ENDED)
+    open = create_live_conversation(mode: "voice", instructions: "# Live")
+
+    post "/api/v1/live_conversations", params: { mode: "voice", standby_id: left.id, again: "1" }, headers: @headers, as: :json
+
+    assert_response :conflict
+    assert open.reload.active?
+  end
+
   test "Continue on GPT-Live is held the same way, and nothing on the open conversation changes" do
     use_voice_engine("gpt_live_claude")
     conversation = create_live_conversation(mode: "text", client_surface: "ios")

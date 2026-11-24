@@ -374,6 +374,7 @@ private final class LiveWarmHolder {
             if let found = standby, found.status != .standby || found.id == LiveCall.shared.unansweredNew { standby = nil }
             if let overview {
                 self.overview = (overview, Self.now)
+                if let current = overview.current { LiveCall.shared.zimmerHas(open: current) }
                 self.talked = overview.conversations.first { $0.id == overview.current }?.mode == .voice
             }
             if let standby { self.standby = standby }

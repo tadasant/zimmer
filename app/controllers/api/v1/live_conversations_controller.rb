@@ -86,6 +86,8 @@ class Api::V1::LiveConversationsController < Api::BaseController
 
     conversation = LiveConversations::Start.call(mode, client_surface: api_turn_source.surface, standby_id: params[:standby_id], again: flag(:again))
     render json: conversation.as_api_json, status: :created
+  rescue LiveConversations::Start::Left => e
+    render_api_error("Conflict", e.message, status: :conflict)
   rescue LiveConversations::Start::Unavailable => e
     render_api_error("Service Unavailable", e.message, status: :service_unavailable)
   end

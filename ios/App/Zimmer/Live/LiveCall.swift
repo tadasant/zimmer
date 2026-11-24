@@ -152,10 +152,9 @@ final class LiveCall: ObservableObject {
     /// Zimmer being told of a call that began in standby; the conversation it answered with. Kept past
     /// the call, which its last lines wait for, until another begins.
     private var settling: Task<Int?, Never>?
-    /// The same, on a Realtime connection.
-    private var readying: Task<String?, Never>?
-    /// The same, where nothing but the conversation is asked for.
-    private var telling: Task<Int, any Error>?
+    /// Everything still asking Zimmer for a New, by how to stop it. Kept across calls: a retry of the same
+    /// New leaves the last one's asking, and whatever begins after that has to be able to reach it.
+    private var asking: [@MainActor () -> Void] = []
     /// The last New that began from standby, and whether Zimmer has answered it (`LiveNew`).
     private var new = LiveNew()
     /// The car left while the call was still finding its conversation: the phone goes to it once found.
@@ -312,6 +311,8 @@ final class LiveCall: ObservableObject {
             took(found, asked: asked)
             await connect(found, voiceIsOn: choice == .startNew, warm: nil, generation: mine)
         } catch {
+            // Given and left since: there is no going back to it, so the next try is a fresh New.
+            if unanswered != nil, case ZimmerError.http(status: 409, _) = error { new = LiveNew() }
             if mine == generation { fail(Self.describe(error), generation: mine) }
         }
         return true
@@ -337,8 +338,10 @@ final class LiveCall: ObservableObject {
         }
     }
 
-    /// A fresh New is about to begin: not another try at the last one, which is asked for no more.
+    /// A fresh New is about to begin: not another try at the last one, which is asked for no more. Not
+    /// with a call up, whose own New it may be.
     func askedForNew() {
+        guard !isActive else { return }
         stopAsking()
         new = LiveNew()
     }
@@ -346,12 +349,16 @@ final class LiveCall: ObservableObject {
     /// The conversation a New was begun on that Zimmer has not answered yet: not one to be ready on.
     var unansweredNew: Int? { new.unanswered }
 
+    /// Zimmer was read, and says `conversation` is the open one: a New that asked for it has its answer,
+    /// whatever became of the request.
+    func zimmerHas(open conversation: Int) {
+        new.answered(conversation, with: conversation)
+    }
+
     /// The last New is not wanted now, so its conversation must not become the open one later.
     private func stopAsking() {
-        guard new.unanswered != nil else { return }
-        settling?.cancel()
-        readying?.cancel()
-        telling?.cancel()
+        for stop in asking { stop() }
+        asking = []
     }
 
     private static func path(of warm: LiveWarmTake?) -> LiveStartPath {
@@ -388,8 +395,6 @@ final class LiveCall: ObservableObject {
             new = LiveNew()
         }
         settling = nil
-        readying = nil
-        telling = nil
         leftWhileFinding = false
         holdingMicrophone = false
         warmUpdated = false
@@ -508,6 +513,7 @@ final class LiveCall: ObservableObject {
             await self?.settle(conversation, isNew: isNew, on: call, generation: mine)
         }
         self.settling = settling
+        if isNew { asking.append { settling.cancel() } }
         gptLive = call
         call.adopt(surface: surface, settled: settling) { [weak self] signal in
             self?.handleGptLive(signal, generation: mine)
@@ -549,7 +555,7 @@ final class LiveCall: ObservableObject {
         }
         // From here Zimmer has the conversation, so what was said in it goes there whatever happens.
         do {
-            let grant = try await asking { _ in try await self.mintGrant(id) }
+            let grant = try await repeating { _ in try await self.mintGrant(id) }
             guard mine == generation else { return id }
             engineNote = grant.choice?.note
             // Zimmer decided otherwise since: a cap reached, a setting changed.
@@ -567,11 +573,11 @@ final class LiveCall: ObservableObject {
     private func tellZimmer(_ conversation: Int, isNew: Bool, again: Bool = false, generation mine: Int) async throws -> Int {
         let api = api
         guard isNew else {
-            try await asking { _ in try await self.turnVoiceOn(conversation) }
+            try await repeating { _ in try await self.turnVoiceOn(conversation) }
             return conversation
         }
         let asked = Self.now
-        let id = try await asking { tries in
+        let id = try await repeating { tries in
             try await api.startLiveConversation(.voice, standby: conversation, again: again || tries > 0).id
         }
         new.answered(conversation, with: id)
@@ -583,13 +589,13 @@ final class LiveCall: ObservableObject {
     /// The same for a New, where the call waits for it. Stopped with the rest when another call begins.
     private func makeOpen(_ conversation: Int, again: Bool, generation mine: Int) async throws -> Int {
         let task = Task { try await self.tellZimmer(conversation, isNew: true, again: again, generation: mine) }
-        telling = task
+        asking.append { task.cancel() }
         return try await task.value
     }
 
     /// Sent again after a request that got no answer. Not once another call has begun, which cancels it.
     /// `request` is told how many times it has been sent before.
-    private func asking<T: Sendable>(_ request: @MainActor (Int) async throws -> T) async throws -> T {
+    private func repeating<T: Sendable>(_ request: @MainActor (Int) async throws -> T) async throws -> T {
         for (tries, wait) in Self.settleRetries.enumerated() {
             do {
                 return try await request(tries)
@@ -810,7 +816,7 @@ final class LiveCall: ObservableObject {
         // A refusal the warm connection had already heard ends the call during the hand-over.
         guard mine == generation else { return }
         let readied = Task { await self.readyWarm(conversation, isNew: slot == .new, voiceIsOn: voiceIsOn, generation: mine) }
-        readying = readied
+        if slot == .new { asking.append { readied.cancel() } }
         health.stage = .microphone
         microphoneGeneration = mine
         let audioToken: Int
