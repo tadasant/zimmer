@@ -407,6 +407,19 @@ public struct RealtimeConductor: Sendable {
         return .object(["type": .string("input_audio_buffer.append"), "audio": .string(audio.base64EncodedString())])
     }
 
+    /// A result that came back from the background, as context: no response is asked for, so the
+    /// model has it when the person next speaks.
+    public static func context(_ text: String) -> JSONValue {
+        .object(["type": .string("conversation.item.create"),
+                 "item": .object(["type": .string("message"), "role": .string("system"),
+                                  "content": .array([.object(["type": .string("input_text"), "text": .string(text)])])])])
+    }
+
+    /// Nothing running, being said or asked for.
+    public var idle: Bool {
+        !responseActive && !requested && !pendingResponse && inFlight.isEmpty && playingItem == nil && !hangingUp
+    }
+
     // MARK: - Internals
 
     private mutating func start(callID: String, name: String, arguments: String) -> [Effect] {

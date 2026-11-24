@@ -18,12 +18,16 @@ module Mcp
       REFUSED_MERGE = "Nothing was started: a router session cannot carry a merge authorization. To merge a PR the " \
                       "person approved, use `authorize_merge`, which names the PR once and needs their yes."
 
+      COMES_BACK = "You do not need to check on it: when it finishes or needs the person, Zimmer gives you the result " \
+                   "to bring up on their next turn."
+
       description <<~DESC
         Hand new work to a background agent in plain words (never a merge; that is authorize_merge); Zimmer picks the agent, tools and repo.
 
         This is the only way to start work from here. Put everything the person said that matters in `prompt`:
         names, links, the outcome they want. It returns the new session's id straight away; the work runs in the
-        background. Check on it later with `get_session`, and pass the person's answers to it with
+        background, and what comes of it is given to you to bring up on the person's next turn. Use `get_session`
+        when they ask sooner, and pass the person's answers to it with
         `action_session` `follow_up`.
 
         Anything you cannot do yourself about the work — changing how a session is set up, or its schedule —
@@ -52,7 +56,7 @@ module Mcp
         prompt = args["prompt"].to_s
         raise ToolError, REFUSED_MERGE if LiveModeActionSession.carries_merge_marker?(prompt)
 
-        super(args.slice(*ACCEPTED_ARGUMENTS))
+        "#{super(args.slice(*ACCEPTED_ARGUMENTS))}\n\n#{COMES_BACK}"
       end
     end
   end

@@ -237,9 +237,12 @@ public struct LiveOverview: Sendable, Equatable {
     public let conversations: [LiveConversation]
     /// The one open conversation, typed or spoken.
     public let current: Int?
-    public init(conversations: [LiveConversation], current: Int?) {
+    /// How many results from the background a call on it could be handed (`LiveBackgroundResults`).
+    public let backgroundResults: Int
+    public init(conversations: [LiveConversation], current: Int?, backgroundResults: Int = 0) {
         self.conversations = conversations
         self.current = current
+        self.backgroundResults = backgroundResults
     }
 
     /// The open conversation is active, not still reading its instructions: a secret can be

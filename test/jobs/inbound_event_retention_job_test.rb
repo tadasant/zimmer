@@ -14,7 +14,7 @@ class InboundEventRetentionJobTest < ActiveJob::TestCase
 
     result = InboundEventRetentionJob.perform_now(now: now)
 
-    assert_equal({ deliveries: 1, claims: 1, github_pr_signals: 0 }, result)
+    assert_equal({ deliveries: 1, claims: 1, github_pr_signals: 0, session_events: 0 }, result)
     assert_equal %w[Ev_new], WebhookDelivery.pluck(:delivery_id)
     assert_equal %w[slack:C1:2.000001], TriggerEventClaim.pluck(:event_key)
   end
@@ -33,7 +33,7 @@ class InboundEventRetentionJobTest < ActiveJob::TestCase
 
     InboundEventRetentionJob.perform_now
 
-    assert_equal({ deliveries: 0, claims: 0, github_pr_signals: 0 }, InboundEventRetentionJob.perform_now)
+    assert_equal({ deliveries: 0, claims: 0, github_pr_signals: 0, session_events: 0 }, InboundEventRetentionJob.perform_now)
   end
 
   test "a backlog bigger than one batch drains in one run" do

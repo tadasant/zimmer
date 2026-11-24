@@ -77,7 +77,6 @@ module LiveConversations
       end
 
       return busy_result unless claim_slot
-
       begin
         run_claude(check)
       ensure
@@ -88,18 +87,22 @@ module LiveConversations
     private
 
     def run_claude(check)
+      # Into the thread Claude reads, so a result that came back is in its answer.
+      @results = BackgroundResults.offer_for_answer(@conversation, claim: BackgroundResults::DELEGATION_CLAIM)
       started = monotonic_ms
       answer = client.run(prompt: request_text, system: system_prompt, model: model,
                           mcp_token: DelegationToken.mint(@conversation, delegation_id: @delegation_id))
       record_answer(answer, monotonic_ms - started)
       hung_up = hung_up?
       text = answer.text.squish
+      text.present? ? BackgroundResults.answered(@results) : BackgroundResults.give_back(@results)
       text = "I couldn't finish that in time. Ask again, or narrow it down." if text.blank? && !hung_up
       result(text, end_call: hung_up, hung_up: hung_up, warning: check.warning, rounds: answer.num_turns)
     rescue ClaudeClient::NotConfiguredError
       raise
     rescue ClaudeClient::Error => e
       record_failure(e, monotonic_ms - started)
+      BackgroundResults.give_back(@results)
       # A goodbye already asked for still ends the call, whatever came after it.
       return result("Okay, hanging up.", end_call: true, hung_up: true, warning: nil, rounds: 0) if hung_up?
 
@@ -218,7 +221,10 @@ module LiveConversations
     end
 
     def line_for(turn)
-      if turn.tool?
+      if turn.tool_name == BackgroundResults::TOOL_NAME && @results.map(&:offered_turn_id).exclude?(turn.id)
+        row = LiveBackgroundResult.find_by(offered_turn_id: turn.id)
+        row && "[#{BackgroundResults.mention(row)}]"
+      elsif turn.tool?
         "[#{turn.tool_name} → #{turn.model_output.to_s.squish.truncate(TURN_CHARS)}]"
       elsif turn.content.present?
         "#{turn.user? ? 'Them' : 'You'}: #{turn.content.to_s.squish.truncate(TURN_CHARS)}"

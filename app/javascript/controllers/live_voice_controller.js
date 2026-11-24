@@ -2,6 +2,7 @@ import { Controller } from "@hotwired/stimulus"
 import { csrfHeaders } from "lib/csrf"
 import { LiveCueDirector, LiveCuePlayer } from "lib/live_cues"
 import { GptLiveCall } from "lib/gpt_live_call"
+import { LiveBackgroundResults } from "lib/live_background_results"
 import { LiveUsageReporter, realtimeUsage } from "lib/live_usage_reporter"
 
 // The Live Mode voice call, owned by a dock in the layout (shared/_live_voice_dock,
@@ -36,6 +37,9 @@ import { LiveUsageReporter, realtimeUsage } from "lib/live_usage_reporter"
 //                   conversation: a Realtime session cannot forget what it heard,
 //                   and a fresh one starts from that conversation's own recap. A
 //                   conversation someone is typing in ends the call instead.
+//   results         the same poll says when work the person started earlier has come
+//                   back; it is handed to the model as context it does not speak,
+//                   for the person's next turn (lib/live_background_results)
 //   hanging up      a tool call the person asked to hang up with ("hang up", "stop
 //                   listening") answers hang_up: its output goes back, no reply is
 //                   asked for after it, and the call ends the way End does once the
@@ -222,6 +226,12 @@ export default class extends Controller {
 
   watchCurrent(generation) {
     clearInterval(this.following)
+    this.results = new LiveBackgroundResults({
+      conversationId: this.call.conversationId,
+      post: (url, body) => this.post(url, body),
+      ready: () => generation === this.generation && this.idleForContext(),
+      deliver: (text) => this.addContext(text)
+    })
     this.following = setInterval(() => this.followCurrent(generation), FOLLOW_INTERVAL_MS)
   }
 
@@ -231,10 +241,14 @@ export default class extends Controller {
     // Hanging up: the call is over in a moment, wherever Live Mode has gone.
     if (this.hangingUp) return
     try {
-      const response = await fetch("/live/current.json", { credentials: "same-origin", headers: { Accept: "application/json" } })
+      const response = await fetch(`/live/current.json?call=${this.results?.call || ""}`, { credentials: "same-origin", headers: { Accept: "application/json" } })
       if (!response.ok || generation !== this.generation) return
-      const { current_id: current, voice } = await response.json()
-      if (generation !== this.generation || !current || String(current) === String(this.call?.conversationId)) return
+      const { current_id: current, voice, background_results: waiting } = await response.json()
+      if (generation !== this.generation || !current) return
+      if (String(current) === String(this.call?.conversationId)) {
+        await this.results?.check(waiting)
+        return
+      }
       if (voice === false) {
         // Somebody chose to type there. A call must not turn voice on over them.
         this.showError("The call ended: Live Mode moved to a typed conversation.")
@@ -245,6 +259,23 @@ export default class extends Controller {
     } catch (_error) {
       // Next time.
     }
+  }
+
+  // Nothing is being said, heard, run or asked for.
+  idleForContext() {
+    if (this.state !== "listening") return false
+    if (this.gptLive) return this.gptLive.idle()
+    return !this.responseActive && !this.requested && !this.pendingResponse &&
+      !this.replySounding && this.runningTools === 0
+  }
+
+  // A result from the background, as context: no response is asked for, so the
+  // model has it when the person next speaks.
+  addContext(text) {
+    if (this.gptLive) return this.gptLive.addContext(text)
+    if (this.channel?.readyState !== "open") return false
+    this.send({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text }] } })
+    return true
   }
 
   // Reconnect onto `id`: the same dock, the same mute, with no hang-up sound.

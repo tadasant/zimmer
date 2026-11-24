@@ -5,10 +5,11 @@ description: Which revision of the MCP Events extension (SEP-3415) Zimmer's mcp_
 
 [`mcp_event` triggers](/sessions/triggers/#mcp_event) implement part of the **MCP Events
 extension**, SEP-3415. It merged as Final on 2026-11-19, and the extension can still be revised. This page is
-the pin: the revision the code was written against, which parts of it are built, and where the code
+the pin: the revision the code was written against, as a client and, for
+[its own sessions' events](/extend/mcp-server/#mcp-events-what-sessions-do-as-events), as a server, which parts of it are built, and where the code
 departs from it on purpose. `McpEvents::SPEC_REVISION` holds the same revision.
 
-**Before changing anything under `McpEvents`, `McpEventTriggerPollerJob` or the `mcp_event`
+**Before changing anything under `McpEvents`, `SessionEvents`, `Mcp::EventsExtension`, `McpEventTriggerPollerJob` or the `mcp_event`
 condition, check whether the SEP has moved past this pin.** If it has, bring the code, its tests and
 this page up to the latest revision, in the same PR or one before it. Strad is the server half of
 the same contract and keeps its own pin (`docs/mcp-events-spec-pin.md` in strad). When the wire
@@ -23,7 +24,7 @@ format changes, strad changes first, and Zimmer accepts both shapes for one rele
 | Revision | `bbc31f8` (2026-11-20). The normative text is also published at `specification/beta/events/events.mdx` in `modelcontextprotocol/ext-events`; check both |
 | Extension id | `io.modelcontextprotocol/events` |
 
-## What is implemented
+## What is implemented as a client
 
 | Part of the SEP | Zimmer |
 | --- | --- |
@@ -53,7 +54,37 @@ format changes, strad changes first, and Zimmer accepts both shapes for one rele
 | `notifications/events/list_changed` | **Not implemented.** The six-hourly sweep re-reads `events/list` |
 | `x-mcp-header` on an event type's `inputSchema`, mirrored into `Mcp-Param-{Name}` headers on `events/poll`, `events/subscribe` and `events/unsubscribe`; excluding an event type whose annotations break the transport's rules; retry after `HeaderMismatch` (`-32020`) | **Not implemented** (see deviations) |
 
+## What is implemented as a server
+
+Zimmer's `POST /mcp` publishes `session.message` and `session.state_changed`
+([what they are](/extend/mcp-server/#mcp-events-what-sessions-do-as-events)).
+
+| Part of the SEP | Zimmer |
+| --- | --- |
+| Capability under `capabilities.extensions["io.modelcontextprotocol/events"]` | Declared on `initialize`, empty settings (`listChanged` false), only for a connection that can read sessions (`Mcp::EventsExtension`) |
+| `-32601` from a server that does not offer it | Yes: no `events/*` method is registered |
+| `events/list` | Both event types, one page, `delivery: ["poll"]` |
+| `events/poll` (`name`, `arguments`, `cursor`, `maxEvents`, `maxAgeMs`) | `SessionEvents::Feed`; `maxEvents` defaults to 50, at most 200 |
+| `null` cursor means "from now" | Yes |
+| `hasMore`, `nextPollMs` (5 seconds), `truncated` | Yes; `truncated` past 14 days of retention (what is kept is still served), past a `maxAgeMs` floor that skipped events, or on a cursor from a database whose transaction counter was reset |
+| Stable `eventId` | `session:<id>:…`; a retried publish writes one row |
+| `Mcp-Name` required on `events/poll` | 400 and `HeaderMismatch` (`-32020`) when missing or wrong |
+| `InvalidParams`, `NotFound` (`data.kind`) | Yes |
+| `Forbidden` | Not sent. A root a connection may not read is filtered out of its results, so a filter naming one returns nothing |
+| `events/stream` (push), `events/subscribe` (webhook) | **Not implemented.** Zimmer's own subscribers are its sessions, and it delivers to those in process |
+| `x-mcp-header`, `notifications/events/list_changed` | Not used: no argument is annotated and the event types are fixed |
+
 ## Deliberate deviations
+
+- **A parent's subscription is held by Zimmer, not by the parent's runtime.** In the SEP the client owns
+  its subscriptions. An agent session cannot hold a cursor between turns, so Zimmer is the client for it:
+  the subscription is a `session_event_subscriptions` row written at spawn, and the event is handed to the
+  parent's message queue in the transaction that publishes it, not polled. A Live conversation's
+  subscription is held the same way and covers the sessions started under the one it names, which an
+  `events/poll` filter cannot express.
+- **The server answers `initialize`, at whatever revision the client asks for.** The extension is defined
+  for 2026-07-28 and `server/discover`; the capability is declared on `initialize`, where Zimmer's own
+  client and strad's read it.
 
 - **The poll cursor seeds the first webhook subscribe.** The SEP keeps the two modes' cursors
   separate in principle. Zimmer passes the condition's poll cursor on the first `events/subscribe`,
@@ -107,3 +138,6 @@ format changes, strad changes first, and Zimmer accepts both shapes for one rele
   Beta). That copy was compared at `c77b843`: the same normative text with the rationale removed and
   links made absolute. Wire unchanged; no code change beyond `McpEvents::SPEC_REVISION`. Checked while
   adding human-message capture for Slack events, a Zimmer-side change with no wire effect.
+- **2026-11-24, still `bbc31f8`.** The SEP file has not changed since the pin, and neither has the
+  `ext-events` copy (`main` compared with `c77b843`: identical). No drift to classify. The server half was
+  implemented against this revision: `events/list` and `events/poll` on Zimmer's own `POST /mcp`.

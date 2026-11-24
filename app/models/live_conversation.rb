@@ -36,6 +36,10 @@ class LiveConversation < ApplicationRecord
   # The assistant's notes for this conversation (LiveConversations::Scratchpad).
   has_many :scratchpad_entries, -> { order(:id) }, class_name: "LiveScratchpadEntry", dependent: :delete_all, inverse_of: :live_conversation
 
+  # What came back from work it started, and the sessions it hears from.
+  has_many :background_results, class_name: "LiveBackgroundResult", dependent: :delete_all, inverse_of: :live_conversation
+  has_many :event_subscriptions_held, as: :subscriber, class_name: "SessionEventSubscription", dependent: :delete_all
+
   validates :mode, inclusion: { in: ->(_) { LiveConversations.mode_keys } }
   validates :status, inclusion: { in: STATUSES }
   validates :agent_root, :model, presence: true

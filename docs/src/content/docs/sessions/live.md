@@ -269,6 +269,49 @@ conversation's mode when the tool runs, and names the client that last drove the
 (`live_conversations.client_surface`: web, ios, carplay or mcp). The background agent can then keep
 what it reports back short enough for the live model to say aloud.
 
+### Work coming back by itself
+
+What a conversation starts comes back to it without being asked after. Starting a session
+(`quick_router`) or messaging one (`follow_up`) subscribes the conversation to that session's [MCP
+events](/extend/mcp-server/#mcp-events-what-sessions-do-as-events), and everything started under it,
+for three days from the last time it was started or messaged there
+(`LiveConversations::BackgroundResults`). Live Mode starts a router and the answer is usually a session
+below it, so the whole tree counts:
+
+| What happens | Brought up |
+| --- | --- |
+| The session the conversation started reports with `message_parent` | Yes, in its own words |
+| A session under it reports to its own parent | No, that report is the parent's |
+| A session fails | Yes, unless a session above it in the tree is still `waiting` or `running`, and so will hear of it |
+| A session rests in `needs_input` | The same, or if it is still resting there 3 minutes later |
+| A session is archived | Yes, once nothing in the tree is still going and nothing in it is waiting on you |
+
+So a router that starts a worker and archives itself is not an answer; the worker finishing is. A
+session that reported `done` or `question` does not come back a second time for stopping, until somebody
+messages it again; it does for failing. A session's newer state replaces its older one not yet said.
+
+**It is said on your next turn, never in the middle of a silence.** A typed reply and a GPT-Live
+delegation put what is waiting on the thread before the model is asked. During a call the client learns
+that something is waiting from the poll it already makes every five seconds, claims it (`POST
+/live_conversations/:id/background_results`) while nothing is being said, heard or run, and hands it to the
+voice model as context that asks for no speech: `session.thinking.append` on GPT-Live, a `system`
+conversation item on Realtime. The web dock and the iOS app, phone and CarPlay, do this; an iOS build from
+before it hears a result on the next thing it delegates, or the next typed turn.
+
+**Once.** A claim gives a result to one answer or one call, and repeating a claim gives the same answer. A
+typed or delegated result counts as said when that answer is given, and one that failed gives it back. On a
+call, the client reports that its model has the result, and it counts as said when the assistant answers you
+after you have spoken since; a call that dropped before then leaves it for the next one. Claude is told which
+results the call's voice already has. Only a line a signed-in person wrote uses a result up. A result is dropped if its session has moved on, or you asked about that session here, before
+it was offered, and if a day passes. If the conversation has ended, it goes to the one you are in now.
+
+What the model is given is a headline and at most 700 characters: the session's own report, its current
+status summary, or its last message. It is on the thread as a `background_results` tool turn, which the
+page shows as **Came back**. It is agent-written text and is treated as a tool result: never a `user` turn,
+so it is nobody's words, records no human message, does not make the conversation agent-written, and cannot
+answer a merge question. Every line of it is quoted, and the model is told not to raise it in an answer that
+asks whether to merge. `/supervisor/live_background_results` lists every one with what became of it.
+
 ### Answering a session counts as yours
 
 When you answer a session through Live Mode, typed or spoken, the session's

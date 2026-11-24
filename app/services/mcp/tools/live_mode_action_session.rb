@@ -41,7 +41,8 @@ module Mcp
         - **follow_up**: Deliver "prompt" to the session. A running session reads it when its current turn ends; set
           "force_immediate" to interrupt it when the message changes what it should be doing. A session that is
           `waiting`, "Paused" or "asleep until" a time still takes it straight away and answers, usually within a
-          minute or two. Check back with `get_session` and `transcript_last_messages: 2`.
+          minute or two. What comes of it is given to you to bring up on the person's next turn; use `get_session`
+          with `transcript_last_messages: 2` when they ask sooner.
         - **archive**: Archive a session that is done. Refused when a message is still queued for it or it is in
           the middle of a turn; say so, and do not try to get round it.
         - **unarchive**: Bring an archived session back, idle in `needs_input`.

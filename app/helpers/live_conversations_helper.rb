@@ -23,6 +23,25 @@ module LiveConversationsHelper
     end
   end
 
+  # Work from the background that came back by itself.
+  def live_background_result?(turn)
+    turn.tool? && turn.tool_name == LiveConversations::BackgroundResults::TOOL_NAME
+  end
+
+  # Its headline (`"title" finished.`), past the preface written for the model.
+  def live_background_result_title(turn)
+    live_background_result_lines(turn).first.presence || "Work from the background"
+  end
+
+  def live_background_result_text(turn)
+    live_background_result_lines(turn).drop(1).join("\n").strip
+  end
+
+  # The agent's lines, without the mark that keeps them apart from Zimmer's.
+  def live_background_result_lines(turn)
+    turn.tool_output.to_s.lines(chomp: true).select { |line| line.start_with?(">") }.map { |line| line.delete_prefix(">").strip }
+  end
+
   # A successful `update_live_settings` that changed something.
   def live_settings_change?(turn)
     turn.tool? && turn.tool_name == LiveConversations::ToolBridge::UPDATE_SETTINGS && !turn.tool_error &&

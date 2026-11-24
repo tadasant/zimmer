@@ -698,7 +698,7 @@ class Api::V1::SessionsController < Api::BaseController
   # Request body:
   #   - message: What the child is telling its parent (required)
   #   - reason: Why it is reporting back — one of Sessions::MessageParent::REASONS
-  #     ("wrong_scope", "missing_tools", "other"). Required, because the value is
+  #     ("wrong_scope", "missing_tools", "done", "update", "question", "other"). Required, because the value is
   #     what a parent branches on.
   #   - force_immediate: Interrupt a running parent instead of queuing (default: false)
   #   - unarchive_parent: Restore an archived parent and deliver to it (default: false).
@@ -724,7 +724,7 @@ class Api::V1::SessionsController < Api::BaseController
     end
 
     payload = {
-      parent_session: session_json(result.parent),
+      parent_session: result.parent && session_json(result.parent),
       delivery: result.delivery.to_s,
       unarchived_parent: result.unarchived,
       message: message_parent_receipt(result)
@@ -1916,6 +1916,8 @@ class Api::V1::SessionsController < Api::BaseController
   # reading the raw JSON gets told.
   def message_parent_receipt(result)
     base = case result.delivery
+    when :live_conversation
+      "Queued for the Live conversation that started this session; its assistant brings it up on the person's next turn"
     when :queued
       "Report queued for parent session ##{result.parent.id}. It will be read when that session's current turn ends."
     when :interrupted

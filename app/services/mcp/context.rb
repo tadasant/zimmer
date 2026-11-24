@@ -113,6 +113,18 @@ module Mcp
       !@allowed_agent_roots.nil?
     end
 
+    # Whether sessions of this agent root are ones this connection may act on.
+    # The allowlist and the root are both reduced to canonical tokens first, for
+    # the reason Mcp::Tool#canonical_root_token gives.
+    #
+    # @param root [String, nil] a session's `metadata["agent_root_key"]`
+    def root_allowed?(root)
+      return false if root.blank?
+
+      @allowed_root_tokens ||= Array(@allowed_agent_roots).map { |name| canonical_root(name) }
+      @allowed_root_tokens.include?(canonical_root(root))
+    end
+
     # Whether this request authenticated with an OAuth access token rather than an API key.
     def oauth?
       !@oauth_grant_id.nil?
@@ -136,6 +148,8 @@ module Mcp
     # @return [HumanMessage, nil]
     def capture_assistant_message(session, content, entry_point)
       if @live_conversation
+        # What comes of it comes back to the conversation by itself.
+        LiveConversations::BackgroundResults.subscribe(@live_conversation, session)
         message = HumanMessageCapture.record_live_mode_message(
           session: session, conversation: @live_conversation, content: content,
           entry_point: entry_point.to_s.sub(/\Aoauth\./, "live_mode.")
@@ -178,6 +192,11 @@ module Mcp
       (@live_capture_declines ||= []) << "Session #{session&.id}: not recorded as the person's own words, because #{reason}."
     rescue => e
       Rails.logger.error("[Mcp::Context] could not explain a declined Live Mode capture: #{e.class}: #{e.message}")
+    end
+
+    def canonical_root(name)
+      @catalog_roots ||= AgentRootsConfig.all
+      ArtifactIdentity.find(@catalog_roots, name)&.name || name
     end
 
     # Positive integers only. A blank, zero, negative or non-numeric value means

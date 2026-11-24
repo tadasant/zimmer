@@ -74,6 +74,13 @@ class LiveConversationsController < ApplicationController
     render json: { error: e.message }, status: e.status
   end
 
+  # Voice: what came back from the background, for the call to hand its model.
+  def background_results
+    render json: actions.background_results(claim: params[:claim], delivered: params[:delivered])
+  rescue LiveConversations::Actions::Refused => e
+    render json: { error: e.message }, status: e.status
+  end
+
   # Voice, `gpt_live_claude`: the browser's WebRTC offer in, OpenAI's answer out.
   def gpt_live_session
     render json: actions.gpt_live_session(sdp: params[:sdp].to_s)

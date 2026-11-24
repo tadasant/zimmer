@@ -20,8 +20,9 @@ module LiveConversations
 
     # The thread ends with something the model has not answered: a human
     # message, or tool output it has not seen.
+    # A result that came back by itself is nothing to answer until the person speaks.
     def self.awaiting_reply?(conversation)
-      last = conversation.turns.reorder(id: :desc).first
+      last = conversation.turns.where("tool_name IS DISTINCT FROM ?", BackgroundResults::TOOL_NAME).reorder(id: :desc).first
       last.present? && !last.assistant?
     end
 
@@ -38,6 +39,7 @@ module LiveConversations
         # thread, and nothing more is done in its name.
         break unless still_active?
 
+        BackgroundResults.offer_for_answer(@conversation, claim: BackgroundResults::REPLY_CLAIM) if rounds.zero?
         rounds += 1
         if rounds > MAX_ROUNDS
           @conversation.turns.create!(role: "assistant", content: "I stopped after #{MAX_ROUNDS} rounds of tool calls without an answer. Ask again, or narrow it down.")
@@ -95,6 +97,7 @@ module LiveConversations
 
       @conversation.turns.create!(role: "assistant", content: text) if text.present?
       if calls.empty?
+        BackgroundResults.note_typed_answer(@conversation) if text.present?
         @conversation.turns.create!(role: "assistant", content: "(no reply)") if text.blank?
         return
       end

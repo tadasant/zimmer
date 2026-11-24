@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_23_150100) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_24_180000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -523,6 +523,31 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_150100) do
     t.bigint "session_id", null: false
     t.datetime "updated_at", null: false
     t.index ["session_id", "occurred_at", "id"], name: "index_human_messages_on_session_id_and_occurred_at_and_id"
+  end
+
+  create_table "live_background_results", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.bigint "delivered_after_turn_id"
+    t.datetime "delivered_at"
+    t.string "drop_reason"
+    t.datetime "dropped_at"
+    t.string "event_id", null: false
+    t.string "kind", null: false
+    t.bigint "live_conversation_id", null: false
+    t.text "message"
+    t.datetime "occurred_at", null: false
+    t.datetime "offered_at"
+    t.string "offered_claim"
+    t.bigint "offered_conversation_id"
+    t.bigint "offered_turn_id"
+    t.datetime "raised_at"
+    t.bigint "root_session_id", null: false
+    t.bigint "session_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["created_at"], name: "index_live_background_results_waiting", where: "((raised_at IS NULL) AND (dropped_at IS NULL))"
+    t.index ["live_conversation_id", "event_id"], name: "index_live_background_results_once", unique: true
+    t.index ["live_conversation_id"], name: "index_live_background_results_on_live_conversation_id"
+    t.index ["session_id"], name: "index_live_background_results_on_session_id"
   end
 
   create_table "live_conversation_turns", force: :cascade do |t|
@@ -1176,6 +1201,37 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_150100) do
     t.index ["status"], name: "index_runtime_login_attempts_on_status"
   end
 
+  create_table "session_event_subscriptions", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.jsonb "event_names", default: [], null: false
+    t.datetime "last_event_at"
+    t.string "last_event_id"
+    t.bigint "session_id", null: false
+    t.bigint "subscriber_id", null: false
+    t.string "subscriber_type", null: false
+    t.datetime "updated_at", null: false
+    t.index ["session_id", "subscriber_type", "subscriber_id"], name: "index_session_event_subscriptions_on_edge", unique: true
+    t.index ["session_id"], name: "index_session_event_subscriptions_on_session_id"
+    t.index ["subscriber_type", "subscriber_id"], name: "index_session_event_subscriptions_on_subscriber"
+  end
+
+  create_table "session_events", force: :cascade do |t|
+    t.string "agent_root"
+    t.datetime "created_at", null: false
+    t.jsonb "data", default: {}, null: false
+    t.string "event_id", null: false
+    t.string "name", null: false
+    t.datetime "occurred_at", null: false
+    t.bigint "parent_session_id"
+    t.bigint "session_id", null: false
+    t.bigint "txid", default: -> { "((pg_current_xact_id())::text)::bigint" }, null: false
+    t.index ["created_at"], name: "index_session_events_on_created_at"
+    t.index ["event_id"], name: "index_session_events_on_event_id", unique: true
+    t.index ["name", "txid", "id"], name: "index_session_events_on_name_and_txid_and_id"
+    t.index ["parent_session_id"], name: "index_session_events_on_parent_session_id"
+    t.index ["session_id"], name: "index_session_events_on_session_id"
+  end
+
   create_table "session_experimental_flags", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.datetime "first_observed_at"
@@ -1698,6 +1754,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_150100) do
   add_foreign_key "gate_decision_feedbacks", "gate_decisions"
   add_foreign_key "gate_decisions", "sessions", column: "writing_session_id", on_delete: :nullify
   add_foreign_key "human_messages", "sessions", on_delete: :cascade
+  add_foreign_key "live_background_results", "live_conversations", on_delete: :cascade
+  add_foreign_key "live_background_results", "sessions", on_delete: :cascade
   add_foreign_key "live_conversation_turns", "live_conversations", on_delete: :cascade
   add_foreign_key "live_scratchpad_entries", "live_conversations", on_delete: :cascade
   add_foreign_key "live_setting_changes", "live_conversations", on_delete: :nullify
@@ -1726,6 +1784,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_150100) do
   add_foreign_key "outcome_analysis_batch_items", "sessions", on_delete: :cascade
   add_foreign_key "outcome_analysis_batches", "sessions", column: "started_by_session_id", on_delete: :nullify
   add_foreign_key "runtime_login_attempts", "claude_accounts", on_delete: :nullify
+  add_foreign_key "session_event_subscriptions", "sessions", on_delete: :cascade
+  add_foreign_key "session_events", "sessions", on_delete: :cascade
   add_foreign_key "session_experimental_flags", "sessions", on_delete: :cascade
   add_foreign_key "session_status_summaries", "sessions", column: "fork_session_id", on_delete: :nullify
   add_foreign_key "session_status_summaries", "sessions", on_delete: :cascade

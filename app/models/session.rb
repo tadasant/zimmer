@@ -83,6 +83,11 @@ class Session < ApplicationRecord
   # The Your board category a person dragged this session into, or nil for
   # Uncategorized. Presentation only. Written by BoardCategories::Assign alone.
   belongs_to :board_category, optional: true
+  # What this session has published as MCP Events, and who hears it (SessionEvents).
+  has_many :session_events, dependent: :delete_all
+  has_many :event_subscriptions, class_name: "SessionEventSubscription", dependent: :delete_all
+  has_many :live_background_results, dependent: :delete_all
+  has_many :event_subscriptions_held, as: :subscriber, class_name: "SessionEventSubscription", dependent: :delete_all
   has_many :child_sessions, class_name: "Session", foreign_key: :parent_session_id, dependent: :nullify
 
   # The second lineage edge: seniors that queued or interrupted this session
@@ -912,6 +917,7 @@ class Session < ApplicationRecord
   validate :parent_session_must_exist, if: :parent_session_id_changed?
 
   after_create :set_default_title
+  after_create :subscribe_parent_to_events, if: :parent_session_id?
   after_create_commit :enqueue_session_inference
   # A session started from CarPlay — the app's CarPlay screen, or a Live Mode
   # conversation on CarPlay delegating — starts in the driver's view.
@@ -3389,6 +3395,12 @@ class Session < ApplicationRecord
 
   def record_carplay_engagement_at_creation
     Sessions::RecordCarplayEngagement.call(self)
+  end
+
+  # Zimmer is the MCP Events client for a parent session (SessionEventSubscription):
+  # spawning a session subscribes the one that spawned it.
+  def subscribe_parent_to_events
+    SessionEventSubscription.for_parent!(self)
   end
 
   def set_default_title

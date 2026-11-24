@@ -1476,7 +1476,7 @@ class Api::V1::SessionsControllerTest < ActionDispatch::IntegrationTest
 
     post message_parent_api_v1_session_path(child.id), params: { message: "x", reason: "vibes" }, headers: @headers
     assert_response :unprocessable_entity
-    assert_match(/wrong_scope, missing_tools, other/, JSON.parse(response.body)["message"])
+    assert_match(/wrong_scope, missing_tools, done, update, question, other/, JSON.parse(response.body)["message"])
   end
 
   test "should reject a report from a session with no parent" do

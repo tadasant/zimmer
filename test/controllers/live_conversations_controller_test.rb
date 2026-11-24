@@ -339,4 +339,32 @@ class LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_match(/no note #{foreign.id}/, response.body)
     assert LiveScratchpadEntry.exists?(foreign.id)
   end
+
+  test "a call is told something came back, claims it, and says its model has it" do
+    conversation = create_live_conversation(mode: "voice")
+    session = Session.create!(agent_runtime: "claude_code", prompt: "work", git_root: "https://github.com/test/repo.git", branch: "main", title: "Build <b>fix</b>")
+    LiveConversations::BackgroundResults.subscribe(conversation, session)
+    LiveConversations::BackgroundResults.receive(SessionEvents::Publish.message(session, reason: "done", message: "It is <i>green</i>."))
+
+    get "/live/current.json", params: { call: "call-12345678" }
+    assert_equal 1, response.parsed_body["background_results"]
+
+    post "/live_conversations/#{conversation.id}/background_results", params: { claim: "call-12345678:1" }, as: :json
+    result = response.parsed_body["results"].sole
+    assert_match(/^> It is/, result["text"])
+
+    post "/live_conversations/#{conversation.id}/background_results", params: { claim: "call-12345678:2", delivered: [ result["id"] ] }, as: :json
+    assert_equal [], response.parsed_body["results"]
+    assert LiveBackgroundResult.sole.delivered_at
+
+    get "/live/current.json", params: { call: "call-12345678" }
+    assert_equal 0, response.parsed_body["background_results"]
+
+    get live_conversation_path(conversation)
+    assert_select "[data-live-background-result]", text: /Came back: "Build <b>fix<\/b>" reported back\./
+    assert_no_match "<i>green</i>", response.body
+
+    post "/live_conversations/#{conversation.id}/background_results", params: { claim: "nope" }, as: :json
+    assert_response :unprocessable_entity
+  end
 end
