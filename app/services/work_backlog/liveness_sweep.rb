@@ -124,8 +124,21 @@ module WorkBacklog
     # GlitchTip issue and notifies once — see `alert_if_overdue`.
     ALERT_FINGERPRINT = "work-backlog-stranded-rows"
 
-    # How many newly stranded rows a page names by key. The rest are counted.
+    # How many newly stranded rows a page names by key, in its context and its log
+    # line. The rest are counted.
     NAMED_ROWS_MAX = 20
+
+    # What every page's message starts with, so every page is found by one search
+    # whatever its news was. The news follows it — see `page_title`.
+    TITLE_PREFIX = "Work backlog stranded: "
+
+    # How many newly stranded rows the message itself names. Slack shows only the
+    # message, and it has to leave room for every reason the page fired.
+    TITLE_NAMED_ROWS_MAX = 3
+
+    # GlitchTip cuts an issue title at 100 characters, and the title is all Slack
+    # shows. `page_title` drops names until the message fits, never a reason.
+    TITLE_MAX = 100
 
     # WHAT THE PAGE DOES NOT COUNT: rows a triager has held for a human decision
     # (WorkBacklogItem.awaiting_decision). They are out of `stranded` — both the
@@ -587,7 +600,7 @@ module WorkBacklog
 
       # The band a page names: the week its oldest row's age has reached, and the
       # step of the size ladder its count has reached. It is what the fingerprint
-      # and the title say; whether to page is `news`.
+      # says. The message says the news (`page_title`); whether to page is `news`.
       def severity_band(age, rows)
         { weeks: age / ALERT_AFTER.to_i, rows: row_band(rows) }
       end
@@ -613,8 +626,10 @@ module WorkBacklog
         band = severity_band(age, rows.size)
         awaiting_decision = WorkBacklogItem.awaiting_decision(now: now).count
         days = (age / 86_400.0).round(1)
-        named = paging[:fresh].first(NAMED_ROWS_MAX).map(&:key)
-        unnamed = paging[:fresh].size - named.size
+        fresh = paging[:fresh].sort_by { |row| [ row.since, row.id ] }
+        title = page_title(rows, paging[:reasons], fresh, now)
+        named = fresh.first(NAMED_ROWS_MAX).map(&:key)
+        unnamed = fresh.size - named.size
         news = "paged for: #{paging[:reasons].join(', ')}"
         news += "; newly stranded: #{named.join(', ')}" if named.any?
         news += " and #{unnamed} more" if unnamed.positive?
@@ -634,7 +649,7 @@ module WorkBacklog
         # #error reports to GlitchTip itself, and nothing here should reach GlitchTip
         # except the banded event below.
         Rails.logger.warn(
-          "[WorkBacklog::LivenessSweep] #{rows.size} work backlog row(s) stranded, oldest #{days} days " \
+          "[WorkBacklog::LivenessSweep] #{title} — #{rows.size} work backlog row(s) stranded, oldest #{days} days " \
           "(band: #{band[:weeks]}w/#{band[:rows]}+ rows)#{held}; #{news} — nothing re-queues these automatically. " \
           "Triage them on the Issues page under Stranded, or with get_work_backlog status: \"stranded\"; " \
           "one whose remainder is a human's call is held with hold_work_backlog_item_for_decision."
@@ -643,12 +658,12 @@ module WorkBacklog
         # Level :warning: this is a triage queue, not a fault. The new issue its
         # fingerprint opens is what notifies `#alerts`, not the level.
         ErrorReporter.report_message(
-          "Work backlog rows have been stranded for over #{band[:weeks]} #{"week".pluralize(band[:weeks])}",
+          title,
           context: {
             oldest_stranded_days: days,
             stranded_rows: rows.size,
             paged_for: paging[:reasons],
-            newly_stranded_rows: paging[:fresh].size,
+            newly_stranded_rows: fresh.size,
             newly_stranded: named,
             awaiting_decision_rows: awaiting_decision,
             lapsed_holds: lapsed,
@@ -669,6 +684,44 @@ module WorkBacklog
           fingerprint: [ ALERT_FINGERPRINT, "weeks-#{band[:weeks]}", "rows-#{band[:rows]}",
                          "paged-#{now.utc.iso8601}" ]
         )
+      end
+
+      # The page's message: TITLE_PREFIX, then every reason the page fired. It is all
+      # Slack shows, so it has to say which rows are new without the context or the
+      # logs (#1665): a title built from the oldest row's age reads the same for a
+      # row that stranded an hour ago as for a reminder about a ten-week-old one.
+      #
+      # It has TITLE_MAX characters to do it in. The oldest row's key goes first, then
+      # the newly stranded keys from the youngest, until it fits. With every key
+      # dropped each reason is still there, and that form always fits.
+      def page_title(rows, reasons, fresh, now)
+        forms = TITLE_NAMED_ROWS_MAX.downto(0).to_a.product([ true, false ])
+        titles = forms.map do |names, name_oldest|
+          TITLE_PREFIX + reasons.map { |reason|
+            case reason
+            when "new_rows" then new_rows_phrase(fresh, names, now)
+            when "more_rows" then "now #{rows.size} rows (past #{row_band(rows.size)})"
+            when "older" then older_phrase(rows, name_oldest, now)
+            end
+          }.join("; ")
+        end
+        titles.find { |title| title.length <= TITLE_MAX } || titles.last
+      end
+
+      def new_rows_phrase(fresh, names, now)
+        return "#{fresh.size} new" if names.zero?
+
+        named = fresh.first(names).map do |row|
+          "#{row.key} (#{((now - row.since) / 1.day).floor}d#{", hold lapsed" if row.lapsed})"
+        end
+        more = fresh.size - named.size
+        "new #{named.join(', ')}#{" +#{more} more" if more.positive?}"
+      end
+
+      def older_phrase(rows, name_oldest, now)
+        oldest = rows.min_by(&:since)
+        weeks = ((now - oldest.since) / ALERT_AFTER).floor
+        "oldest #{"#{oldest.key} " if name_oldest}at #{weeks} #{"week".pluralize(weeks)}"
       end
     end
   end

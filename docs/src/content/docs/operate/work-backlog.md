@@ -507,6 +507,22 @@ weeks, and each page was triaged to the same answer
 | `more_rows` | the count's step on `ALERT_ROW_BANDS` (1, 10, 25, 50, 100, 250, 500, 1000) is above the step of the rows a page already covers |
 | `older` | the oldest row's age has climbed a rung of the doubling ladder since the last page: 1, 2, 4, 8, 16, 32… weeks |
 
+The message says which of those it was, and it is all Slack shows
+([#1665](https://github.com/tadasant/zimmer/issues/1665)). It starts with `Work backlog stranded:`
+(`TITLE_PREFIX`) and gives every reason the page fired, separated by semicolons:
+
+| Reason | The message says |
+| --- | --- |
+| `new_rows` | `new zimmer#1560 (7d)`: up to three newly stranded keys (`TITLE_NAMED_ROWS_MAX`), oldest first, each with how long it has been out, then `+4 more`. A row back from a lapsed hold reads `(36d, hold lapsed)` |
+| `more_rows` | `now 12 rows (past 10)`: the count and the step it crossed |
+| `older` | `oldest zimmer#217 at 16 weeks`: the oldest row and the age it reached |
+
+GlitchTip cuts an issue title at 100 characters. A message that would run past that drops the oldest
+row's key first and then the newly stranded keys, so it can read `4 new` with no names. It never
+drops a reason. The event's `newly_stranded` and the WARN line name up to 20 keys, and the WARN line
+leads with the message. Pages from before this wording start `Work backlog rows have been stranded`,
+so `Work backlog` finds both.
+
 Nothing else pages. **A newly stranded row always pages.** That is the rule this cannot lose, and
 it does not depend on either band moving. A page that went out while a row was younger than
 `ALERT_AFTER` counted it but did not report it as stranded, so it still gets its own page once it
