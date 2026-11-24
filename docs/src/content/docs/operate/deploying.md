@@ -875,19 +875,22 @@ that gap:
   nothing else. So the sweep also re-runs the colliding PR's latest CI run. Its `lint` fetches
   `main` again and fails, and `all-checks-pass` fails with it. If the PR carries `ready to merge`,
   the sweep also posts a comment showing the collision and then removes the label. The merge gate
-  keys on that label, and the session holding the PR sees it gone at its next check. If one PR
-  can't be read, the sweep logs it, checks the rest, and fails at the end.
+  keys on that label, and the session holding the PR sees it gone at its next check. The status, the
+  re-run and the label removal are attempted independently, except that the label stays on if the
+  comment can't be posted. If one PR can't be read, or one of those steps fails, the sweep logs it,
+  checks the rest, and fails at the end.
 
 Both run `.github/scripts/migration-versions-vs-main.rb` (`check` and `sweep`), and both compare
 with `MigrationVersionGuard.merge_collisions`. `sweep --dry-run` prints the verdicts without writing
 anything.
 
-A transient GitHub failure (a 5xx, 408 or 429, a GraphQL execution error, a dropped connection) is
+A transient GitHub failure (a 5xx or 408, a GraphQL execution error, a dropped connection) is
 retried up to four times, waiting 2, 5, 10 and 20 seconds. No retry starts more than 300 seconds
-into the run, which leaves the sweep half of its 10-minute timeout. A permanent error such as a 404 or 403
-fails on the first attempt, and so do the two writes that must not land twice: the comment and the
-CI re-run. When the retries run out, the call fails the way a permanent error does: `check` exits
-non-zero, and the sweep checks the other PRs and then fails.
+into the run, so retries can't use up the sweep's 10-minute timeout. A permanent error such as a 404
+or 403, or a rate limit, fails on the first attempt. So does either of the two writes that must not
+land twice, the comment and the CI re-run. A call that is out of retries fails the way a permanent
+error does, so the run still exits non-zero. If the failing call is the one that lists the open PRs,
+the sweep stops there with nothing checked.
 
 One window is still open. The sweep can queue for a runner for a few minutes after the push, and
 a PR that merges in that time is not stopped. A merge that ignores the

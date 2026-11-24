@@ -30,7 +30,7 @@
 # A transient GitHub failure (a 5xx, a dropped connection) is retried with
 # backoff, within RETRY_WINDOW of the script starting, for calls that are safe to
 # repeat. A call that still fails once its retries are spent fails exactly as a
-# permanent error does: "could not check" is never a pass.
+# permanent error does: a PR that could not be checked has not passed.
 #
 # REPO (owner/name) must be set; `gh` must be authenticated. Rails-free: the
 # comparison is MigrationVersionGuard.merge_collisions, the inputs are `git
@@ -53,18 +53,21 @@ module MigrationVersionsVsMain
   RETRY_WINDOW = 300
   STARTED_AT = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-  # What `gh` prints for a failure that may clear by itself: a status the server
-  # calls temporary, a GraphQL execution error, or a connection that did not
-  # complete. Everything else — 404, 403 (rate limits included: they outlast any
-  # backoff here), bad arguments — fails on the first attempt.
+  # What `gh` prints for a failure that may clear by itself: a 5xx or request
+  # timeout, a GraphQL execution error, or a connection or response that did not
+  # complete. Everything else — 404, 403, bad arguments, and rate limits, which
+  # outlast any backoff here — fails on the first attempt.
   TRANSIENT_FAILURE = %r{
-    \bHTTP\ (?:408|429|5\d\d)\b |
+    \bHTTP\ (?:408|5\d\d)\b |
     \bstatus\ code:\ 5\d\d\b |
     Something\ went\ wrong\ while\ executing\ your\ query |
     error\ connecting\ to |
     connection\ (?:reset|refused|timed\ out) |
-    i/o\ timeout | TLS\ handshake\ timeout | Client\.Timeout\ exceeded |
-    :\ (?:unexpected\ )?EOF\b
+    network\ is\ unreachable | no\ route\ to\ host |
+    i/o\ timeout | TLS\ handshake\ timeout |
+    stream\ error:\ stream\ ID | http2:\ (?:client\ connection\ lost|server\ sent\ GOAWAY) |
+    server\ closed\ idle\ connection |
+    :\ (?:unexpected\ )?EOF\b | unexpected\ end\ of\ JSON\ input
   }xi
 
   module_function
@@ -75,15 +78,13 @@ module MigrationVersionsVsMain
 
     case command
     when "check"
-      begin
-        check(pr: options.fetch(:pr), main_ref: options.fetch(:main_ref))
-      rescue CommandFailed => e
-        abort e.message
-      end
+      check(pr: options.fetch(:pr), main_ref: options.fetch(:main_ref))
     when "sweep"
       sweep(main_ref: options.fetch(:main_ref), target_url: options[:target_url], dry_run: options[:dry_run])
     else abort "usage: #{File.basename($PROGRAM_NAME)} check --pr N --main-ref REF | sweep --main-ref REF"
     end
+  rescue CommandFailed => e
+    abort e.message
   end
 
   def check(pr:, main_ref:)
@@ -108,11 +109,11 @@ module MigrationVersionsVsMain
       sweep_one(number, head_sha, labels, main: main, target_url: target_url, dry_run: dry_run)
       true
     rescue CommandFailed => e
-      warn "##{number}: could not check — #{e.message}"
+      warn "##{number}: failed — #{e.message}"
       false
     end
 
-    abort "Could not check #{failed.map { |number, _| "##{number}" }.join(", ")}; see above." if failed.any?
+    abort "Could not finish #{failed.map { |number, _| "##{number}" }.join(", ")}; see above." if failed.any?
   end
 
   def sweep_one(number, head_sha, labels, main:, target_url:, dry_run:)
@@ -126,11 +127,24 @@ module MigrationVersionsVsMain
     puts "##{number} #{head_sha[0, 12]}: #{state} — #{description}"
     return if dry_run
 
-    post_status(head_sha, state, description, target_url)
-    return if state == "success"
+    attempt_each(
+      -> { post_status(head_sha, state, description, target_url) },
+      -> { rerun_ci(head_sha) if collisions.any? },
+      -> { unlabel(number, collisions, target_url) if collisions.any? && labels.include?(READY_LABEL) }
+    )
+  end
 
-    rerun_ci(head_sha)
-    unlabel(number, collisions, target_url) if labels.include?(READY_LABEL)
+  # Red CI and a missing label each stop a colliding PR on their own, so one step
+  # failing must not cost the others. Every failure still reaches the caller.
+  def attempt_each(*steps)
+    errors = steps.filter_map do |step|
+      step.call
+      nil
+    rescue CommandFailed => e
+      e.message
+    end
+
+    raise CommandFailed, errors.join("; ") if errors.any?
   end
 
   # Paths relative to db/migrate, which is what the guard compares.
@@ -197,8 +211,9 @@ module MigrationVersionsVsMain
     gh("run", "rerun", run_id, "--repo", repo)
   end
 
-  # Comment first, so a run cancelled in between never leaves a label gone
-  # with no word about why.
+  # Comment first, so a run that stops in between never leaves a label gone with
+  # no word about why. A comment that fails therefore keeps the label; the CI
+  # re-run is what still blocks the PR.
   def unlabel(number, collisions, target_url)
     gh("pr", "comment", number.to_s, "--repo", repo, "--body", <<~BODY)
       `main` gained a migration that collides with one this PR adds, so this PR would
@@ -269,8 +284,8 @@ module MigrationVersionsVsMain
 
   class CommandFailed < StandardError; end
 
-  # Fail loudly: a check that could not read its inputs has not passed. `check`
-  # lets this escape and exits non-zero; `sweep` catches it per PR.
+  # Fail loudly: a check that could not read its inputs has not passed. `sweep`
+  # catches this per PR, and `run` exits non-zero on one that escapes.
   def run_command(*command)
     output, error, status = Open3.capture3(*command)
     raise CommandFailed, "#{command.first(3).join(" ")} … failed (#{status.exitstatus}): #{error.strip}" unless status.success?

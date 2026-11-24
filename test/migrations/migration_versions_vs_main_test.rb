@@ -101,7 +101,7 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
       files: { 1490 => "added\tdb/migrate/20261114000000_add_doodad.rb\t\n" })
 
     assert_not_predicate status, :success?
-    assert_includes output, "#1: could not check"
+    assert_includes output, "#1: failed"
     assert_includes posted, "statuses/bbbb1490"
   end
 
@@ -145,9 +145,9 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
       files: { 1 => CLEAN_ROW, 1490 => CLEAN_ROW })
 
     assert_not_predicate run.status, :success?
-    assert_includes run.output, "#1: could not check"
+    assert_includes run.output, "#1: failed"
     assert_includes run.output, "gave up after 5 attempts"
-    assert_includes run.output, "Could not check #1; see above."
+    assert_includes run.output, "Could not finish #1; see above."
     assert_not_includes run.posted, "aaaa0001"
     assert_includes run.posted, "statuses/bbbb1490"
     assert_equal [ 2, 5, 10, 20 ], run.slept
@@ -158,6 +158,7 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
 
     assert_not_predicate run.status, :success?
     assert_includes run.output, "gave up after 5 attempts"
+    assert_not_includes run.output, "from ", "a failed command is reported, not a backtrace"
   end
 
   test "check rides out a transient failure, and fails when it outlasts the retries" do
@@ -175,14 +176,24 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
     [
       "HTTP 502: 502 Bad Gateway (https://api.github.com/graphql)",
       "gh: HTTP 504",
-      "HTTP 429: Too Many Requests (https://api.github.com/graphql)",
+      "gh: HTTP 408",
       "non-200 OK status code: 503 Service Unavailable body: \"\"",
       "GraphQL: Something went wrong while executing your query. This may be the result of a timeout",
       "error connecting to api.github.com",
       "Get \"https://api.github.com/x\": read tcp 10.0.0.1:1->10.0.0.2:443: read: connection reset by peer",
       "Get \"https://api.github.com/x\": dial tcp 10.0.0.2:443: i/o timeout",
       "Get \"https://api.github.com/x\": net/http: TLS handshake timeout",
-      "Post \"https://api.github.com/graphql\": unexpected EOF"
+      "dial tcp 10.0.0.2:443: connect: connection refused",
+      "dial tcp 10.0.0.2:443: connect: connection timed out",
+      "dial tcp 10.0.0.2:443: connect: network is unreachable",
+      "dial tcp 10.0.0.2:443: connect: no route to host",
+      "stream error: stream ID 1; INTERNAL_ERROR; received from peer",
+      "http2: client connection lost",
+      "http2: server sent GOAWAY and closed the connection; LastStreamID=1",
+      "http: server closed idle connection",
+      "Post \"https://api.github.com/graphql\": unexpected EOF",
+      "Post \"https://api.github.com/graphql\": EOF",
+      "unexpected end of JSON input"
     ].each do |message|
       run = run_retrying("check", "--pr", "1490", failures: { "/pulls/1490/files" => [ message ] }, files: { 1490 => CLEAN_ROW })
       assert_predicate run.status, :success?, "not retried: #{message}\n#{run.output}"
@@ -195,6 +206,7 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
       "gh: Not Found (HTTP 404)",
       "gh: Resource not accessible by integration (HTTP 403)",
       "gh: API rate limit exceeded for installation (HTTP 403)",
+      "HTTP 429: Too Many Requests (https://api.github.com/graphql)",
       "gh: Validation Failed (HTTP 422)",
       "unknown flag: --nope"
     ].each do |message|
@@ -206,12 +218,39 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
   end
 
   test "the writes whose repeat changes nothing are retried" do
-    run = run_retrying("sweep", failures: { "/statuses/aaaa1484" => [ SERVER_ERROR ], "pr edit" => [ SERVER_ERROR ] },
+    run = run_retrying("sweep",
+      failures: { "/statuses/aaaa1484" => [ SERVER_ERROR ], "run list" => [ SERVER_ERROR ], "pr edit" => [ SERVER_ERROR ] },
       prs: prs_json([ 1484, "aaaa1484", [ "ready to merge" ] ]), files: { 1484 => COLLIDING_ROW })
 
     assert_predicate run.status, :success?, run.output
     assert_includes run.posted, "state=failure"
+    assert_includes run.edits, "run rerun run-aaaa1484"
     assert_includes run.edits, "--remove-label ready to merge"
+  end
+
+  # Red CI and a missing label each stop the merge on their own.
+  test "a step that fails on a colliding PR does not cost the PR the other steps" do
+    permanent = "gh: Resource not accessible by integration (HTTP 403)"
+    steps = {
+      "/statuses/aaaa1484" => [ "run rerun", "pr comment", "pr edit" ],
+      "run list" => [ "/statuses/aaaa1484", "pr comment", "pr edit" ],
+      "run rerun" => [ "/statuses/aaaa1484", "pr comment", "pr edit" ],
+      "pr comment" => [ "/statuses/aaaa1484", "run rerun" ]
+    }
+
+    steps.each do |failing, others|
+      run = run_retrying("sweep", failures: { failing => [ permanent ] },
+        prs: prs_json([ 1484, "aaaa1484", [ "ready to merge" ] ]), files: { 1484 => COLLIDING_ROW })
+
+      assert_not_predicate run.status, :success?, failing
+      assert_includes run.output, "Could not finish #1484", failing
+      others.each { |step| assert_equal 1, run.calls_matching(step).size, "#{step} after #{failing} failed" }
+    end
+
+    # No label is removed without its comment.
+    run = run_retrying("sweep", failures: { "pr comment" => [ permanent ] },
+      prs: prs_json([ 1484, "aaaa1484", [ "ready to merge" ] ]), files: { 1484 => COLLIDING_ROW })
+    assert_empty run.calls_matching("pr edit")
   end
 
   # A 5xx can arrive after the write landed, so a repeat could post the comment or
@@ -222,7 +261,7 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
         prs: prs_json([ 1484, "aaaa1484", [ "ready to merge" ] ]), files: { 1484 => COLLIDING_ROW })
 
       assert_not_predicate run.status, :success?, write
-      assert_includes run.output, "Could not check #1484"
+      assert_includes run.output, "Could not finish #1484"
       assert_equal 1, run.calls_matching(write).size, write
       assert_empty run.slept, write
     end
@@ -238,7 +277,7 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
     assert_operator run.slept.sum, :<=, 300
     assert_includes run.output, "retry window spent"
     numbers.each { |number| assert_not_empty run.calls_matching("/pulls/#{number}/files"), "##{number} was never asked about" }
-    assert_includes run.output, "Could not check #{numbers.map { |number| "##{number}" }.join(", ")}"
+    assert_includes run.output, "Could not finish #{numbers.map { |number| "##{number}" }.join(", ")}"
   end
 
   test "sweep --dry-run posts nothing" do
