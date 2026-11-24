@@ -596,7 +596,7 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
       sweep
 
       assert_equal [ "more_rows" ], alerts.events.last.dig(:context, :paged_for)
-      assert_equal "Work backlog stranded: now 12 rows (past 10)", alerts.events.last[:message]
+      assert_equal "Work backlog stranded: now 12 rows (hit 10)", alerts.events.last[:message]
     end
   end
 
@@ -609,7 +609,7 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
       travel(6.days + 1.hour) { sweep }
 
       assert_equal [ "more_rows", "older" ], alerts.events.last.dig(:context, :paged_for)
-      assert_equal "Work backlog stranded: now 10 rows (past 10); oldest zimmer#217 at 2 weeks",
+      assert_equal "Work backlog stranded: now 10 rows (hit 10); oldest zimmer#217 at 2 weeks",
                    alerts.events.last[:message]
     end
   end
@@ -624,7 +624,7 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
       travel(6.days + 1.hour) { sweep }
 
       assert_equal [ "new_rows", "more_rows", "older" ], alerts.events.last.dig(:context, :paged_for)
-      assert_equal "Work backlog stranded: new zimmer#1560 (7d); now 10 rows (past 10); oldest zimmer#217 at 2 weeks",
+      assert_equal "Work backlog stranded: new zimmer#1560 (7d); now 10 rows (hit 10); oldest zimmer#217 at 2 weeks",
                    alerts.events.last[:message]
       assert_equal 2, alerts.events.map { |event| event[:fingerprint] }.uniq.size
     end
@@ -643,12 +643,32 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
 
       assert_operator title.length, :<=, sweep_class::TITLE_MAX, title
       assert title.start_with?(sweep_class::TITLE_PREFIX), title
-      assert_match(/\bnew\b.*; now 1200 rows \(past 1000\); oldest .*at 172 weeks\z/, title)
+      assert_match(/\bnew\b.*; now 1200 rows \(hit 1000\); oldest .*at 172 weeks\z/, title)
     end
 
     long = [ row.call(1, "k" * 200, 8) ]
     assert_equal "Work backlog stranded: 1 new", sweep_class.send(:page_title, long, [ "new_rows" ], long, now)
     assert_equal "Work backlog stranded: oldest at 1 week", sweep_class.send(:page_title, long, [ "older" ], [], now)
+  end
+
+  test "a message gives up the oldest row's key first, then the newly stranded keys from the youngest" do
+    sweep_class = WorkBacklog::LivenessSweep
+    now = Time.current
+    title = lambda do |prefix|
+      fresh = [ 12, 9, 8 ].each_with_index.map do |days, i|
+        sweep_class::StrandedRow.new(id: i, key: "#{prefix}##{i}", since: now - days.days, paged_at: nil, lapsed: false)
+      end
+      oldest = sweep_class::StrandedRow.new(id: 9, key: "zimmer#217", since: now - 115.days, paged_at: now, lapsed: false)
+      sweep_class.send(:page_title, fresh + [ oldest ], [ "new_rows", "older" ], fresh, now)
+    end
+
+    assert_equal "Work backlog stranded: new a#0 (12d), a#1 (9d), a#2 (8d); oldest zimmer#217 at 16 weeks", title.call("a")
+
+    nine, twelve, twenty = [ 9, 12, 20 ].map { |length| "r" * length }
+    assert_equal "Work backlog stranded: new #{nine}#0 (12d), #{nine}#1 (9d), #{nine}#2 (8d); oldest at 16 weeks", title.call(nine)
+    assert_equal "Work backlog stranded: new #{twelve}#0 (12d), #{twelve}#1 (9d) +1 more; oldest at 16 weeks", title.call(twelve)
+    assert_equal "Work backlog stranded: new #{twenty}#0 (12d) +2 more; oldest at 16 weeks", title.call(twenty)
+    assert_equal "Work backlog stranded: 3 new; oldest at 16 weeks", title.call("r" * 60)
   end
 
   # The one page an unreadable pass may send. Its census is unreliable, so the

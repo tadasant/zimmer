@@ -513,12 +513,12 @@ The message says which of those it was, and it is all Slack shows
 
 | Reason | The message says |
 | --- | --- |
-| `new_rows` | `new zimmer#1560 (7d)`: up to three newly stranded keys (`TITLE_NAMED_ROWS_MAX`), oldest first, each with how long it has been out, then `+4 more`. A row back from a lapsed hold reads `(36d, hold lapsed)` |
-| `more_rows` | `now 12 rows (past 10)`: the count and the step it crossed |
+| `new_rows` | `new zimmer#1560 (7d)`: up to three newly stranded keys (`TITLE_NAMED_ROWS_MAX`), oldest first, each with the whole days it has been out, then `+4 more`. A row back from a lapsed hold reads `(36d, hold lapsed)` |
+| `more_rows` | `now 12 rows (hit 10)`: the count, young rows included, and the step it reached |
 | `older` | `oldest zimmer#217 at 16 weeks`: the oldest row and the age it reached |
 
 GlitchTip cuts an issue title at 100 characters. A message that would run past that drops the oldest
-row's key first and then the newly stranded keys, so it can read `4 new` with no names. It never
+row's key first and then the newly stranded keys, youngest first, so it can read `4 new` with no names. It never
 drops a reason. The event's `newly_stranded` and the WARN line name up to 20 keys, and the WARN line
 leads with the message. Pages from before this wording start `Work backlog rows have been stranded`,
 so `Work backlog` finds both.

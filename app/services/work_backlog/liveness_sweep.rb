@@ -691,16 +691,18 @@ module WorkBacklog
       # logs (#1665): a title built from the oldest row's age reads the same for a
       # row that stranded an hour ago as for a reminder about a ten-week-old one.
       #
-      # It has TITLE_MAX characters to do it in. The oldest row's key goes first, then
-      # the newly stranded keys from the youngest, until it fits. With every key
-      # dropped each reason is still there, and that form always fits.
+      # It has TITLE_MAX characters to do it in. The oldest row's key goes first and
+      # stays gone, so the only key in a message is never an old row's beside an
+      # unnamed new one. Then the newly stranded keys go, from the youngest, until it
+      # fits. With every key dropped each reason is still there, and that form always
+      # fits.
       def page_title(rows, reasons, fresh, now)
-        forms = TITLE_NAMED_ROWS_MAX.downto(0).to_a.product([ true, false ])
+        forms = [ [ TITLE_NAMED_ROWS_MAX, true ] ] + TITLE_NAMED_ROWS_MAX.downto(0).map { |names| [ names, false ] }
         titles = forms.map do |names, name_oldest|
           TITLE_PREFIX + reasons.map { |reason|
             case reason
             when "new_rows" then new_rows_phrase(fresh, names, now)
-            when "more_rows" then "now #{rows.size} rows (past #{row_band(rows.size)})"
+            when "more_rows" then "now #{rows.size} rows (hit #{row_band(rows.size)})"
             when "older" then older_phrase(rows, name_oldest, now)
             end
           }.join("; ")
