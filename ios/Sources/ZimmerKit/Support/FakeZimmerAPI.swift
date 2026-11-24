@@ -50,13 +50,12 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// Inbox is read, so a board that does not read again on coming back to its tab shows it.
     private let trashedElsewhere: Int?
     /// Writes the fake refuses, by name (`refusableWrites`), so a screen can be seen putting
-    /// back what it showed at the tap. And how long every write waits before answering, so a
-    /// screen can be photographed showing a change the server has not yet taken.
+    /// back what it showed at the tap.
     public let refuses: Set<String>
-    public let writeDelay: Duration?
-    /// How long opening a session (its first detail read) waits before answering,
-    /// so a test can act on the page while it is still loading — type into the composer.
-    public let readDelay: Duration?
+    /// What the fake does not answer until it is let go: a write, so a screen can be seen
+    /// showing a change the server has not yet taken, or opening a session, so a test can act
+    /// on the page while it is still loading — type into the composer.
+    public let hold: FixtureHold?
     /// The names `refuses` takes.
     public static let refusableWrites: Set<String> = [
         "follow_up", "trash", "unarchive", "visibility", "quick_router", "create_session", "elicitation", "notification", "trigger", "fork",
@@ -109,7 +108,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// them. `liveSecretHold`: the first call stays on Connecting… this long.
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false,
                 longTranscript: Bool = false, relayOnly: Bool = false, degraded: Bool = false, trashedElsewhere: Int? = nil,
-                refuses: Set<String> = [], writeDelay: Duration? = nil, readDelay: Duration? = nil,
+                refuses: Set<String> = [], hold: FixtureHold? = nil,
                 liveSettings: [String: JSONValue] = [:], liveSecretHold: Duration? = nil,
                 web: URL = URL(string: "https://fixture.invalid")!) {
         self.live = live
@@ -117,8 +116,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
         self.liveSecretHold = liveSecretHold
         self.trashedElsewhere = trashedElsewhere
         self.refuses = refuses
-        self.writeDelay = writeDelay
-        self.readDelay = readDelay
+        self.hold = hold
         self.degraded = degraded
         self.relayOnly = relayOnly
         self.inference = FakeInference(now: now)
@@ -225,7 +223,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
 
     /// As the server: opening a session marks its notifications read.
     public func openSession(_ id: Int) async throws -> SessionDetail {
-        if let readDelay { try? await Task.sleep(for: readDelay) }
+        try await hold?.wait(FixtureHold.openSession)
         let detail = try await session(id)
         markRead(session: id)
         return detail
@@ -1359,10 +1357,10 @@ extension FakeZimmerAPI {
         inbox.removeAll(where: \.read)
     }
 
-    /// Every write of the fixture goes through here: it waits `writeDelay`, and a write named
+    /// Every write of the fixture goes through here: it waits while `hold` holds it, and a write named
     /// in `refuses` is refused as a server that could not take it would refuse it.
     func write(_ name: String) async throws {
-        if let writeDelay { try? await Task.sleep(for: writeDelay) }
+        try await hold?.wait(name)
         if refuses.contains(name) {
             throw ZimmerError.http(status: 503, message: "The fixture refused this \(name.replacingOccurrences(of: "_", with: " ")), to show it being put back.")
         }

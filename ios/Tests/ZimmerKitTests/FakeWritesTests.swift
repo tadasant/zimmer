@@ -1,7 +1,7 @@
 import XCTest
 @testable import ZimmerKit
 
-/// The fixture's writes can be refused and slowed, so a screen can be seen showing an action at
+/// The fixture's writes can be refused and held, so a screen can be seen showing an action at
 /// the tap and putting it back on a refusal.
 final class FakeWritesTests: XCTestCase {
     func testARefusedWriteThrowsAndChangesNothing() async throws {
@@ -62,13 +62,43 @@ final class FakeWritesTests: XCTestCase {
         }
     }
 
-    func testAWriteDelayHoldsTheAnswer() async throws {
-        let api = FakeZimmerAPI(writeDelay: .milliseconds(300))
-        let started = Date()
-        _ = try await api.setVisibility(1038, .hidden)
-        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 0.25)
-        let read = Date()
+    /// A held write is asked, and stays unanswered for as long as nobody lets it go.
+    func testAHeldWriteIsAnsweredOnlyOnceItIsLetGo() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let api = FakeZimmerAPI(hold: FixtureHold(["visibility"], in: directory))
+        let held = directory.appendingPathComponent("visibility.held").path
+        let write = Task { try await api.setVisibility(1038, .hidden) }
+        for _ in 0..<500 where !FileManager.default.fileExists(atPath: held) { try await Task.sleep(for: .milliseconds(20)) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: held), "the write was asked")
+        try await Task.sleep(for: .milliseconds(300))
+        // Reads, and a write that is not held, go past it; it has changed nothing.
+        _ = try await api.rename(1038, title: "Renamed")
+        let waiting = try await api.session(1038).session
+        XCTAssertNotEqual(waiting.visibility, .hidden, "the held write is not taken")
+
+        try Data().write(to: directory.appendingPathComponent("visibility.answer"))
+        _ = try await write.value
+        let taken = try await api.session(1038).session
+        XCTAssertEqual(taken.visibility, .hidden, "let go, it is")
+        // Let go is let go: the same write again is not held.
+        _ = try await api.setVisibility(1038, .visible)
+    }
+
+    func testOpeningASessionIsHeldAndReadingItAgainIsNot() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let api = FakeZimmerAPI(hold: FixtureHold([FixtureHold.openSession], in: directory))
+        let opening = Task { try await api.openSession(1038) }
         _ = try await api.session(1038)
-        XCTAssertLessThan(Date().timeIntervalSince(read), 0.25, "reads are not held")
+        // A page left while it loads stops asking, as a request to a server does.
+        opening.cancel()
+        do {
+            _ = try await opening.value
+            XCTFail("a held read was answered though nobody let it go")
+        } catch is CancellationError {}
+
+        try Data().write(to: directory.appendingPathComponent("open_session.answer"))
+        _ = try await api.openSession(1038)
     }
 }
