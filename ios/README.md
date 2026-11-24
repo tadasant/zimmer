@@ -107,17 +107,20 @@ why. The rules live in ZimmerKit, where they are tested on Linux; the screens on
 - The page's polls stand aside while an action is out (`actionsInFlight`), as they already did
   behind a local edit (`revision`).
 
-The fixture has two knobs for seeing this: `-ZimmerFixtureSlowWrites` holds every write for six
-seconds, and `-ZimmerFixtureRefuse trash,follow_up,…` (the names in
-`FakeZimmerAPI.refusableWrites`, every write the fixture takes) refuses those writes.
-`OptimisticActionsUITests` drives both.
+The fixture has two knobs for seeing this: `-ZimmerFixtureRefuse trash,follow_up,…` (the names in
+`FakeZimmerAPI.refusableWrites`, every write the fixture takes) refuses those writes, and
+`-ZimmerFixtureHold trash,… -ZimmerFixtureHoldIn <directory>` (the same names, or `open_session`)
+leaves them unanswered until `<directory>/<name>.answer` exists (`FixtureHold`; by hand, `touch` it).
+`OptimisticActionsUITests` drives both. A UI test of what the app shows before the server answers
+holds the answer this way rather than timing it: queries on a loaded runner take seconds, so a test
+that has to finish looking before a delay runs out loses that race with the app behaving perfectly.
 
 The session page's composer is the same idea on the read side: it is on screen from the first
 frame, before the session or its conversation has been read, so a person who knows what to say
 types while the page loads (`SessionDetail.showsComposer`). It comes off only once the read says
 the session takes no follow-up, or if that first read fails; Send waits for that read (`SessionDetail.canSend`). The draft is
 kept per session either way, so text typed into a session that turns out to be archived is still
-there if it is unarchived. `-ZimmerFixtureSlowReads` holds opening a session for twelve seconds, and
+there if it is unarchived. `-ZimmerFixtureHold open_session -ZimmerFixtureHoldIn <directory>` holds opening a session, and
 `SessionActionsUITests.test_the_composer_takes_typing_before_the_session_has_loaded` types through it.
 
 ## Running the checks
