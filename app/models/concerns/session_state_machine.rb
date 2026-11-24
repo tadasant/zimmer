@@ -2996,6 +2996,7 @@ module SessionStateMachine
     session_id = id
     ActiveRecord.after_all_transactions_commit do
       AoEventTriggerJob.perform_later(event_name, session_id)
+      SessionStateEventJob.perform_later(event_name, session_id, SecureRandom.hex(8))
     rescue => e
       # The rescue belongs INSIDE the block. after_all_transactions_commit defers
       # this body past the transition's transaction, so a method-level rescue
@@ -3090,6 +3091,9 @@ module SessionStateMachine
       AoEventTriggerJob
         .set(wait: NEEDS_INPUT_SETTLE_WINDOW)
         .perform_later("session_needs_input", session_id, marker)
+      SessionStateEventJob
+        .set(wait: NEEDS_INPUT_SETTLE_WINDOW)
+        .perform_later("session_needs_input", session_id, SecureRandom.hex(8), marker)
     rescue => e
       # Inside the block for the same reason as fire_ao_event_triggers: the body
       # is deferred past this transaction, so a method-level rescue would only

@@ -295,7 +295,7 @@ class Sessions::MessageParentTest < ActiveSupport::TestCase
     result = report(child, reason: "because")
 
     refute result.success?
-    assert_match(/wrong_scope, missing_tools, other/, result.error)
+    assert_match(/wrong_scope, missing_tools, done, update, question, other/, result.error)
   end
 
   test "leaves room for the envelope inside the prompt limit" do

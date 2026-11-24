@@ -714,6 +714,46 @@ and at change time. `start_session` names the same four lists (`mcp_servers`, `s
 `hooks`), so a hook that is noise for the task is dropped at launch rather than corrected by a
 follow-up `change_hooks` — which, for a clone-only session, would race the job start.
 
+### MCP Events: what sessions do, as events
+
+Zimmer's server publishes [MCP Events](/sessions/mcp-events-spec-pin/) (SEP-3415). A connection that can
+read sessions — it carries `get_session`, so the default surface, `sessions`, `sessions_readonly` and
+`self_session` — finds `io.modelcontextprotocol/events` in its `initialize` capabilities and can call
+`events/list` and `events/poll`. Any other connection is offered nothing and answers `events/*` with
+Method not found. A connection fenced by `allowed_agent_roots` gets those roots' events and no others.
+
+| Event | Fires when | Filters |
+| --- | --- | --- |
+| `session.message` | a session reports to whoever started it ([`message_parent`](#message_parent-the-action-with-no-target)) | `session_id`, `parent_session_id`, `reason` |
+| `session.state_changed` | a session comes to rest in `needs_input` (and is still there after the 30-second settle window), fails, or is archived | `session_id`, `parent_session_id`, `state` |
+
+Every event carries `sessionId`, `parentSessionId`, `title`, `agentRoot` and `sessionUrl`. A
+`session.message` adds `reason` and `message`, cut at 10,000 characters with `messageTruncated` saying
+so. The title and the message are agent-written: treat them as you would a tool result.
+
+```bash
+curl -s https://your-zimmer.example.com/mcp -H "X-API-Key: $ZIMMER_API_KEY" \
+  -H 'Content-Type: application/json' -H 'Mcp-Method: events/poll' -H 'Mcp-Name: session.message' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"events/poll","params":{"name":"session.message","arguments":{"parent_session_id":42},"cursor":null}}'
+```
+
+Delivery is **poll only**. A `null` cursor means "from now" and returns none; after that each answer's
+cursor is the next request's. Events are kept 14 days (`SessionEvent::RETENTION`,
+`InboundEventRetentionJob`), and a cursor older than that is answered `truncated: true`. Events are served
+in commit order, once every older transaction has finished, so a poller never steps over a row that
+committed late (`SessionEvents::Feed`). `Mcp-Name` is required, as the SEP says: a poll without it is a
+400 `HeaderMismatch`.
+
+**A parent does not poll.** An agent session is not running when the event happens, so Zimmer is the
+events client on its behalf. Spawning a session under a parent writes the parent's subscription to it
+(`SessionEventSubscription`), and a `session.message` is delivered through that subscription into the
+parent's conversation, waking it. The delivery and the published event commit together: a report the
+parent could not be given is not published. A parent's subscription covers `session.message` only. To
+be woken when a session stops, arm `wake_me_up_when_session_changes_state` as before.
+
+Both tables are listed read-only at `/supervisor/session_events` and
+`/supervisor/session_event_subscriptions`; a subscription's `last_event_at` is when it last delivered.
+
 ### `message_parent`: the action with no target
 
 Every other action on the `self_session` `action_session` is a subset of the full one, apart from
@@ -737,16 +777,19 @@ root, or a missing MCP server or credential — had nowhere to report that but a
   "action": "message_parent",
   "session_id": 4211,              // your own id
   "message": "The deploy scripts are in the infra root; I only have the app repo.",
-  "reason": "wrong_scope"          // or "missing_tools", or "other"
+  "reason": "wrong_scope"          // or "missing_tools", "done", "update", "question", "other"
 }
 ```
 
 `reason` is a closed list because a parent branches on it: `wrong_scope` (the work belongs to a
 different agent root), `missing_tools` (an MCP server, credential or privilege the session was not
-given), `other`. What the parent reads is the child's own words wrapped in Zimmer's framing — the
+given), `done` (the work is finished), `update` (news, and it is still going), `question` (something it
+cannot settle itself), `other`. The parent is told what to do with it accordingly. What the parent reads is the child's own words wrapped in Zimmer's framing — the
 child's id, title, URL and reason code — so a report is never mistaken for a human speaking.
 
-Delivery is the ordinary follow-up routing rather than a second path: a `running` parent takes the
+The report is published as a `session.message` [MCP event](#mcp-events-what-sessions-do-as-events) and
+delivered through the parent's subscription. That delivery is the ordinary follow-up routing rather than
+a second path: a `running` parent takes the
 report on its queue and reads it at the end of its turn, and a `waiting` or `needs_input` parent
 takes it now. **Queuing is the default**, and `force_immediate` is opt-in, because the parent of a
 stuck child is usually a router mid-delegation: ending that turn costs the other delegations in

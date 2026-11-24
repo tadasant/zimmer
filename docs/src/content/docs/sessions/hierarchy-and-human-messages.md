@@ -57,7 +57,9 @@ of an edge leaves a row that asserts nothing.
 A parent reaches a child with `follow_up`, which is a general capability: it names any session and
 reaches it. The reverse — a child reaching the session that started it — is
 [`message_parent`](/extend/mcp-server/#message_parent-the-action-with-no-target), and it
-is deliberately not general. The caller names no target; Zimmer reads `parent_session_id`.
+is deliberately not general. The caller names no target; Zimmer reads `parent_session_id`. The report
+travels as an [MCP event](/extend/mcp-server/#mcp-events-what-sessions-do-as-events) over the
+subscription the parent got when it spawned the child.
 
 That is what makes it safe to put on the `self_session` MCP surface injected into every session,
 which otherwise lets a session act only on itself. A child can say "you gave me the wrong scope, or

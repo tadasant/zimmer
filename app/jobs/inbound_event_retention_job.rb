@@ -2,7 +2,8 @@
 
 # Deletes webhook dedup rows past their retention: WebhookDelivery after
 # WebhookDelivery::RETENTION (7 days), TriggerEventClaim after TriggerEventClaim::RETENTION
-# (30 days), and GithubPrSignal after GithubPrSignal::RETENTION (1 day). Without it the tables grow with every Slack message the bot can see, forever.
+# (30 days), GithubPrSignal after GithubPrSignal::RETENTION (1 day), and SessionEvent, which is
+# what this Zimmer publishes rather than receives, after SessionEvent::RETENTION (14 days). Without it the tables grow with every Slack message the bot can see, forever.
 #
 # Idempotent — a run with nothing expired deletes nothing — and batched, so a backlog after a
 # long gap drains a slice at a time instead of in one statement.
@@ -21,6 +22,7 @@ class InboundEventRetentionJob < ApplicationJob
     claims = prune(TriggerEventClaim, TriggerEventClaim.expired(now))
     # Nothing logs these: a signal nobody has repeated for a day is simply no longer news.
     signals = prune(GithubPrSignal, GithubPrSignal.expired(now))
+    session_events = prune(SessionEvent, SessionEvent.expired(now))
 
     if deliveries.positive? || claims.positive?
       Rails.logger.info(
@@ -29,7 +31,7 @@ class InboundEventRetentionJob < ApplicationJob
       )
     end
 
-    { deliveries: deliveries, claims: claims, github_pr_signals: signals }
+    { deliveries: deliveries, claims: claims, github_pr_signals: signals, session_events: session_events }
   end
 
   private

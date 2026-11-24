@@ -95,6 +95,9 @@ Rails.application.routes.draw do
     # already answered.
     resources :trigger_event_claims, only: [ :index, :show ]
     resources :webhook_deliveries, only: [ :index, :show ]
+    # Read-only: what Zimmer's MCP server publishes as MCP Events, and who hears it (SessionEvents).
+    resources :session_events, only: [ :index, :show ]
+    resources :session_event_subscriptions, only: [ :index, :show ]
     # Read-only: Github::PrWebhookIngest writes every row from a verified delivery.
     resources :github_pr_signals, only: [ :index, :show ]
     # Read-only: McpEventSubscriptionsJob owns every row (see McpEventWebhookSubscriptionDashboard).

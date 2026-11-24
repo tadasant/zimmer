@@ -5959,6 +5959,21 @@ is a `bot_mention` condition at least as wide as the passive ones; nothing enfor
 logs one `info` line naming the message and the condition that declined it, which is the only signal
 you get.
 
+### Zimmer's own MCP events are poll only, and wait for the oldest open write
+
+[What Zimmer's server publishes](/extend/mcp-server/#mcp-events-what-sessions-do-as-events) is served by
+`events/poll` and nothing else: no stream and no webhook, so an outside client learns of an event when it
+next asks. A parent session does not wait for that: Zimmer hands it the report directly.
+
+The poll serves an event only once every database transaction older than it has finished, so that no
+late commit is stepped over. The database server counts transactions for all its databases together, so a
+long write anywhere on it holds new events back until it ends. Nothing is lost, only late, and delivery to
+a parent is unaffected.
+
+Publishing a report that interrupts its parent (`force_immediate`) is not in one transaction with the
+interrupt, which cannot be undone. A crash between the two delivers the report and leaves the event out of
+the log.
+
 ### MCP event triggers follow an unmerged draft, with poll and webhook but no push
 
 [`mcp_event` triggers](/sessions/triggers/#mcp_event) implement the poll mode of the MCP Events

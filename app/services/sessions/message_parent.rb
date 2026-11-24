@@ -3,6 +3,13 @@
 module Sessions
   # A child session's one route back to the session that spawned it.
   #
+  # **What travels is an MCP event.** A report is published as a `session.message`
+  # occurrence (SessionEvents) and delivered through the subscription the parent
+  # has held since it spawned the child (SessionEventSubscription). Publishing and
+  # delivering commit together: a refused report is not published, and a published
+  # one was delivered. Anybody else who may read the session can poll the same
+  # event off POST /mcp.
+  #
   # The asymmetry this closes: a parent has always been able to reach a child
   # (`action_session: follow_up`), and a child has had no route to its parent at
   # all. Its final message reaches the parent only if the parent happens to be
@@ -28,7 +35,7 @@ module Sessions
   # while the news keeps a few minutes. `force_immediate` is there for the case
   # where it does not keep.
   #
-  # Because it is the ordinary queue, it is covered by the ordinary accounting:
+  # Because the subscriber's inbox is the ordinary queue, it is covered by the ordinary accounting:
   # `origin` is `caller`, so `Sessions::ArchiveGuard` refuses to let the parent
   # archive over an unread report, and a forced archive retires it to
   # `undelivered` and pages. A child's report cannot be accepted and then vanish.
@@ -52,13 +59,26 @@ module Sessions
     # prose in the body is for the human reading over the parent's shoulder, but
     # the reason is what a parent can branch on.
     #
-    # `other` exists so that a child with a real reason outside the two named
+    # `done`, `update` and `question` are the ordinary reports of work that is
+    # going fine; `wrong_scope` and `missing_tools` say the delegation itself was
+    # wrong. `other` exists so that a child with a real reason outside the named
     # ones reports it rather than picking the closest wrong label.
     REASONS = {
       "wrong_scope" => "the work belongs to a different agent root than the one this session is running under",
       "missing_tools" => "this session was not given an MCP server, credential, or privilege the work needs",
+      "done" => "it says the work it was given is done",
+      "update" => "it has news about the work it was given, which is still going",
+      "question" => "it has a question it cannot settle itself",
       "other" => "see the message below"
     }.freeze
+
+    # What the parent is told to do with the report, by reason.
+    NEXT_STEPS = {
+      "done" => "Use what it says. It is a report, not proof: check what matters before you build on it or tell your human it is done.",
+      "update" => "Nothing may be needed from you: it is still working. Act only if this changes something.",
+      "question" => "Answer it if you can (`action_session` with `follow_up` on session #%{child_id}). If only your human can, ask them rather than dropping it."
+    }.freeze
+    DEFAULT_NEXT_STEP = "Decide what to do with it: re-delegate the work to a session with the right agent root, give that session what it was missing and follow it up (`action_session` with `follow_up` on session #%{child_id}), or take the work on yourself. If the resolution is outside your scope too, say so to your own human rather than dropping it."
 
     # What the parent actually reads. Zimmer's framing around the child's own
     # words, so a parent can tell a report from a child apart from a human
@@ -83,7 +103,7 @@ module Sessions
 
       That session: %{child_url}
 
-      You are its parent, and this report reached nobody else. Decide what to do with it: re-delegate the work to a session with the right agent root, give that session what it was missing and follow it up (`action_session` with `follow_up` on session #%{child_id}), or take the work on yourself. If the resolution is outside your scope too, say so to your own human rather than dropping it.
+      You are its parent, and nothing else acts on this report. %{next_step}
     PROMPT
 
     # Everything a caller needs to render a receipt, and the reason a refusal
@@ -157,7 +177,7 @@ module Sessions
 
     def validate
       if message.blank?
-        return failure("message is required — say what you could not do and what you need instead")
+        return failure("message is required — say what happened and what you need, if anything")
       end
 
       unless REASONS.key?(reason)
@@ -284,6 +304,7 @@ module Sessions
             send_now
             delivered = :sent
           end
+          publish
         end
       end
 
@@ -376,6 +397,9 @@ module Sessions
                        error_code: result.error_code || :internal_server_error)
       end
 
+      # After the interrupt, not with it: terminating a turn is not something a
+      # transaction can undo.
+      publish
       log_both("delivered to parent session ##{parent.id} as an interrupt")
       # Deliberately NOT `enqueued_message: result.enqueued_message`. A successful interrupt
       # drains the queue through EnqueuedMessageProcessorService, which destroys
@@ -384,6 +408,14 @@ module Sessions
       # and a queue position to an agent, both describing a message that was in
       # fact delivered. `follow_up` omits it on this path for the same reason.
       success(delivery: :interrupted)
+    end
+
+    # Write the occurrence and note it on the parent's subscription. Ensured here
+    # as well as at spawn, for a child from before subscriptions existed and for
+    # one whose parent has changed.
+    def publish
+      event = SessionEvents::Publish.message(child, reason: reason, message: message)
+      SessionEventSubscription.for_parent!(child)&.delivered!(event)
     end
 
     # --- Content and bookkeeping ---------------------------------------------
@@ -400,7 +432,8 @@ module Sessions
         reason: reason,
         reason_phrase: REASONS.fetch(reason, REASONS["other"]),
         message: quote(body),
-        child_url: session_url(child)
+        child_url: session_url(child),
+        next_step: format(NEXT_STEPS.fetch(reason, DEFAULT_NEXT_STEP), child_id: child.id)
       )
     end
 
