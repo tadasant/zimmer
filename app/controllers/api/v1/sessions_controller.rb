@@ -698,7 +698,7 @@ class Api::V1::SessionsController < Api::BaseController
   # Request body:
   #   - message: What the child is telling its parent (required)
   #   - reason: Why it is reporting back — one of Sessions::MessageParent::REASONS
-  #     ("wrong_scope", "missing_tools", "other"). Required, because the value is
+  #     ("wrong_scope", "missing_tools", "done", "update", "question", "other"). Required, because the value is
   #     what a parent branches on.
   #   - force_immediate: Interrupt a running parent instead of queuing (default: false)
   #   - unarchive_parent: Restore an archived parent and deliver to it (default: false).

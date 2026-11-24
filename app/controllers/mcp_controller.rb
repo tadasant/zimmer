@@ -33,6 +33,10 @@ require "mcp"
 # with a `WWW-Authenticate` header naming the protected-resource metadata
 # (RFC 9728), which is how such a client discovers where to get a token.
 #
+# Besides tools, a connection that can read sessions is offered the MCP Events
+# extension: `events/list` and `events/poll` over what sessions do
+# (Mcp::EventsExtension, SessionEvents).
+#
 # The transport runs stateless: each POST is a complete JSON-RPC message and gets
 # a complete JSON response, so no Mcp-Session-Id is issued and any Puma worker can
 # serve any request. A server built per request is also what lets the same
@@ -51,6 +55,9 @@ class McpController < Api::BaseController
     # request with no body at all.
     payload = Array(body).first
     return head(status) if payload.blank?
+
+    # The transport's rule for a routing header that contradicts the body.
+    status = 400 if @header_mismatch
 
     render json: payload, status: status
   end
@@ -143,7 +150,12 @@ class McpController < Api::BaseController
       instructions: instructions,
       tools: mcp_context.tools,
       server_context: mcp_context
-    )
+    ).tap do |server|
+      next unless Mcp::EventsExtension.offered?(mcp_context)
+
+      Mcp::EventsExtension.install(server, mcp_context, mcp_name: request.headers["Mcp-Name"],
+                                                        on_header_mismatch: -> { @header_mismatch = true })
+    end
   end
 
   def instructions

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_23_150100) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_24_170000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -1176,6 +1176,37 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_150100) do
     t.index ["status"], name: "index_runtime_login_attempts_on_status"
   end
 
+  create_table "session_event_subscriptions", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.jsonb "event_names", default: [], null: false
+    t.datetime "last_event_at"
+    t.string "last_event_id"
+    t.bigint "session_id", null: false
+    t.bigint "subscriber_id", null: false
+    t.string "subscriber_type", null: false
+    t.datetime "updated_at", null: false
+    t.index ["session_id", "subscriber_type", "subscriber_id"], name: "index_session_event_subscriptions_on_edge", unique: true
+    t.index ["session_id"], name: "index_session_event_subscriptions_on_session_id"
+    t.index ["subscriber_type", "subscriber_id"], name: "index_session_event_subscriptions_on_subscriber"
+  end
+
+  create_table "session_events", force: :cascade do |t|
+    t.string "agent_root"
+    t.datetime "created_at", null: false
+    t.jsonb "data", default: {}, null: false
+    t.string "event_id", null: false
+    t.string "name", null: false
+    t.datetime "occurred_at", null: false
+    t.bigint "parent_session_id"
+    t.bigint "session_id", null: false
+    t.bigint "txid", default: -> { "((pg_current_xact_id())::text)::bigint" }, null: false
+    t.index ["created_at"], name: "index_session_events_on_created_at"
+    t.index ["event_id"], name: "index_session_events_on_event_id", unique: true
+    t.index ["name", "txid", "id"], name: "index_session_events_on_name_and_txid_and_id"
+    t.index ["parent_session_id"], name: "index_session_events_on_parent_session_id"
+    t.index ["session_id"], name: "index_session_events_on_session_id"
+  end
+
   create_table "session_experimental_flags", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.datetime "first_observed_at"
@@ -1726,6 +1757,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_150100) do
   add_foreign_key "outcome_analysis_batch_items", "sessions", on_delete: :cascade
   add_foreign_key "outcome_analysis_batches", "sessions", column: "started_by_session_id", on_delete: :nullify
   add_foreign_key "runtime_login_attempts", "claude_accounts", on_delete: :nullify
+  add_foreign_key "session_event_subscriptions", "sessions", on_delete: :cascade
+  add_foreign_key "session_events", "sessions", on_delete: :cascade
   add_foreign_key "session_experimental_flags", "sessions", on_delete: :cascade
   add_foreign_key "session_status_summaries", "sessions", column: "fork_session_id", on_delete: :nullify
   add_foreign_key "session_status_summaries", "sessions", on_delete: :cascade
