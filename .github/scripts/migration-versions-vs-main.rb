@@ -66,8 +66,10 @@ module MigrationVersionsVsMain
     network\ is\ unreachable | no\ route\ to\ host |
     i/o\ timeout | TLS\ handshake\ timeout |
     stream\ error:\ stream\ ID | http2:\ (?:client\ connection\ lost|server\ sent\ GOAWAY) |
-    server\ closed\ idle\ connection |
-    :\ (?:unexpected\ )?EOF\b | unexpected\ end\ of\ JSON\ input
+    server\ closed\ idle\ connection | broken\ pipe |
+    timeout\ awaiting\ response\ headers | context\ deadline\ exceeded |
+    :\ (?:unexpected\ )?EOF\b | unexpected\ end\ of\ JSON\ input |
+    invalid\ character\ '<'
   }xi
 
   module_function
@@ -212,8 +214,8 @@ module MigrationVersionsVsMain
   end
 
   # Comment first, so a run that stops in between never leaves a label gone with
-  # no word about why. A comment that fails therefore keeps the label; the CI
-  # re-run is what still blocks the PR.
+  # no word about why. A comment that fails therefore keeps the label, which
+  # leaves the CI re-run, if that was accepted, to block the PR.
   def unlabel(number, collisions, target_url)
     gh("pr", "comment", number.to_s, "--repo", repo, "--body", <<~BODY)
       `main` gained a migration that collides with one this PR adds, so this PR would

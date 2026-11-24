@@ -193,7 +193,11 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
       "http: server closed idle connection",
       "Post \"https://api.github.com/graphql\": unexpected EOF",
       "Post \"https://api.github.com/graphql\": EOF",
-      "unexpected end of JSON input"
+      "write tcp 10.0.0.1:1->10.0.0.2:443: write: broken pipe",
+      "net/http: timeout awaiting response headers",
+      "Get \"https://api.github.com/x\": context deadline exceeded",
+      "unexpected end of JSON input",
+      "invalid character '<' looking for beginning of value"
     ].each do |message|
       run = run_retrying("check", "--pr", "1490", failures: { "/pulls/1490/files" => [ message ] }, files: { 1490 => CLEAN_ROW })
       assert_predicate run.status, :success?, "not retried: #{message}\n#{run.output}"
@@ -235,7 +239,8 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
       "/statuses/aaaa1484" => [ "run rerun", "pr comment", "pr edit" ],
       "run list" => [ "/statuses/aaaa1484", "pr comment", "pr edit" ],
       "run rerun" => [ "/statuses/aaaa1484", "pr comment", "pr edit" ],
-      "pr comment" => [ "/statuses/aaaa1484", "run rerun" ]
+      "pr comment" => [ "/statuses/aaaa1484", "run rerun" ],
+      "pr edit" => [ "/statuses/aaaa1484", "run rerun", "pr comment" ]
     }
 
     steps.each do |failing, others|
@@ -251,6 +256,11 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
     run = run_retrying("sweep", failures: { "pr comment" => [ permanent ] },
       prs: prs_json([ 1484, "aaaa1484", [ "ready to merge" ] ]), files: { 1484 => COLLIDING_ROW })
     assert_empty run.calls_matching("pr edit")
+
+    run = run_retrying("sweep", failures: { "run rerun" => [ permanent ], "pr edit" => [ "gh: Not Found (HTTP 404)" ] },
+      prs: prs_json([ 1484, "aaaa1484", [ "ready to merge" ] ]), files: { 1484 => COLLIDING_ROW })
+    assert_includes run.output, "HTTP 403"
+    assert_includes run.output, "HTTP 404", "the second failure was lost"
   end
 
   # A 5xx can arrive after the write landed, so a repeat could post the comment or

@@ -886,7 +886,7 @@ anything.
 
 A transient GitHub failure (a 5xx or 408, a GraphQL execution error, a dropped connection) is
 retried up to four times, waiting 2, 5, 10 and 20 seconds. No retry starts more than 300 seconds
-into the run, so retries can't use up the sweep's 10-minute timeout. A permanent error such as a 404
+into the run, so the waits can't use up the sweep's 10-minute timeout. A permanent error such as a 404
 or 403, or a rate limit, fails on the first attempt. So does either of the two writes that must not
 land twice, the comment and the CI re-run. A call that is out of retries fails the way a permanent
 error does, so the run still exits non-zero. If the failing call is the one that lists the open PRs,
