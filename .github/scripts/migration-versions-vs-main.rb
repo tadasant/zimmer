@@ -27,6 +27,11 @@
 # One PR's failure does not stop the sweep: it is logged, the rest are still
 # checked, and the job exits non-zero at the end.
 #
+# A transient GitHub failure (a 5xx, a dropped connection) is retried with
+# backoff, within RETRY_WINDOW of the script starting, for calls that are safe to
+# repeat. A call that still fails once its retries are spent fails exactly as a
+# permanent error does: a PR that could not be checked has not passed.
+#
 # REPO (owner/name) must be set; `gh` must be authenticated. Rails-free: the
 # comparison is MigrationVersionGuard.merge_collisions, the inputs are `git
 # ls-tree` and the PR files API.
@@ -40,6 +45,33 @@ module MigrationVersionsVsMain
   STATUS_CONTEXT = "migration versions vs main"
   READY_LABEL = "ready to merge"
 
+  # Seconds to wait before each retry of one call, so five attempts in all.
+  RETRY_DELAYS = [ 2, 5, 10, 20 ].freeze
+  # No retry starts later than this many seconds into the run, however many calls
+  # are failing. Half the sweep's 10-minute job timeout: past it, each remaining
+  # call still gets its one attempt.
+  RETRY_WINDOW = 300
+  STARTED_AT = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+  # What `gh` prints for a failure that may clear by itself: a 5xx or request
+  # timeout, a GraphQL execution error, or a connection or response that did not
+  # complete. Everything else — 404, 403, bad arguments, and rate limits, which
+  # outlast any backoff here — fails on the first attempt.
+  TRANSIENT_FAILURE = %r{
+    \bHTTP\ (?:408|5\d\d)\b |
+    \bstatus\ code:\ 5\d\d\b |
+    Something\ went\ wrong\ while\ executing\ your\ query |
+    error\ connecting\ to |
+    connection\ (?:reset|refused|timed\ out) |
+    network\ is\ unreachable | no\ route\ to\ host |
+    i/o\ timeout | TLS\ handshake\ timeout |
+    stream\ error:\ stream\ ID | http2:\ (?:client\ connection\ lost|server\ sent\ GOAWAY) |
+    server\ closed\ idle\ connection | broken\ pipe |
+    timeout\ awaiting\ response\ headers | context\ deadline\ exceeded |
+    :\ (?:unexpected\ )?EOF\b | unexpected\ end\ of\ JSON\ input |
+    invalid\ character\ '<'
+  }xi
+
   module_function
 
   def run(argv)
@@ -48,15 +80,13 @@ module MigrationVersionsVsMain
 
     case command
     when "check"
-      begin
-        check(pr: options.fetch(:pr), main_ref: options.fetch(:main_ref))
-      rescue CommandFailed => e
-        abort e.message
-      end
+      check(pr: options.fetch(:pr), main_ref: options.fetch(:main_ref))
     when "sweep"
       sweep(main_ref: options.fetch(:main_ref), target_url: options[:target_url], dry_run: options[:dry_run])
     else abort "usage: #{File.basename($PROGRAM_NAME)} check --pr N --main-ref REF | sweep --main-ref REF"
     end
+  rescue CommandFailed => e
+    abort e.message
   end
 
   def check(pr:, main_ref:)
@@ -81,11 +111,11 @@ module MigrationVersionsVsMain
       sweep_one(number, head_sha, labels, main: main, target_url: target_url, dry_run: dry_run)
       true
     rescue CommandFailed => e
-      warn "##{number}: could not check — #{e.message}"
+      warn "##{number}: failed — #{e.message}"
       false
     end
 
-    abort "Could not check #{failed.map { |number, _| "##{number}" }.join(", ")}; see above." if failed.any?
+    abort "Could not finish #{failed.map { |number, _| "##{number}" }.join(", ")}; see above." if failed.any?
   end
 
   def sweep_one(number, head_sha, labels, main:, target_url:, dry_run:)
@@ -99,11 +129,24 @@ module MigrationVersionsVsMain
     puts "##{number} #{head_sha[0, 12]}: #{state} — #{description}"
     return if dry_run
 
-    post_status(head_sha, state, description, target_url)
-    return if state == "success"
+    attempt_each(
+      -> { post_status(head_sha, state, description, target_url) },
+      -> { rerun_ci(head_sha) if collisions.any? },
+      -> { unlabel(number, collisions, target_url) if collisions.any? && labels.include?(READY_LABEL) }
+    )
+  end
 
-    rerun_ci(head_sha)
-    unlabel(number, collisions, target_url) if labels.include?(READY_LABEL)
+  # Red CI and a missing label each stop a colliding PR on their own, so one step
+  # failing must not cost the others. Every failure still reaches the caller.
+  def attempt_each(*steps)
+    errors = steps.filter_map do |step|
+      step.call
+      nil
+    rescue CommandFailed => e
+      e.message
+    end
+
+    raise CommandFailed, errors.join("; ") if errors.any?
   end
 
   # Paths relative to db/migrate, which is what the guard compares.
@@ -125,7 +168,7 @@ module MigrationVersionsVsMain
     added = []
     removed = []
 
-    rows = gh("api", "--paginate", "repos/#{repo}/pulls/#{pr}/files",
+    rows = gh_retrying("api", "--paginate", "repos/#{repo}/pulls/#{pr}/files",
       "--jq", '.[] | [.status, .filename, (.previous_filename // "")] | @tsv')
     rows.each_line(chomp: true) do |row|
       status, filename, previous = row.split("\t", 3)
@@ -151,7 +194,7 @@ module MigrationVersionsVsMain
 
   # [number, head sha, label names].
   def open_pull_requests
-    JSON.parse(gh("pr", "list", "--repo", repo, "--base", "main", "--state", "open", "--limit", "1000",
+    JSON.parse(gh_retrying("pr", "list", "--repo", repo, "--base", "main", "--state", "open", "--limit", "1000",
       "--json", "number,headRefOid,labels")).map do |pr|
       [ pr.fetch("number"), pr.fetch("headRefOid"), pr.fetch("labels").map { |label| label.fetch("name") } ]
     end
@@ -163,15 +206,16 @@ module MigrationVersionsVsMain
   # fetched at its own start, which may predate this push, so that is reported
   # rather than ignored.
   def rerun_ci(head_sha)
-    run_id = gh("run", "list", "--repo", repo, "--workflow", "ci.yml", "--commit", head_sha,
+    run_id = gh_retrying("run", "list", "--repo", repo, "--workflow", "ci.yml", "--commit", head_sha,
       "--event", "pull_request", "--limit", "1", "--json", "databaseId", "--jq", ".[0].databaseId // empty").strip
     return warn("  no CI run found for #{head_sha[0, 12]} to re-run") if run_id.empty?
 
     gh("run", "rerun", run_id, "--repo", repo)
   end
 
-  # Comment first, so a run cancelled in between never leaves a label gone
-  # with no word about why.
+  # Comment first, so a run that stops in between never leaves a label gone with
+  # no word about why. A comment that fails therefore keeps the label, which
+  # leaves the CI re-run, if that was accepted, to block the PR.
   def unlabel(number, collisions, target_url)
     gh("pr", "comment", number.to_s, "--repo", repo, "--body", <<~BODY)
       `main` gained a migration that collides with one this PR adds, so this PR would
@@ -184,7 +228,7 @@ module MigrationVersionsVsMain
       Renumber this PR's migration and push; the `lint` job checks it against current
       `main` again. Found by #{target_url || "the migration-versions-vs-main workflow"}.
     BODY
-    gh("pr", "edit", number.to_s, "--repo", repo, "--remove-label", READY_LABEL)
+    gh_retrying("pr", "edit", number.to_s, "--repo", repo, "--remove-label", READY_LABEL)
   end
 
   # A commit status description is capped at 140 characters.
@@ -198,15 +242,42 @@ module MigrationVersionsVsMain
     args = [ "api", "-X", "POST", "repos/#{repo}/statuses/#{sha}",
       "-f", "state=#{state}", "-f", "context=#{STATUS_CONTEXT}", "-f", "description=#{description}" ]
     args += [ "-f", "target_url=#{target_url}" ] if target_url
-    gh(*args)
+    gh_retrying(*args)
   end
 
   def repo
     ENV.fetch("REPO")
   end
 
+  # One attempt. For writes that must not land twice — a comment, a CI re-run —
+  # because a 5xx can arrive after the write did.
   def gh(*args)
     run_command("gh", *args)
+  end
+
+  # For reads, and for writes whose repeat changes nothing: a commit status with
+  # the same content, and removing a label that may already be off.
+  def gh_retrying(*args)
+    attempt = 1
+    begin
+      gh(*args)
+    rescue CommandFailed => e
+      raise unless e.message.match?(TRANSIENT_FAILURE)
+
+      delay = RETRY_DELAYS[attempt - 1]
+      raise CommandFailed, "#{e.message} (gave up after #{attempt} attempts)" if delay.nil?
+      raise CommandFailed, "#{e.message} (gave up after #{attempt} attempts; retry window spent)" if elapsed + delay > RETRY_WINDOW
+
+      warn "  attempt #{attempt} of #{RETRY_DELAYS.size + 1}: #{e.message}; retrying in #{delay}s"
+      sleep delay
+      attempt += 1
+      retry
+    end
+  end
+
+  # Seconds since the script was loaded.
+  def elapsed
+    Process.clock_gettime(Process::CLOCK_MONOTONIC) - STARTED_AT
   end
 
   def git(*args)
@@ -215,8 +286,8 @@ module MigrationVersionsVsMain
 
   class CommandFailed < StandardError; end
 
-  # Fail loudly: a check that could not read its inputs has not passed. `check`
-  # lets this escape and exits non-zero; `sweep` catches it per PR.
+  # Fail loudly: a check that could not read its inputs has not passed. `sweep`
+  # catches this per PR, and `run` exits non-zero on one that escapes.
   def run_command(*command)
     output, error, status = Open3.capture3(*command)
     raise CommandFailed, "#{command.first(3).join(" ")} … failed (#{status.exitstatus}): #{error.strip}" unless status.success?

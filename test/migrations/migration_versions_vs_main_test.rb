@@ -101,8 +101,193 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
       files: { 1490 => "added\tdb/migrate/20261114000000_add_doodad.rb\t\n" })
 
     assert_not_predicate status, :success?
-    assert_includes output, "#1: could not check"
+    assert_includes output, "#1: failed"
     assert_includes posted, "statuses/bbbb1490"
+  end
+
+  test "a transient failure reading a PR's files is retried, and a later success is the answer" do
+    run = run_retrying("sweep", failures: { "/pulls/1490/files" => [ SERVER_ERROR, SERVER_ERROR ] },
+      prs: prs_json([ 1490, "bbbb1490", [] ]), files: { 1490 => CLEAN_ROW })
+
+    assert_predicate run.status, :success?, run.output
+    assert_includes run.posted, "statuses/bbbb1490"
+    assert_includes run.posted, "state=success"
+    assert_includes run.output, "attempt 2 of 5"
+    assert_equal [ 2, 5 ], run.slept
+    assert_equal 3, run.calls_matching("/pulls/1490/files").size
+  end
+
+  # `--paginate` can print some pages before a later one fails. Those rows belong
+  # to the failed attempt, and only the successful attempt's rows are read.
+  test "a retried read is judged on the successful attempt alone" do
+    run = run_retrying("sweep", failures: { "/pulls/1490/files" => [ [ COLLIDING_ROW, SERVER_ERROR ] ] },
+      prs: prs_json([ 1490, "bbbb1490", [] ]), files: { 1490 => CLEAN_ROW })
+
+    assert_predicate run.status, :success?, run.output
+    assert_includes run.posted, "state=success"
+    assert_not_includes run.posted, "state=failure"
+  end
+
+  test "a collision found after a retry still fails the PR, re-runs its CI and takes the label off" do
+    run = run_retrying("sweep", failures: { "/pulls/1484/files" => [ SERVER_ERROR ] },
+      prs: prs_json([ 1484, "aaaa1484", [ "ready to merge" ] ]), files: { 1484 => COLLIDING_ROW })
+
+    assert_predicate run.status, :success?, run.output
+    assert_includes run.posted, "state=failure"
+    assert_includes run.edits, "run rerun run-aaaa1484"
+    assert_includes run.edits, "--remove-label ready to merge"
+  end
+
+  # Riding out a blip must not become silence about an outage.
+  test "sweep still fails, with no status for the PR, when the failure outlasts the retries" do
+    run = run_retrying("sweep", failures: { "/pulls/1/files" => [ SERVER_ERROR ] * 50 },
+      prs: prs_json([ 1, "aaaa0001", [] ], [ 1490, "bbbb1490", [] ]),
+      files: { 1 => CLEAN_ROW, 1490 => CLEAN_ROW })
+
+    assert_not_predicate run.status, :success?
+    assert_includes run.output, "#1: failed"
+    assert_includes run.output, "gave up after 5 attempts"
+    assert_includes run.output, "Could not finish #1; see above."
+    assert_not_includes run.posted, "aaaa0001"
+    assert_includes run.posted, "statuses/bbbb1490"
+    assert_equal [ 2, 5, 10, 20 ], run.slept
+  end
+
+  test "sweep fails when the list of open PRs cannot be read once the retries are spent" do
+    run = run_retrying("sweep", failures: { "pr list" => [ SERVER_ERROR ] * 50 }, files: {})
+
+    assert_not_predicate run.status, :success?
+    assert_includes run.output, "gave up after 5 attempts"
+    assert_not_includes run.output, "from ", "a failed command is reported, not a backtrace"
+  end
+
+  test "check rides out a transient failure, and fails when it outlasts the retries" do
+    recovered = run_retrying("check", "--pr", "1490", failures: { "/pulls/1490/files" => [ SERVER_ERROR ] },
+      files: { 1490 => CLEAN_ROW })
+    assert_predicate recovered.status, :success?, recovered.output
+
+    spent = run_retrying("check", "--pr", "1490", failures: { "/pulls/1490/files" => [ SERVER_ERROR ] * 50 },
+      files: { 1490 => CLEAN_ROW })
+    assert_not_predicate spent.status, :success?
+    assert_includes spent.output, "gave up after 5 attempts"
+  end
+
+  test "each transient failure gh reports is retried" do
+    [
+      "HTTP 502: 502 Bad Gateway (https://api.github.com/graphql)",
+      "gh: HTTP 504",
+      "gh: HTTP 408",
+      "non-200 OK status code: 503 Service Unavailable body: \"\"",
+      "GraphQL: Something went wrong while executing your query. This may be the result of a timeout",
+      "error connecting to api.github.com",
+      "Get \"https://api.github.com/x\": read tcp 10.0.0.1:1->10.0.0.2:443: read: connection reset by peer",
+      "Get \"https://api.github.com/x\": dial tcp 10.0.0.2:443: i/o timeout",
+      "Get \"https://api.github.com/x\": net/http: TLS handshake timeout",
+      "dial tcp 10.0.0.2:443: connect: connection refused",
+      "dial tcp 10.0.0.2:443: connect: connection timed out",
+      "dial tcp 10.0.0.2:443: connect: network is unreachable",
+      "dial tcp 10.0.0.2:443: connect: no route to host",
+      "stream error: stream ID 1; INTERNAL_ERROR; received from peer",
+      "http2: client connection lost",
+      "http2: server sent GOAWAY and closed the connection; LastStreamID=1",
+      "http: server closed idle connection",
+      "Post \"https://api.github.com/graphql\": unexpected EOF",
+      "Post \"https://api.github.com/graphql\": EOF",
+      "write tcp 10.0.0.1:1->10.0.0.2:443: write: broken pipe",
+      "net/http: timeout awaiting response headers",
+      "Get \"https://api.github.com/x\": context deadline exceeded",
+      "unexpected end of JSON input",
+      "invalid character '<' looking for beginning of value"
+    ].each do |message|
+      run = run_retrying("check", "--pr", "1490", failures: { "/pulls/1490/files" => [ message ] }, files: { 1490 => CLEAN_ROW })
+      assert_predicate run.status, :success?, "not retried: #{message}\n#{run.output}"
+      assert_equal [ 2 ], run.slept, message
+    end
+  end
+
+  test "a permanent failure is not retried" do
+    [
+      "gh: Not Found (HTTP 404)",
+      "gh: Resource not accessible by integration (HTTP 403)",
+      "gh: API rate limit exceeded for installation (HTTP 403)",
+      "HTTP 429: Too Many Requests (https://api.github.com/graphql)",
+      "gh: Validation Failed (HTTP 422)",
+      "unknown flag: --nope"
+    ].each do |message|
+      run = run_retrying("check", "--pr", "1490", failures: { "/pulls/1490/files" => [ message ] }, files: { 1490 => CLEAN_ROW })
+      assert_not_predicate run.status, :success?, message
+      assert_empty run.slept, message
+      assert_equal 1, run.calls_matching("/pulls/1490/files").size, message
+    end
+  end
+
+  test "the writes whose repeat changes nothing are retried" do
+    run = run_retrying("sweep",
+      failures: { "/statuses/aaaa1484" => [ SERVER_ERROR ], "run list" => [ SERVER_ERROR ], "pr edit" => [ SERVER_ERROR ] },
+      prs: prs_json([ 1484, "aaaa1484", [ "ready to merge" ] ]), files: { 1484 => COLLIDING_ROW })
+
+    assert_predicate run.status, :success?, run.output
+    assert_includes run.posted, "state=failure"
+    assert_includes run.edits, "run rerun run-aaaa1484"
+    assert_includes run.edits, "--remove-label ready to merge"
+  end
+
+  # Red CI and a missing label each stop the merge on their own.
+  test "a step that fails on a colliding PR does not cost the PR the other steps" do
+    permanent = "gh: Resource not accessible by integration (HTTP 403)"
+    steps = {
+      "/statuses/aaaa1484" => [ "run rerun", "pr comment", "pr edit" ],
+      "run list" => [ "/statuses/aaaa1484", "pr comment", "pr edit" ],
+      "run rerun" => [ "/statuses/aaaa1484", "pr comment", "pr edit" ],
+      "pr comment" => [ "/statuses/aaaa1484", "run rerun" ],
+      "pr edit" => [ "/statuses/aaaa1484", "run rerun", "pr comment" ]
+    }
+
+    steps.each do |failing, others|
+      run = run_retrying("sweep", failures: { failing => [ permanent ] },
+        prs: prs_json([ 1484, "aaaa1484", [ "ready to merge" ] ]), files: { 1484 => COLLIDING_ROW })
+
+      assert_not_predicate run.status, :success?, failing
+      assert_includes run.output, "Could not finish #1484", failing
+      others.each { |step| assert_equal 1, run.calls_matching(step).size, "#{step} after #{failing} failed" }
+    end
+
+    # No label is removed without its comment.
+    run = run_retrying("sweep", failures: { "pr comment" => [ permanent ] },
+      prs: prs_json([ 1484, "aaaa1484", [ "ready to merge" ] ]), files: { 1484 => COLLIDING_ROW })
+    assert_empty run.calls_matching("pr edit")
+
+    run = run_retrying("sweep", failures: { "run rerun" => [ permanent ], "pr edit" => [ "gh: Not Found (HTTP 404)" ] },
+      prs: prs_json([ 1484, "aaaa1484", [ "ready to merge" ] ]), files: { 1484 => COLLIDING_ROW })
+    assert_includes run.output, "HTTP 403"
+    assert_includes run.output, "HTTP 404", "the second failure was lost"
+  end
+
+  # A 5xx can arrive after the write landed, so a repeat could post the comment or
+  # start the CI run twice. The failure still reaches the job's exit status.
+  test "the CI re-run and the comment get one attempt each, and a failure there fails the sweep" do
+    [ "run rerun", "pr comment" ].each do |write|
+      run = run_retrying("sweep", failures: { write => [ SERVER_ERROR ] },
+        prs: prs_json([ 1484, "aaaa1484", [ "ready to merge" ] ]), files: { 1484 => COLLIDING_ROW })
+
+      assert_not_predicate run.status, :success?, write
+      assert_includes run.output, "Could not finish #1484"
+      assert_equal 1, run.calls_matching(write).size, write
+      assert_empty run.slept, write
+    end
+  end
+
+  # Enough failing PRs to outlast the job timeout if each took its full backoff.
+  test "an outage across many PRs stops retrying at the window, and still asks about every PR" do
+    numbers = (1..12).to_a
+    run = run_retrying("sweep", failures: { "/files" => [ SERVER_ERROR ] * 1000 },
+      prs: prs_json(*numbers.map { |number| [ number, "aaaa0000", [] ] }), files: {})
+
+    assert_not_predicate run.status, :success?
+    assert_operator run.slept.sum, :<=, 300
+    assert_includes run.output, "retry window spent"
+    numbers.each { |number| assert_not_empty run.calls_matching("/pulls/#{number}/files"), "##{number} was never asked about" }
+    assert_includes run.output, "Could not finish #{numbers.map { |number| "##{number}" }.join(", ")}"
   end
 
   test "sweep --dry-run posts nothing" do
@@ -118,6 +303,52 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
 
   private
 
+  SERVER_ERROR = "gh: Server Error: Sorry, this diff is temporarily unavailable due to heavy server load. (HTTP 500)"
+  CLEAN_ROW = "added\tdb/migrate/20261114000000_add_doodad.rb\t\n"
+  COLLIDING_ROW = "added\tdb/migrate/20261111120000_create_x.rb\t\n"
+
+  RetryRun = Data.define(:output, :status, :posted, :edits, :slept, :calls) do
+    def calls_matching(text) = calls.select { |call| call.include?(text) }
+  end
+
+  # `failures` maps a substring of a `gh` command line to the failures it gives,
+  # in order, before it starts answering; each is a stderr message, or [stdout,
+  # stderr message].
+  #
+  # Sleeps are recorded rather than slept, and move the monotonic clock the script
+  # reads, so a run that would take minutes takes none.
+  def run_retrying(command, *args, failures:, files:, prs: "")
+    Dir.mktmpdir do |dir|
+      slept = File.join(dir, "slept.txt")
+      calls = File.join(dir, "calls.txt")
+      FileUtils.touch([ slept, calls ])
+      clock = File.join(dir, "fake_clock.rb")
+      File.write(clock, <<~RUBY)
+        module FakeClock
+          @slept = 0
+          class << self
+            attr_accessor :slept
+          end
+        end
+        module Kernel
+          def sleep(seconds)
+            FakeClock.slept += seconds
+            File.write(#{slept.inspect}, "\#{seconds}\n", mode: "a")
+          end
+        end
+        Process.singleton_class.prepend(Module.new do
+          def clock_gettime(*args) = super + FakeClock.slept
+        end)
+      RUBY
+
+      output, status, posted, edits = run_script(command, *args, "--main-ref", "HEAD", files: files, prs: prs,
+        ruby_args: [ "-r", clock ], failures: failures, calls: calls)
+
+      RetryRun.new(output:, status:, posted:, edits:,
+        slept: File.readlines(slept, chomp: true).map(&:to_i), calls: File.readlines(calls, chomp: true))
+    end
+  end
+
   def prs_json(*prs)
     JSON.generate(prs.map do |number, sha, labels|
       { number: number, headRefOid: sha, labels: labels.map { |name| { name: name } } }
@@ -126,7 +357,7 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
 
   # Returns [combined output, process status, posted statuses, `gh pr edit` /
   # `gh pr comment` calls] — the last two one call per line.
-  def run_script(*args, files:, prs: "")
+  def run_script(*args, files:, prs: "", ruby_args: [], failures: {}, calls: File::NULL)
     Dir.mktmpdir do |dir|
       repo = File.join(dir, "repo")
       stubs = File.join(dir, "stubs")
@@ -139,10 +370,18 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
       edits = File.join(dir, "edits.txt")
       FileUtils.touch([ posted, edits ])
 
-      write_gh_stub(stubs, dir, posted, edits)
+      write_gh_stub(stubs, dir, posted, edits, calls)
+      failures.each_with_index do |(match, messages), index|
+        File.write(File.join(dir, "fail-#{index}.match"), match)
+        messages.each_with_index do |message, attempt|
+          stdout, stderr = message.is_a?(Array) ? message : [ "", message ]
+          File.write(File.join(dir, "fail-#{index}.#{attempt}.out"), stdout)
+          File.write(File.join(dir, "fail-#{index}.#{attempt}.err"), stderr)
+        end
+      end
 
       env = { "PATH" => "#{stubs}:#{ENV.fetch("PATH")}", "REPO" => "tadasant/zimmer" }
-      output, status = Open3.capture2e(env, "ruby", SCRIPT, *args, chdir: repo)
+      output, status = Open3.capture2e(env, "ruby", *ruby_args, SCRIPT, *args, chdir: repo)
 
       [ output, status, File.read(posted), File.read(edits) ]
     end
@@ -163,10 +402,22 @@ class MigrationVersionsVsMainTest < ActiveSupport::TestCase
   # `gh pr list` prints prs.txt; `gh run list --commit SHA` prints `run-SHA`;
   # `gh api -X POST …/statuses/SHA`, `gh pr edit|comment` and `gh run rerun`
   # record their arguments, newlines folded, one call per line.
-  def write_gh_stub(stubs, dir, posted, edits)
+  # Every call is recorded first, then checked against fail-*: a matching call uses
+  # up the next failure listed for it, until there are none left.
+  def write_gh_stub(stubs, dir, posted, edits, calls)
     path = File.join(stubs, "gh")
     File.write(path, <<~SH)
       #!/bin/bash
+      line=$(printf '%s' "$*" | tr '\n' ' ')
+      echo "$line" >> "#{calls}"
+      for match in "#{dir}"/fail-*.match; do
+        [ -f "$match" ] || continue
+        case "$line" in *"$(cat "$match")"*) ;; *) continue ;; esac
+        base="${match%.match}"; used=$(cat "$base.used" 2>/dev/null || echo 0)
+        [ -f "$base.$used.err" ] || continue
+        echo $((used + 1)) > "$base.used"
+        cat "$base.$used.out"; cat "$base.$used.err" >&2; exit 1
+      done
       if [ "$1 $2" = "pr list" ]; then cat "#{dir}/prs.txt"; exit 0; fi
       if [ "$1 $2" = "run list" ]; then
         while [ $# -gt 0 ]; do [ "$1" = "--commit" ] && { echo "run-$2"; exit 0; }; shift; done
