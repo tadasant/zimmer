@@ -66,7 +66,7 @@ class RetryBudget
     # @param counter_label [String] how the reset reads in a session log
     # @param reset_after [Integer] seconds of stability before the reset fires
     # @param terminal_status [Symbol] the status a session comes to rest in when this
-    #   budget runs out, which is what #exhausted_sessions counts
+    #   budget runs out, which is what RetryBudget::Usage counts as exhausted
     def define(name:, key:, max:, stamp:, clears:, label:, counter_label:,
                reset_after: DEFAULT_RESET_AFTER, terminal_status: :failed)
       raise ArgumentError, "retry budget #{name} is already declared" if @registry.key?(name)
@@ -183,43 +183,6 @@ class RetryBudget
 
     session.remove_metadata!(clears)
     Reset.new(previous_count: previous_count, elapsed_seconds: elapsed)
-  end
-
-  # Sessions that have spent at least one attempt against this budget.
-  # @return [ActiveRecord::Relation]
-  def sessions
-    Session.where("metadata->>? IS NOT NULL", key)
-  end
-
-  # Sessions carrying a parseable-or-not timestamp for this budget's last attempt.
-  # The time filtering itself happens in Ruby, because metadata is not schema-checked
-  # and a corrupt timestamp must not take the health page down.
-  # @return [ActiveRecord::Relation]
-  def stamped_sessions
-    Session.where("metadata->>? IS NOT NULL", stamp)
-  end
-
-  # Sessions that came to rest with the budget fully spent — the "this session ran out
-  # of attempts" number, which is the one an operator asking "why did it stop" is
-  # looking for.
-  #
-  # `terminal_status` rather than a hardcoded `:failed`, because running out is not the
-  # same ending for every loop: five of them fail the session, and the empty-turn
-  # restart parks it in `needs_input` instead (ProcessLifecycleManager#handle_exit and
-  # Sessions::RestartUnstartedTurn#abandon both come to rest rather than failing). A
-  # `:failed` filter would report zero exhaustions for that budget no matter how many
-  # sessions Zimmer gave up restarting.
-  # @return [ActiveRecord::Relation]
-  def exhausted_sessions
-    sessions.where(status: terminal_status).where("(metadata->>?)::int >= ?", key, max)
-  end
-
-  # Sessions that spent the budget and did NOT come to rest in its terminal status —
-  # the recovery worked. The complement of #exhausted_sessions' status filter, for the
-  # same reason.
-  # @return [ActiveRecord::Relation]
-  def recovered_sessions
-    sessions.where.not(status: terminal_status)
   end
 
   # --- The nine budgets ------------------------------------------------------------

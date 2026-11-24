@@ -64,13 +64,15 @@ jobs:
       # here for scripts/, and the second checkout is the one that decides what gets built.
       - uses: actions/checkout@v4
 
-      # The tailnet-join scripts come from THIS workflow's commit, not the deploy ref: the
-      # second checkout replaces the tree with a ref that may predate them (a PR branch cut
-      # before they existed), and the runner's join must not depend on what the app ships.
-      - name: Stash the tailnet-join scripts
+      # These scripts come from THIS workflow's commit, not the deploy ref: the second
+      # checkout replaces the tree with a ref that may predate them (a PR branch cut before
+      # they existed), and neither the runner's tailnet join nor the choice of droplet size
+      # may depend on what the app ships.
+      - name: Stash the tailnet-join and droplet-size scripts
         run: |
           mkdir -p "$RUNNER_TEMP/ci-scripts"
-          cp .github/scripts/tailnet-authkey.sh .github/scripts/tailnet-verify-joined.sh "$RUNNER_TEMP/ci-scripts/"
+          cp .github/scripts/tailnet-authkey.sh .github/scripts/tailnet-verify-joined.sh \
+            scripts/select-staging-droplet-size.sh "$RUNNER_TEMP/ci-scripts/"
 
       # `ref` never reaches actions/checkout raw: checkout only special-cases a full
       # 40-character SHA, so an abbreviated one is read as a branch name, matches no ref,
@@ -186,6 +188,36 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.10.5"
+          # select-staging-droplet-size.sh READS terraform's stdout, so it gets the raw
+          # binary rather than the action's Node wrapper. Nothing here uses the wrapper's
+          # step outputs.
+          terraform_wrapper: false
+
+      # An existing droplet keeps the size it has; a new one gets the first size the region
+      # sells; none sold fails the run HERE, with the sizes named. Before the reap below, so
+      # a recreate that cannot be satisfied leaves the live droplet and its node alone.
+      - name: Choose the droplet size
+        id: size
+        working-directory: infra/terraform
+        env:
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          RECREATE: ${{ inputs.recreate_droplet }}
+          # What to create when the region is not selling the tfvars' droplet_size, in order.
+          # Each is the same 2 vCPU / 4 GB shape with at least the same 80 GB disk. 4096 MB is
+          # a floor, not a preference: the worker's `memory: 2g` cap in
+          # config/deploy.staging.yml is tuned to a 4 GB droplet.
+          SIZE_FALLBACKS: s-2vcpu-4gb-amd s-2vcpu-4gb-intel s-2vcpu-4gb-120gb-intel
+          MIN_MEMORY_MB: "4096"
+        run: |
+          set -euo pipefail
+          terraform init -input=false -backend-config=backend.staging.hcl
+          cp staging.tfvars.example staging.tfvars
+          # Assigned first, not interpolated into the `echo`: a failure inside an echo
+          # argument still exits 0, and an empty size would reach the apply.
+          size=$(bash "$RUNNER_TEMP/ci-scripts/select-staging-droplet-size.sh")
+          echo "size=$size" >> "$GITHUB_OUTPUT"
 
       # Only when rebuilding the droplet: free the `zimmer-staging` MagicDNS name, so
       # the replacement reclaims it instead of registering as zimmer-staging-1. On a
@@ -220,10 +252,10 @@ jobs:
           # FORK's droplet. Unset is the safe fall-through -- var.admin_ssh_pubkeys
           # defaults to [] and the box authorizes nothing beyond the Kamal deploy key.
           ADMIN_SSH_PUBKEYS: ${{ vars.ADMIN_SSH_PUBKEYS }}
+          DROPLET_SIZE: ${{ steps.size.outputs.size }}
         run: |
           set -euo pipefail
-          terraform init -input=false -backend-config=backend.staging.hcl
-          cp staging.tfvars.example staging.tfvars
+          # Initialized, and staging.tfvars written, by "Choose the droplet size" above.
           # The droplet's tailnet auth key, minted fresh from the OAuth client: single-use,
           # ephemeral, tagged tag:zimmer-staging, valid for an hour. A pre-minted key in
           # TAILSCALE_AUTH_KEY caps out at 90 days and expires silently -- the box it is
@@ -239,8 +271,11 @@ jobs:
           # droplet the key goes unused, so a Tailscale API blip there is a warning, not a
           # failed app deploy.
           creating=false
+          # Captured first, never piped: grep -q exits on its match, and under pipefail a
+          # terraform still printing would take SIGPIPE and read as "no droplet".
+          state_list=$(terraform state list 2>/dev/null) || state_list=""
           if [ "${{ inputs.recreate_droplet }}" = "true" ] \
-             || ! terraform state list 2>/dev/null | grep -qx 'digitalocean_droplet.zimmer'; then
+             || ! grep -qxF 'digitalocean_droplet.zimmer' <<<"$state_list"; then
             creating=true
           fi
           if [ -n "${TS_OAUTH_CLIENT_ID:-}" ] && [ -n "${TS_OAUTH_SECRET:-}" ]; then
@@ -318,7 +353,10 @@ jobs:
             echo "::warning::recreate_droplet=true — replacing the droplet (bootstrap change)."
             replace="-replace=digitalocean_droplet.zimmer"
           fi
-          terraform apply -input=false -auto-approve -var-file=staging.tfvars $replace
+          # -var AFTER -var-file: the last one on the command line wins, and a TF_VAR_* would
+          # lose to the file.
+          terraform apply -input=false -auto-approve -var-file=staging.tfvars \
+            -var "droplet_size=$DROPLET_SIZE" $replace
 
       # Join the tailnet as tag:zimmer-ci so we can resolve the droplet's tailnet IP, SSH to
       # it with Kamal (Tailscale SSH on :22), and health-check the app. The key is minted per

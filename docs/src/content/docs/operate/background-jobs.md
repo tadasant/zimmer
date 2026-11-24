@@ -89,7 +89,7 @@ From `config.good_job.cron`:
 | 10m | `TranscriptCopyJob` | Copy the transcripts of sessions archived more than `TRANSCRIPT_COPY_AFTER_DAYS` (default 7) days ago, and their subagents', to object storage, read every object back, and record it in `transcript_copies`. Deletes nothing. Off until a bucket is configured. Runs on `maintenance` with a 3-minute slice. See [Transcript storage](#transcript-storage) below. |
 | 1h (:35) | `RootDataRetentionJob` | Delete [root data](/sessions/root-data/) records whose `expires_at` has passed, and decrement `agent_root_record_counters` in the same transaction. `expires_at` is stamped at write time from the collection's `retention_days`, so the sweep never reads the catalog. Selector is a partial index on `(expires_at, id)`; batched inside a 60-second slice, on `default`. Each tick also recounts up to 25 counters quiet for an hour or more, so a drifted counter corrects itself. |
 | 6h (:17) | `McpEventSourcesRefreshJob` | Ask every remote catalog MCP server whether it declares the MCP Events extension (`initialize`, then `events/list` for those that do), four at a time, and cache the roster the trigger form, `GET /triggers/mcp_event_sources` and `list_mcp_event_sources` offer. A server that cannot be asked is left out and logged at INFO; a condition already pointed at it keeps polling. See [`mcp_event` triggers](/sessions/triggers/#mcp_event) |
-| daily 04:25 | `InboundEventRetentionJob` | Delete `webhook_deliveries` rows older than 7 days and `trigger_event_claims` rows older than 30 — the dedup stores behind [Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery) — and `github_pr_signals` rows nobody has repeated for a day (see [Driven by GitHub's webhook](#driven-by-githubs-webhook-instead-of-the-clock)). Batched and idempotent, on `default`: a day's expiry is a sub-second run of indexed deletes. |
+| daily 04:25 | `InboundEventRetentionJob` | Delete `webhook_deliveries` rows older than 7 days and `trigger_event_claims` rows older than 30 — the dedup stores behind [Slack Events API delivery](/sessions/triggers/#slack-events-api-delivery) — `session_events` rows (what [Zimmer's own MCP server publishes](/extend/mcp-server/#mcp-events-what-sessions-do-as-events)) older than 14 days, and `github_pr_signals` rows nobody has repeated for a day (see [Driven by GitHub's webhook](#driven-by-githubs-webhook-instead-of-the-clock)). Batched and idempotent, on `default`: a day's expiry is a sub-second run of indexed deletes. |
 | 2m | `PostDeployTaskJob` | Run the one-time post-deploy tasks in `db/post_deploy/` — the `after_party`-shaped mechanism for an ops step that has to ship with the deploy. Each task is claimed with a conditional `UPDATE` on its `post_deploy_task_runs` row, worked inside a 90-second budget, and never worked again once it succeeds; a task too slow for one slice returns `CONTINUE` and resumes from its cursor. Runs on `default`, not `pollers`, because a task can hold its thread for the whole budget. See [Deploying](/operate/deploying/#one-time-post-deploy-tasks). |
 | 15m | `ExperimentalFlagBackfillJob` | Label sessions that predate experimental-setting tracking with what each setting was, inferred from the date the setting landed. One INSERT ... SELECT with a NOT EXISTS guard per setting, so every tick after the first writes nothing. Runs on `default`. See [Token spend](/operate/costs/). |
 | 15m | `CatalogRefreshJob` | `air update` + reload the catalog |
@@ -409,6 +409,10 @@ sessions never receive the key.
 aside, compressed size, when a copy was last verified, and how much of the transcripts is
 conversation text alone. It warns when a session has waited over an hour with nothing verified in
 that time, and when one keeps failing. The counts are up to three minutes old.
+The configuration shown is the one the job recorded on its last tick, so a change to either value
+reaches the panel on the next one, normally within about ten minutes. A tick that cannot reach the
+secret store keeps the last record. With nothing recorded for a day the panel says it does not know.
+No section of the report reads the secret store.
 It is on `/health` (*Transcript Storage*), in `GET /api/v1/health`, in `get_system_health`, and every
 row is at `/supervisor/transcript_copies`.
 
@@ -1535,7 +1539,8 @@ Most short jobs run on `default`. Six kinds of work are deliberately isolated:
   queued rows and start as slots finish. See `agents:` in `config/connection_budget.rb` for both
   sets of measurements.
 
-- **`:triggers`** — `AoEventTriggerJob` and `ScheduleTriggerJob`. They were previously starved on
+- **`:triggers`** — `AoEventTriggerJob`, `ScheduleTriggerJob`, and `SessionStateEventJob`, which publishes
+  `session.state_changed`. They were previously starved on
   `default`; `AoEventTriggerJob::DISPATCH_LATENCY_WARN_THRESHOLD = 120s` exists because of it.
 - **`:auth`** — `RuntimeLoginJob` and `CleanupRuntimeLoginAttemptsJob`. The `triggers` argument with
   a human added: someone is watching the /inference login panel spin for exactly as long as the job sits

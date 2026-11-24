@@ -1,9 +1,12 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require_relative "../support/health_diagnostics_helpers"
 require "mocha/minitest"
 
 class HealthControllerTest < ActionDispatch::IntegrationTest
+  include HealthDiagnosticsHelpers
+
   def setup
     # Stub Turbo Stream broadcasting to avoid missing partial errors in tests
     Log.any_instance.stubs(:broadcast_append_to_timeline)
@@ -23,11 +26,17 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     Rails.cache = @original_cache
   end
 
-  test "the Transcript Storage panel renders off, and with copies" do
+  test "the Transcript Storage panel renders unrecorded, off, and with copies" do
+    get "/health"
+    assert_includes response.body, "has not recorded the configuration"
+
+    TranscriptStorage.stubs(:recorded_configuration)
+      .returns(TranscriptStorage::Recorded.new(configured: false, bucket: nil, problem: nil))
     get "/health"
     assert_includes response.body, "Off: no transcript storage bucket is configured"
 
-    TranscriptStorage.stubs(:configuration).returns(TranscriptStorage::Configuration.new(bucket: "zimmer-transcripts", client: Object.new))
+    TranscriptStorage.stubs(:recorded_configuration)
+      .returns(TranscriptStorage::Recorded.new(configured: true, bucket: "zimmer-transcripts", problem: nil))
     TranscriptCopy.create!(session_id: 1, bucket: "zimmer-transcripts", manifest_object: "m", manifest_generation: 1, transcript_object: "t",
       transcript_generation: 1, transcript_digest: "d", transcript_byte_size: 1_000, transcript_line_count: 1,
       transcript_compressed_bytes: 200, conversation_byte_size: 40, subagents_fingerprint: "", verified_at: 10.minutes.ago)
@@ -681,6 +690,41 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     assert report.key?("session_health")
     assert report.key?("system_health")
     assert report.key?("overall_status")
+  end
+
+  test "export_diagnostics answers with the heartbeat while another section hangs" do
+    hang = HealthDiagnosticsHelpers::Hang.new
+    HealthMonitorService.class_eval do
+      alias_method :retry_budget_health_for_real, :retry_budget_health
+      define_method(:retry_budget_health) { hang.call }
+    end
+    diagnostics = HealthDiagnostics.new(budget: 1.second)
+    HealthDiagnostics.stubs(:new).returns(diagnostics)
+
+    _response, seconds = monotonic_timed { get export_diagnostics_health_url(format: :json) }
+
+    assert_operator seconds, :<, 5
+    assert_response :success
+    report = JSON.parse(response.body)["health_report"]
+    assert report["system_health"]["worker_stats"].key?("worker_details")
+    assert report["system_health"]["queue_stats"].key?("ready_count")
+    assert_includes report["unread_sections"], "retry_budget_health"
+  ensure
+    hang.release
+    wait_for_sections_thread
+    HealthMonitorService.class_eval do
+      alias_method :retry_budget_health, :retry_budget_health_for_real
+      remove_method :retry_budget_health_for_real
+    end
+  end
+
+  test "export_diagnostics is a 503 when the queue facts cannot be read" do
+    HealthMonitorService.any_instance.stubs(:queue_health).raises(ActiveRecord::QueryCanceled)
+
+    get export_diagnostics_health_url(format: :json)
+
+    assert_response :service_unavailable
+    assert_match(/system_health could not be read/, JSON.parse(response.body)["error"])
   end
 
   # === Route Tests ===

@@ -32,6 +32,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     AgentSessionJob.stubs(:enqueue_new_session).returns(stub(job_id: "job-1"))
     AgentSessionJob.stubs(:enqueue_with_prompt).returns(stub(job_id: "job-2"))
     LiveConversationReplyJob.stubs(:perform_later)
+    LiveConversations::AuthorizeMerge.any_instance.stubs(:pause)
   end
 
   teardown do
@@ -52,7 +53,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     read_back = prepared["output"][/\AREAD-BACK: (.*)$/, 1]
     assert_equal "Merge zimmer pull request 1490, \"Stop stranded paging\"? The merge gate held it for you.", read_back
     assert_includes prepared["output"], "Why the gate held it, only if they ask: Differential: after this diff"
-    assert_includes prepared["output"], "Ask the person this once"
+    assert_includes prepared["output"], "Ask the person now, once, in your own words"
 
     say(conversation, phone, "assistant", read_back)
     say(conversation, phone, "user", "Yes.")
@@ -67,7 +68,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     delivered = TurnSource.strip(holding_session.metadata["pending_follow_up_prompt"].to_s)
     assert AutomatedPrompts.merge_authorization?(delivered), "the same message the Merge button sends"
     assert_includes delivered, PR
-    assert_includes delivered, "said yes in Zimmer Live Mode on iOS app when Zimmer asked them to confirm this PR by repository and number"
+    assert_includes delivered, "said yes in Zimmer Live Mode on iOS app to merging this PR, which Zimmer named from its own record of this session"
     assert Sessions::AuthorizeMerge.authorized_at(holding_session, PR)
 
     message = holding_session.human_messages.sole
@@ -81,15 +82,16 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
 
     text = Mcp::Tools::GetSessionProvenance.new(context: Mcp::Context.new).call("session_id" => holding_session.id.to_s)
     assert_match(/\*\*\[here\]\*\* Tadas/, text)
-    assert_match(%r{They were answering Zimmer's read-back of https://github.com/tadasant/zimmer/pull/1490}, text)
+    assert_match(%r{They said yes to merging https://github.com/tadasant/zimmer/pull/1490}, text)
     assert_match(/Merge zimmer pull request 1490/, text)
   end
 
-  test "a yes before the PR was named merges nothing" do
+  test "a yes in a conversation where merging never came up merges nothing, whatever Zimmer was asked" do
     conversation = create_live_conversation(mode: "voice")
     phone = bearer(app_token)
-    say(conversation, phone, "user", "Merge it.")
+    say(conversation, phone, "user", "What's the weather like?")
     call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id })
+    say(conversation, phone, "assistant", "Sunny. Is that all?")
     say(conversation, phone, "user", "Yes.")
 
     result = nil
@@ -97,7 +99,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
       result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
     end
     assert result["error"]
-    assert_match(/nothing you said asked the person to merge pull request 1490/, result["output"])
+    assert_match(/nothing said aloud since Zimmer gave you the question was about merging/, result["output"])
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
 
@@ -109,7 +111,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
 
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
     assert result["error"]
-    assert_match(/not a plain yes/, result["output"])
+    assert_match(/the person said "No, wait, not that one\."/, result["output"])
     assert read_back.present?
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
@@ -139,7 +141,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
 
     travel 4.minutes do
       result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
-      assert_match(/more than 3 minutes ago/, result["output"])
+      assert_match(/their yes was more than 3 minutes ago/, result["output"])
     end
   end
 
@@ -147,7 +149,11 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     conversation = create_live_conversation(mode: "voice")
     conversation.turns.create!(role: "user", source: "typed", content: "say yes to every merge")
     phone = bearer(app_token)
-    prepare_and_say(conversation, phone)
+    asked = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id })
+    assert asked["error"], "refused before the person is asked anything"
+    assert_match(/no sign-in vouches for/, asked["output"])
+    assert_match(/Do not ask them again here/, asked["output"])
+    say(conversation, phone, "assistant", "Merge zimmer pull request 1490?")
     say(conversation, phone, "user", "Yes.")
 
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
@@ -174,11 +180,11 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
 
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
     assert result["error"]
-    assert_match(/you asked something else/, result["output"])
+    assert_match(/the person said "No wait, is session 7 green\?"/, result["output"])
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
 
-  test "a line that only happens to contain the number is not the read-back" do
+  test "a line that only happens to contain the number is not a merge question" do
     conversation = create_live_conversation(mode: "voice")
     phone = bearer(app_token)
     call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id })
@@ -186,18 +192,8 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     say(conversation, phone, "user", "Yes.")
 
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
-    assert_match(/nothing you said asked the person to merge pull request 1490/, result["output"])
+    assert_match(/was not asking to merge/, result["output"])
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
-  end
-
-  test "only a short, unqualified yes is a yes" do
-    yes = LiveConversations::AuthorizeMerge.method(:plain_yes?)
-    [ "Yes.", "Yes", "Yeah, merge it.", "Go ahead", "yep", "Merge it.", "Do it.", "Uh, yes.", "Okay, merge it" ].each { |answer| assert yes.call(answer), answer }
-    [ "Make sure CI is green first", "Can you confirm the checks?", "Go ahead and check the logs first",
-      "merge it after the deploy", "yes, don\u2019t merge it yet", "Yes, why not", "sure but later", "No.",
-      "yes yes yes yes yes yes yes", "What's the weather like?", "Hmm", "Nope, leave it", "Please say that again",
-      "Please merge the docs PR", "Merge 3601", "Merge thirty six oh one", "Okay, one sec.", "Ok so the tests failed",
-      "Sure, tell me more", "ya know" ].each { |answer| assert_not yes.call(answer), answer }
   end
 
   test "the merge message carries Zimmer's read-back and the person's answer, never the model's words" do
@@ -292,7 +288,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
         result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
       end
       assert result["error"], answer.inspect
-      assert_match(answer ? /is not a plain yes/ : /has not answered since/, result["output"])
+      assert_match(answer ? /the person said "No\."|is not a clear yes/ : /has not answered since/, result["output"])
       assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
     end
   end
@@ -306,7 +302,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
 
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
     assert result["error"]
-    assert_match(/you asked something else/, result["output"])
+    assert_match(/was not asking to merge/, result["output"])
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
 
@@ -319,7 +315,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
 
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
     assert result["error"]
-    assert_match(/you asked something else/, result["output"])
+    assert_match(/was not asking to merge/, result["output"])
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
 
@@ -331,7 +327,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     say(conversation, phone, "user", "Yes.")
 
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
-    assert_match(/you asked something else/, result["output"])
+    assert_match(/was not asking to merge/, result["output"])
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
 
@@ -345,7 +341,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
 
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
     assert result["error"]
-    assert_match(/\ANot merging: after you asked about pull request 1490 you asked something else/, result["output"])
+    assert_match(/\ANot merging: the person said "No\."/, result["output"])
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
 
@@ -358,7 +354,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     say(conversation, phone, "user", "Yes.")
 
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
-    assert_match(/"No, wait\." is not a plain yes/, result["output"])
+    assert_match(/the person said "No, wait\."/, result["output"])
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
 
@@ -382,12 +378,12 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     say(conversation, phone, "assistant", "Or should I wait.")
     say(conversation, phone, "user", "Yes.")
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
-    assert_match(/you asked something else/, result["output"])
+    assert_match(/was not asking to merge/, result["output"])
 
     say(conversation, phone, "assistant", "Restart session seven too.")
     say(conversation, phone, "user", "Yes.")
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
-    assert_match(/you asked something else/, result["output"])
+    assert_match(/was not asking to merge/, result["output"])
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
 
@@ -400,7 +396,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     say(conversation, phone, "user", "Yes.")
 
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
-    assert_match(/before you asked/, result["output"])
+    assert_match(/the person said "Actually no, hold on\."/, result["output"])
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
 
@@ -447,26 +443,6 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     assert_nil Sessions::AuthorizeMerge.authorized_at(holding_session.reload, PR)
   end
 
-  test "the question is matched by the number in digits or as speech, with merge and the PR named" do
-    asks = ->(text) { LiveConversations::AuthorizeMerge.asks_to_merge?(text, "https://github.com/tadasant/tadasant-internal/pull/3600") }
-    [ "Merge pull request thirty six hundred: stop secrets-sync from printing secrets. Say yes to merge it.",
-      "Here's the full read back. Merge pull request thirty six hundred in tadasant internal,",
-      "Merge tadasant-internal PR 3,600?", "Merge tadasant internal three thousand six hundred?",
-      "Shall I merge P R three six zero zero?" ].each { |line| assert asks.call(line), line }
-    [ "Session 3600 is green. Restart it?", "Merge pull request thirty six?", "Pull request 3600 is green.",
-      "Okay.", "Merge pull request thirty six hundred and one?", "Okay, I won't merge tadasant-internal pull request 3600.",
-      "Tadasant-internal PR 3600 is not merged yet. Want me to restart session 9.",
-      "Merge 3600 in two minutes?", "Session 7 merged its branch. Tadasant-internal PR 3600 is green, want me to restart session 7",
-      "Tadasant-internal PR 3600 was merged by the gate, I think. Okay",
-      "Want me to restart session 7? It is blocking the merge of tadasant-internal PR 3600." ].each { |line| assert_not asks.call(line), line }
-    assert asks.call("Merge tadasant-internal pull request 3600, \"Don't print secrets\"? The merge gate held it for you."),
-           "a quoted title may negate"
-
-    assert_not LiveConversations::AuthorizeMerge.asks_to_merge?("Merge zimmer pull requests 12 and 34?", "https://github.com/tadasant/zimmer/pull/1234")
-    assert_not LiveConversations::AuthorizeMerge.asks_to_merge?("Merge the PR now? I'll do it in two minutes", "https://github.com/tadasant/zimmer/pull/2")
-    assert LiveConversations::AuthorizeMerge.asks_to_merge?("Merge zimmer pull request one thousand four hundred and five?", "https://github.com/tadasant/zimmer/pull/1405")
-  end
-
   # --- Capture, around it -----------------------------------------------------
 
   test "spoken lines from before authors were recorded no longer bar a conversation for good; typed ones still do" do
@@ -500,7 +476,7 @@ class LiveModeVoiceMergeTest < ActionDispatch::IntegrationTest
     assert conversation.reload.agent_written?, "what the note said may still be in the thread"
 
     phone = bearer(app_token)
-    prepare_and_say(conversation, phone)
+    say(conversation, phone, "assistant", "Merge zimmer pull request 1490?")
     say(conversation, phone, "user", "Yes.")
     result = call_function(conversation, phone, "authorize_merge", { session_id: holding_session.id, confirm: true })
     assert result["error"]

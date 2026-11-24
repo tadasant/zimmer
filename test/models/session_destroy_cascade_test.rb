@@ -62,6 +62,10 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     # Nullify: the session that started a batch over MCP is provenance, not an
     # owner — the batch and its record of what it analyzed outlive that session.
     [ "outcome_analysis_batches", "started_by_session_id", :nullify ],
+    # Cascade: an event, and a subscription to a session's events, are about a
+    # session that is gone.
+    [ "session_event_subscriptions", "session_id", :cascade ],
+    [ "session_events", "session_id", :cascade ],
     # Cascade: an experimental-setting label describes one session's run and is
     # meaningless without it. Unlike a usage row it records no money spent, so
     # there is nothing to preserve past the session itself.

@@ -265,9 +265,14 @@ class HealthController < ApplicationController
     render_maintenance_refusal(e)
   end
 
+  # GET /health/export_diagnostics
+  #
+  # What the fleet-telemetry collector and the deploy's worker soak read, every thirty
+  # seconds, giving up after fifteen. HealthDiagnostics bounds it: the queue and worker
+  # heartbeat always, every other section if it can be read in time. Queue or heartbeat
+  # facts that cannot be read are a 503.
   def export_diagnostics
-    @health_service = HealthMonitorService.new
-    @health_report = @health_service.full_health_report
+    @health_report = HealthDiagnostics.new.report
 
     respond_to do |format|
       format.json do
@@ -279,6 +284,8 @@ class HealthController < ApplicationController
         }
       end
     end
+  rescue HealthDiagnostics::Unreadable => e
+    render json: { error: e.message }, status: :service_unavailable
   end
 
   private

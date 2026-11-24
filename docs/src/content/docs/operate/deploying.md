@@ -24,7 +24,7 @@ scope for these docs.
 ```mermaid
 flowchart TB
     subgraph do["DigitalOcean"]
-        subgraph droplet["Droplet: zimmer-staging (ubuntu-24-04, s-2vcpu-4gb, nyc3)"]
+        subgraph droplet["Droplet: zimmer-staging (ubuntu-24-04, s-2vcpu-4gb preferred, nyc3)"]
             subgraph kamal["Kamal (config/deploy.yml + deploy.staging.yml)"]
                 WEB["web<br/>ghcr.io/tadasant/zimmer<br/>bin/thrust bin/rails server<br/>:80 via kamal-proxy"]
                 WRK["worker<br/>bundle exec good_job start<br/>(no published port)"]
@@ -1833,8 +1833,10 @@ cron — see [Staging is torn down on the days it is not
 used](#staging-is-torn-down-on-the-days-it-is-not-used).) `deploy-staging.yml`:
 
 1. Builds the base image (`:staging`) and app image (`:staging-<sha>`).
-2. `terraform apply` — reconciles the **existing** droplet through remote state. It does not reap
-   anything, and a re-run updates in place rather than recreating.
+2. Chooses the droplet size (see [The droplet size is chosen before the
+   apply](#the-droplet-size-is-chosen-before-the-apply)), then `terraform apply` — reconciles the
+   **existing** droplet through remote state. It does not reap anything, and a re-run updates in
+   place rather than recreating.
 3. Joins the tailnet, resolves `zimmer-staging`'s peer IP from `tailscale status --json`, and loads
    the Kamal deploy key.
 4. `kamal accessory boot all -d staging`, then `kamal accessory reboot devdb -d staging`, then
@@ -1866,6 +1868,35 @@ Tailscale OAuth client must not have its rebuild fail over it — but it now say
 Actions **warning** rather than an info line nobody reads. The consequence of a silent skip surfaces
 much later and somewhere else: the rebuilt droplet registers as `zimmer-staging-1` and the MagicDNS
 name drifts off the box you deployed.
+
+### The droplet size is chosen before the apply
+
+DigitalOcean's stock is per size and per region, and it moves. On 2026-11-23 nyc3 created an
+`s-2vcpu-4gb` droplet at 00:50 UTC and refused one at 18:43 with `422 Size is not available in this
+region`, while still selling the AMD and Intel variants of the same shape. Staging is
+[torn down between uses](#staging-is-torn-down-on-the-days-it-is-not-used), so most deploys create a
+droplet and are exposed to that.
+
+`scripts/select-staging-droplet-size.sh` decides what the apply asks for, from the workflow's own
+commit rather than the deployed ref:
+
+| The apply is about to… | The size is… |
+| --- | --- |
+| keep an existing droplet | the size that droplet has right now, read from DigitalOcean. A different value would be an in-place resize, which powers the box off and grows its disk for good. If the size cannot be read, the run fails. |
+| create a droplet — first deploy, `recreate_droplet`, a tainted droplet, or one deleted out of band | `droplet_size` from `staging.tfvars.example` if the region sells it, otherwise the first of `SIZE_FALLBACKS` (in `deploy-staging.yml`) that it does. A fallback is announced as a warning and on the run summary. |
+| create one, and the region sells none of them | none. The run fails and names every size it tried. This is before the tailnet reap and the apply, so a `recreate_droplet` leaves the live box alone. |
+
+A fallback is never below `MIN_MEMORY_MB` (4096, because the worker's `memory: 2g` cap is tuned to a
+4 GB droplet) nor below the preferred size's own memory. The region never changes: the reserved IP is
+regional.
+
+If the catalog cannot be read at all, a fresh create asks for the preferred size with a warning, and
+a refusal still fails the apply. A replacement does not get that benefit of the doubt: it fails
+rather than destroy a droplet it may not be able to recreate.
+
+**Changing `droplet_size` therefore does not resize a live staging droplet.** Dispatch with
+`recreate_droplet` to apply it. Only this workflow has this behaviour: the Terraform module is
+unchanged, and a `terraform apply` by hand asks for exactly what the tfvars say.
 
 ### Staging is torn down on the days it is not used
 

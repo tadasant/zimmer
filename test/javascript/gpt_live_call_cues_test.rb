@@ -79,6 +79,11 @@ class GptLiveCallCuesTest < ActiveSupport::TestCase
     assert closed?("goodbye_over_a_delegation")
   end
 
+  # Live conversation 43 recorded a question after both of its answers.
+  test "lines are recorded in the order they were said, and one that hangs holds up the next only for the patience" do
+    assert_equal [ "|", "Merge pull request 1490?", "Yes", "|", "Thanks" ], heard("lines_in_order").first(5)
+  end
+
   test "the hang-up rule needs the person to ask and the answer to say goodbye" do
     assert_equal [ true, true, true, true, true, true, false, false, false, false, false, false ], heard("ends_the_call")
   end

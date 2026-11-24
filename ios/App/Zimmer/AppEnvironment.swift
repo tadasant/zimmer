@@ -258,18 +258,18 @@ final class AppEnvironment {
                 list = DeploymentList([Deployment(id: "fixture", origins: origins)])
             }
         }
-        let trashedElsewhere = arguments.firstIndex(of: "-ZimmerFixtureTrashedElsewhere")
-            .flatMap { arguments.indices.contains($0 + 1) ? Int(arguments[$0 + 1]) : nil }
+        let trashedElsewhere = value(after: "-ZimmerFixtureTrashedElsewhere", in: arguments).flatMap(Int.init)
         // `-ZimmerFixtureRefuse trash,follow_up`: those writes are refused, so a screen can
-        // be seen putting back what it showed at the tap. `-ZimmerFixtureSlowWrites`: every
-        // write takes six seconds, so a screen can be photographed ahead of the answer.
-        let refuses = arguments.firstIndex(of: "-ZimmerFixtureRefuse")
-            .flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
+        // be seen putting back what it showed at the tap.
+        let refuses = value(after: "-ZimmerFixtureRefuse", in: arguments)
             .map { Set($0.split(separator: ",").map(String.init)) } ?? []
-        let writeDelay: Duration? = arguments.contains("-ZimmerFixtureSlowWrites") ? .seconds(6) : nil
-        // `-ZimmerFixtureSlowReads`: opening a session takes seconds, so a test can type into
-        // the composer while the page is still loading.
-        let readDelay: Duration? = arguments.contains("-ZimmerFixtureSlowReads") ? .seconds(12) : nil
+        // `-ZimmerFixtureHold trash,open_session -ZimmerFixtureHoldIn <directory>`: those are not
+        // answered until `<directory>/<name>.answer` exists (`FixtureHold`), so a screen can be
+        // looked at ahead of the answer, or typed into while it is still loading.
+        let holds = value(after: "-ZimmerFixtureHold", in: arguments)
+            .map { Set($0.split(separator: ",").map(String.init)) } ?? []
+        let hold = value(after: "-ZimmerFixtureHoldIn", in: arguments)
+            .map { FixtureHold(holds, in: URL(fileURLWithPath: $0, isDirectory: true)) }
         // `-ZimmerFixtureVoiceTurnedUp`: the CarPlay drill's break-glass. The Live settings are
         // as voice calls left them on the call that broke (a cap of 180, eagerness low, a
         // threshold Semantic ignores, plus a gated Listening), and the first call holds on
@@ -294,13 +294,18 @@ final class AppEnvironment {
                 longTranscript: arguments.contains("-ZimmerFixtureLongTranscript"),
                 relayOnly: arguments.contains("-ZimmerFixtureRelayOnly"), degraded: arguments.contains("-ZimmerFixtureDegraded"),
                 trashedElsewhere: trashedElsewhere,
-                refuses: refuses, writeDelay: writeDelay, readDelay: readDelay,
+                refuses: refuses, hold: hold,
                 liveSettings: voiceTurnedUp ? ["voice_max_output_tokens": .number(180), "voice_vad_eagerness": .string("low"), "voice_vad_threshold": .number(0.92), "voice_listening": .string("dynamic")] : [:],
                 liveSecretHold: voiceTurnedUp || carScript ? .seconds(600) : nil,
                 web: deployment.origins.web)
             return Connection(deployment: deployment, auth: auth, api: api, edge: nil)
         }
         return (list, connect)
+    }
+
+    /// The argument after `flag`: what a launch argument that takes a value was given.
+    private static func value(after flag: String, in arguments: [String]) -> String? {
+        arguments.firstIndex(of: flag).flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
     }
     #endif
 }

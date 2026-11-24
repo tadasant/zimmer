@@ -57,7 +57,9 @@ of an edge leaves a row that asserts nothing.
 A parent reaches a child with `follow_up`, which is a general capability: it names any session and
 reaches it. The reverse — a child reaching the session that started it — is
 [`message_parent`](/extend/mcp-server/#message_parent-the-action-with-no-target), and it
-is deliberately not general. The caller names no target; Zimmer reads `parent_session_id`.
+is deliberately not general. The caller names no target; Zimmer reads `parent_session_id`. The report
+travels as an [MCP event](/extend/mcp-server/#mcp-events-what-sessions-do-as-events), recorded on the
+subscription the parent got when it spawned the child.
 
 That is what makes it safe to put on the `self_session` MCP surface injected into every session,
 which otherwise lets a session act only on itself. A child can say "you gave me the wrong scope, or
@@ -469,7 +471,7 @@ be able to close the block, or open a bullet, and forge a `here` message.
 | A message from the [browser extension](/extend/browser-extension/) | ✅ `browser_extension.quick_router` | the `quick_router` key it presents is minted, so no agent session's environment carries it, and it opens nothing but that one endpoint — its only holder is the admin's browser |
 | A follow-up, Quick Router request or Merge from [Zimmer's iOS app](/extend/ios-app/) | ✅ `ios_app.follow_up` / `ios_app.quick_router` / `ios_app.authorize_merge`, when the app's connection acts on its approver's behalf | recorded on the [`assistant` channel](#the-assistant-channel) with the same fences as any OAuth client: the author is the approver's roster row, the grant is in the provenance, and a relay-only connection records nothing. The app sends exactly what was typed, a quick reply included |
 | A `follow_up`, `send_now`, enqueue, `start_session` or `quick_router` the [Live Mode](/sessions/live/) assistant makes while talking to a person signed in on the web or the iOS app | ✅ `live_mode.follow_up` / `live_mode.start_session` / … | recorded on the [`live_mode` channel](#the-live-mode-channel): the content is what the person typed or said, and the assistant's own message rides beside it |
-| A person saying yes to Zimmer's read-back of a PR in Live Mode (`authorize_merge`) | ✅ `live_mode.authorize_merge` | recorded in the session holding the PR, with the PR and the read-back; see [Merging by voice](#merging-by-voice-live_modeauthorize_merge). For a PR another Zimmer holds, recorded in the session here that drives it |
+| A person saying yes to merging a PR Zimmer named in Live Mode (`authorize_merge`) | ✅ `live_mode.authorize_merge` | recorded in the session holding the PR, with the PR and the read-back; see [Merging by voice](#merging-by-voice-live_modeauthorize_merge). For a PR another Zimmer holds, recorded in the session here that drives it |
 | A signed merge approval from another Zimmer (`submit_merge_attestation`) | ✅ `attestation.authorize_merge`, channel `attested` | only after the signature verifies against a pinned key and the PR's head matches; written as the local user the issuer's approver maps to. See [Merge approvals across deployments](/auth/merge-attestations/) |
 | The same calls when the last thing said in the Live conversation came from `action_live_conversation` over MCP | ❌ | an API key wrote that turn, so no person is established |
 | `follow_up` / `send_now` / enqueue issued by **another agent** over MCP or REST | ❌ | the API key is shared by the whole fleet — it establishes a caller, not a person |
@@ -656,57 +658,73 @@ voice. It is the only Live Mode route to a merge, and it ends in the same
 `Sessions::AuthorizeMerge` the iOS app calls, so the session holding the PR gets
 the same `[HUMAN-AUTHORIZED MERGE]` message and the sign-off is recorded `here`, in that session.
 
-A tap carries its referent, and a spoken "yes" does not, so the voice version has two calls, Zimmer
-names the PR, and you answer **one** short question about it:
+A tap carries its referent, and a spoken "yes" does not, so Zimmer binds the PR and you say yes to it
+**once**:
 
 1. `authorize_merge(session_id)` reads the session's PR off Zimmer's own record, refuses anything
-   the button would refuse, and answers with a **confirmation Zimmer composed**: the repository, the
+   the button would refuse, and answers with a **question Zimmer composed**: the repository, the
    number, a few words of the session's title and, when the merge gate's newest rating of that PR is
-   a hold, "The merge gate held it for you." The model asks it once, in its own words if it likes,
-   and asks for a yes. The gate's reason comes with it, for the model to give only if you ask.
-2. `authorize_merge(session_id, confirm: true)` merges only if all of this holds:
-   - the newest question in the conversation was for this session and is under three minutes old.
-     Asking about the same PR again, while the earlier question is still under three minutes old,
-     keeps a yes already given;
-   - your newest words pass every rule above: fresh, one signed-in person's, from a conversation
-     nothing unvouched-for has written into;
-   - after Zimmer composed the question, the assistant said a line that asks to merge this PR: a
-     sentence with "merge" as a request and the number (in digits, or spoken: "thirty six
-     hundred", "one four nine oh") right after "pull request", "PR" or the repository's name, with
-     nothing negating it outside a quoted title, in a line that asks nothing else. "I won't merge
-     pull request 1490", "PR 1490 was merged" and "it's blocking the merge of PR 1490" are not
-     asking. A paraphrase is fine;
-   - nothing you said between the question being composed and it being asked was a refusal ("no",
-     "wait", "hold on");
-   - everything you said after the first line that asked is a plain yes: at most six words, all
-     from a closed list ("yes", "yeah", "yep", "do it", "merge it", "okay", "please"…), with at
-     least one real yes and no question. "Please say that again" and "merge 3601" are not yes. A
-     "no" followed by a "yes" is not either: the model starts over with a fresh `authorize_merge`
-     call, and anything but a yes before that new question no longer counts;
-   - the assistant said nothing in between but filler (a line made only of words like "okay",
-     "sure", "merging", "here's the full read-back") or the same question again. A yes after "Also,
-     should I restart session 7", "Or should I wait." or "Restart session seven too." answers that,
-     not the merge.
+   a hold, "The merge gate held it for you." The model asks it once, in its own words. The gate's
+   reason comes with it, for the model to give only if you ask. The model is told to make this call
+   before it asks whether to merge.
+2. `authorize_merge(session_id, confirm: true)`, once you have answered.
 
-   Anything else merges nothing and the model is told why. The message the merging session gets
-   carries Zimmer's question and your answer, never the model's words.
+Either call merges once you have said yes, so a clear one is never answered with another question. It
+merges when all of this holds:
 
-Your words are counted from the line that asked, not from the line just before them, because a voice
-call records lines in the order transcription finished, not the order they were spoken. A "yes" said
-as the model starts repeating itself lands after "Okay." or after half a sentence that names nothing,
-and still answers the question you heard.
+- the newest question in the conversation was for this session and PR, and is under ten minutes old.
+  Asking about the same PR again keeps a yes already given, until you refuse or take it back;
+- nothing unvouched-for has written into the conversation (the rules above), and every line you said
+  since the question is one signed-in person's;
+- one of those lines is a **clear yes**, under three minutes old: a word of assent ("yes", "yeah",
+  "approved", "do it", "merge it", "okay"…) with nothing beside it but words that go with one, the
+  PR's own number, and the repository and title Zimmer knows it by. "What's next" may follow it. A yes
+  is spent by the merge it sent, whichever PR that was;
+- none of them is a refusal ("no", "wait", "don't"…), and what follows the yes is only another yes,
+  filler or moving on. Any other line takes it back, and a yes after that counts only as the answer to
+  a recorded line asking again;
+- just before that yes the assistant had not offered something else ("also, want me to restart session
+  7?", "merge pull request 1491?", "merge it tomorrow?"), unless the yes itself says to merge. An "okay"
+  or "sure" also needs a recorded line that asks to merge just before it, because it answers anything;
+- merging came up aloud, from either of you, around the question or since.
+
+**How the assistant worded its question is not checked** for a clear yes, beyond those, and neither is whether its
+transcript spells the number, where its line was cut off, or what order its lines were recorded in. On a
+GPT-Live call the model that speaks is not the model that makes these calls, its lines break wherever you
+talk over it, and each line reaches Zimmer on a request of its own.
+
+The first call is not the model's word that you said yes, so on that call a yes merges only where the
+recorded line you answered asks for the merge. **A yes before any question counts too**, for a PR this
+Zimmer holds, when it is unmistakable: the last session Zimmer showed the conversation (`get_session`)
+is the one holding the PR, and showed that PR; your newest words, under two minutes old, are a clear yes
+(not an "okay") to "want to merge it?" and nothing more, or "merge it" itself; and no other PR has been
+asked about since. Anything less gets the one question. A PR another Zimmer holds always gets the question, because the
+question is what pins the commit.
+
+Anything else merges nothing, and the model is told why and whether to ask. In a conversation that
+cannot carry a person's words it is told before it asks anything. The message the merging session gets
+carries Zimmer's account and your answer, never the model's words.
+
+Zimmer reports two things to the error tracker, with ids and no words: a merge refused although the
+person had said yes, and a second question about the same merge that no refusal led to. Either is this
+going wrong again.
 
 The record's content is the person's words ("Yes."), and its provenance adds `confirmed_pr_url`,
-`read_back` (Zimmer's question) and `replying_to` (the line the model actually asked it with):
+`read_back` (Zimmer's question, absent when none was needed) and `replying_to` (the nearest line the
+model said about merging):
 
 ```
 - **[here]** Tadas (`tadasant`) via Live Mode (CarPlay, spoken, as transcribed; delivered by the Live Mode assistant), in this session (#27637), at 2026-11-13T06:40:00Z
   ```
   Yes.
   ```
-  They were answering Zimmer's read-back of https://github.com/tadasant/zimmer/pull/1490 (composed by Zimmer, not by the Live Mode assistant: the repository and number from Zimmer's record of the PR, a few words of the title from the session, whether the merge gate held it):
+  They said yes to merging https://github.com/tadasant/zimmer/pull/1490. The question Zimmer composed for the Live Mode assistant to ask, in its own words (the repository and number from Zimmer's record of the PR, a few words of the title from the session, whether the merge gate held it):
   ```
   Merge zimmer pull request 1490, "Stop stranded paging"? The merge gate held it for you.
+  ```
+  The nearest line from the Live Mode assistant (the model's words, not theirs):
+  ```
+  Merge pull request fourteen ninety, the one that stops stranded paging?
   ```
   The content above is what the person said. The Live Mode assistant delivered this into the session on the strength of it:
   ```

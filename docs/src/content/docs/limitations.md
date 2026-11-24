@@ -1143,6 +1143,20 @@ expect several in a day — chasing a cloud-init change, say — count them.
 [#403](https://github.com/tadasant/zimmer/issues/403) the nightly teardown destroys staging on the
 days nobody deploys to it, so **every teardown/deploy cycle is an issuance too** — see below.
 
+### Staging's size fallback trusts the catalog, and stays in one region
+
+[The droplet size is chosen](/operate/deploying/#the-droplet-size-is-chosen-before-the-apply) from
+DigitalOcean's size catalog just before the apply. Four edges are left. Stock that runs out in
+between, or a catalog that disagrees with the create call, still fails the deploy, and nothing retries
+it with the next size. The region is fixed, so a region selling none of the listed sizes fails the
+deploy too. And a droplet that landed on a fallback keeps it until it is torn down: the AMD and Intel
+fallbacks list at $28 to $32 a month against $24. And a deploy whose tfvars change another
+attribute that replaces the droplet (`region`, `ssh_key_fingerprints`) counts as keeping it, so its
+size is passed without a catalog check and the replacement can still be refused after the destroy.
+
+Production has no such fallback. Its Terraform runs from the companion repo and asks for exactly one
+size.
+
 ### Staging's nightly teardown buys the idle bill back with a cold start
 
 `teardown-staging.yml` runs nightly and destroys the staging droplet on the days nobody deployed to it
@@ -1554,6 +1568,14 @@ interface, so a tailnet peer that connects there directly, skipping Caddy, contr
 [the client-address reasoning](/operate/deploying/#2-the-tunnels-origin-is-httplocalhost8080-kamal-proxy-not-caddy)
 already names. Closing it means the deploy handing the collector a credential and the collector
 reading an API-key route.
+
+### A section that never returns hides every section but the queues
+
+🟡 `/health/export_diagnostics` runs [one section thread per web
+process](/operate/observability/#the-health-report-the-probes-read). Statements are cancelled after four
+seconds, but something outside the database that never returns would hold that thread until the process
+restarts, and every report until then would wait out its six seconds and carry `system_health` alone. The heartbeat and queue series
+keep working; the security counts stop, and each report logs a WARN naming what it left out.
 
 ### Security counts undercount rather than block
 
@@ -5479,31 +5501,38 @@ records nothing either: only the web page and the iOS app stamp an author on a L
 ### A voice Merge trusts a transcript and a word list
 
 The [voice Merge](/sessions/hierarchy-and-human-messages/#merging-by-voice-live_modeauthorize_merge)
-(`authorize_merge`) checks that, after Zimmer composed the question, an assistant sentence says
-"merge" as a request and the PR's number right after "pull request", "PR" or the repository, with
-nothing negating it outside a quoted title, and that everything the person said after it is a plain
-yes. That line is the call's transcript of what the model said. Zimmer cannot
-check the audio itself: a transcript that names the PR while the speech said something else would
-pass. The number is matched in digits and in the ways a transcript spells it out ("thirty six
-hundred", "three thousand six hundred", "three six zero zero", "fourteen oh five"); a spelling it does
-not know is refused, and the model asks again. The repository can be left out of the spoken
-question, so on a call juggling two PRs with the same number in different repositories, the person
-hears only the number and title words; Zimmer still merges only the PR it named to the model.
+(`authorize_merge`) establishes who said yes, when, and which PR Zimmer named. It does not establish
+what the person heard. The model chooses its own words, on a GPT-Live call the transcript of them is cut
+and recorded out of order, and a gate on that transcript refused every merge confirmed there. So a model
+that has Zimmer name one PR, talks about something else, and reports the yes as a confirmation can get a
+merge the person did not mean. It need not be steered by anything: a plain mistake does it. What stands
+in the way: the yes is a person's, fresh, spent by one merge, in a conversation no agent wrote into;
+merging has to have come up aloud, though possibly from before the question or about another PR; an
+"okay" needs a recorded line asking to merge just before it; an offer of another action, or another PR's
+number after "merge", "ship", "land" or "approve", or asking to merge at another time, is recognised from
+a word list just before the yes; and
+anything the person says after it that is not a yes, filler or moving on stops it. The word list has gaps:
+"want to merge the docs one?" names no number, which counts only when the model then confirms the wrong
+session. It can also err the other way and read an ordinary question as an offer of something else, which
+costs one more question and is reported.
 
-The model chooses the words of the question. A model steered by text it read mid-call could ask "Merge
-pull request 1490?" and then fold an unrelated request into the same line; a yes to that line counts.
-A *separate* line after it ends the confirmation, and so does any answer that is not a plain yes.
-Filler is a closed word list ("okay", "sure", "merging", "here's the full read-back"), so any other
-line ends it, which fails closed. Negation is a word list too ("not", "won't", "already"…), so a
-question phrased as a negative ("Why not merge pull request 1490?") is not counted as asking, and a
-paraphrased title that negates something ("…so it doesn't page twice") has to be quoted or left out.
-And all of it reads words, not meaning: a line that says "merge pull request 1490" as a request and
-asks nothing else counts, whatever the model meant by it.
+A yes before any question is bound by the last session Zimmer showed the model, not by a number the
+person heard. A model that opened one session and talked about another would merge the one it opened.
 
-Whether the person said yes is a closed word list: at most six words, every one of them from "yes",
-"yeah", "okay", "do it", "merge it", "please", "great" and the like, at least one a real yes, and
-no question. So "yes, why not", "sure, but after the deploy" and "please say that again" are
-refused, and so is an answer the transcript garbled. All of this fails closed: nothing merges.
+Whether the person said yes is still read from words: an assent, and every other word one that goes with
+it. A yes the transcript garbled ("Yet proved") is not one, and is asked about. "Yes, and bump the
+version" is not one either. A refusal word anywhere since the question, even about something else ("no
+other questions"), or an unrelated remark after the yes and before the merge, costs one more question. The
+session's title, up to eight words of it, adds to the words that may sit beside an assent. A line with
+anything beyond ASCII and a transcript's own punctuation is not read as a yes, so a yes in another script
+is not one.
+
+A confirm that reaches Zimmer before the person's answer waits up to four seconds for it, holding a web
+thread. A line that takes longer than that to arrive is refused as no answer, and the model is told to wait
+rather than ask again.
+
+A local merge is not pinned to a commit, as the button's is not: a push between the question and the
+merge, up to thirteen minutes, is covered by the yes if the PR is still open and green.
 
 A conversation that had a `typed` line before authors were recorded (2026-11-12T20:23Z) can never
 carry a Live Mode human message or a voice Merge, because nothing on the row says whether a person
@@ -5996,6 +6025,22 @@ or when the two carry different `allowed_user_ids` (that list is per-condition).
 is a `bot_mention` condition at least as wide as the passive ones; nothing enforces it. Each drop
 logs one `info` line naming the message and the condition that declined it, which is the only signal
 you get.
+
+### Zimmer's own MCP events are poll only, and wait for the oldest open write
+
+[What Zimmer's server publishes](/extend/mcp-server/#mcp-events-what-sessions-do-as-events) is served by
+`events/poll` and nothing else: no stream and no webhook, so an outside client learns of an event when it
+next asks. A parent session does not wait for that: Zimmer hands it the report directly.
+
+The poll serves an event only once every database transaction older than it has finished, so that no
+late commit is stepped over. The database server counts transactions for all its databases together, so a
+long write anywhere on it holds new events back until it ends. Nothing is lost, only late, and delivery to
+a parent is unaffected.
+
+Publishing a report that interrupts its parent (`force_immediate`) is not in one transaction with the
+interrupt, which cannot be undone. A crash between the two delivers the report and leaves the event out of
+the log. `session.state_changed` is published by a job after the transition; one whose job is lost, during a
+deploy for example, is not published later. Waiting on a session is still `wake_me_up_when_session_changes_state`.
 
 ### MCP event triggers follow an unmerged draft, with poll and webhook but no push
 
