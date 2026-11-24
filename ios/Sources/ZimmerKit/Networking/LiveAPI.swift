@@ -13,8 +13,14 @@ public protocol LiveAPI: Sendable {
     func liveConversations() async throws -> LiveOverview
     /// One conversation with its turns; `afterTurn` reads only turns newer than that one.
     func liveConversation(_ id: Int, afterTurn: Int?) async throws -> LiveConversation
-    /// Start a fresh conversation, typed or spoken from the start, ending the open one.
-    func startLiveConversation(_ mode: LiveMode) async throws -> LiveConversation
+    /// Start a fresh conversation, typed or spoken from the start, ending the open one. `standby`:
+    /// from the one kept ready (`liveStandby`), which becomes the current one. `again`: this tap may
+    /// have been answered already, and then it is answered the same. One that is gone starts another, so
+    /// the answer says which conversation it is.
+    func startLiveConversation(_ mode: LiveMode, standby: Int?, again: Bool) async throws -> LiveConversation
+    /// The conversation Zimmer keeps ready for the next New, made or brought up to date. Asking ends
+    /// nothing and starts nothing, and there is only ever one.
+    func liveStandby() async throws -> LiveConversation
     /// Go back to an earlier conversation, ending the open one; `nil` is the one left most
     /// recently. `from` is the conversation this screen believes is current, 0 for none: another
     /// having taken over since is refused (409). The target already being current changes nothing.
@@ -31,14 +37,16 @@ public protocol LiveAPI: Sendable {
     /// Realtime, and the answer says why (`LiveCallGrant.choice`). `engines`: what to say this app
     /// can run — `[]` asks for Realtime, as after GPT-Live failed to start.
     func liveCallGrant(_ id: Int, engines: [String]) async throws -> LiveCallGrant
-    /// CarPlay pre-warm: a secret minted ahead of the driver's tap, for a connection held idle
-    /// until then (`LiveWarmStart`). Changes nothing on the conversation and needs no voice;
-    /// refused (422) from any client but CarPlay.
-    func livePrewarmSecret(_ id: Int) async throws -> LiveClientSecret
+    /// Standby: what a call on this conversation would run on, asked ahead of the tap, for a
+    /// connection held ready until then (`LiveWarmStart`). On Realtime, a secret; on GPT-Live, none,
+    /// and the session is started with `startGptLiveSession`. Changes nothing on the conversation and
+    /// needs no voice. 409 when there is nothing to hold it with: standby's daily cap is spent.
+    func livePrewarmGrant(_ id: Int) async throws -> LiveCallGrant
     /// Voice, `gpt_live_claude`: the phone's WebRTC offer, which Zimmer starts the GPT-Live session
     /// with (the OpenAI key stays on the server); OpenAI's SDP answer back. 409 when the call is no
     /// longer to run on GPT-Live (a cap reached, the setting changed since `liveCallGrant`).
-    func startGptLiveSession(_ id: Int, sdp: String) async throws -> GptLiveAnswer
+    /// `standby`: held ready for a tap, inference paused, and nothing on the conversation changed.
+    func startGptLiveSession(_ id: Int, sdp: String, standby: Bool) async throws -> GptLiveAnswer
     /// Voice, `gpt_live_claude`: GPT-Live delegated a request; Claude answers it, in chunks to
     /// append as commentary. `pendingUserText`: the person's line still in flight.
     func answerLiveDelegation(_ id: Int, delegationID: String, pendingUserText: String) async throws -> LiveDelegation
@@ -78,6 +86,16 @@ extension LiveAPI {
     /// The grant for a call, saying every engine this app can run.
     public func liveCallGrant(_ id: Int) async throws -> LiveCallGrant {
         try await liveCallGrant(id, engines: LiveVoiceEngine.runnable)
+    }
+
+    /// A fresh conversation, not from one kept ready.
+    public func startLiveConversation(_ mode: LiveMode) async throws -> LiveConversation {
+        try await startLiveConversation(mode, standby: nil, again: false)
+    }
+
+    /// The session for a call that is starting now.
+    public func startGptLiveSession(_ id: Int, sdp: String) async throws -> GptLiveAnswer {
+        try await startGptLiveSession(id, sdp: sdp, standby: false)
     }
 
     /// The `session.update` for an open call, recording nothing.
@@ -121,8 +139,15 @@ extension ZimmerHTTPClient {
         return try await get("/api/v1/live_conversations/\(id)", query: query)
     }
 
-    public func startLiveConversation(_ mode: LiveMode) async throws -> LiveConversation {
-        try await post("/api/v1/live_conversations", json: ["mode": mode.rawValue])
+    public func startLiveConversation(_ mode: LiveMode, standby: Int?, again: Bool) async throws -> LiveConversation {
+        var body: [String: Any] = ["mode": mode.rawValue]
+        if let standby { body["standby_id"] = standby }
+        if again { body["again"] = "1" }
+        return try await post("/api/v1/live_conversations", json: body)
+    }
+
+    public func liveStandby() async throws -> LiveConversation {
+        try await post("/api/v1/live_conversations/standby", json: [:])
     }
 
     public func switchLiveConversation(_ id: Int?, from: Int?) async throws -> LiveSwitch {
@@ -160,15 +185,15 @@ extension ZimmerHTTPClient {
         try await post("/api/v1/live_conversations/\(id)/client_secret", json: Self.mint(engines: engines))
     }
 
-    /// With the engines too: Zimmer refuses (409) to pre-warm a Realtime connection for a call
-    /// that will run on GPT-Live, which starts its own session from the tap.
-    public func livePrewarmSecret(_ id: Int) async throws -> LiveClientSecret {
+    /// With the engines, and that this app can hold a GPT-Live session in standby: Zimmer refuses
+    /// (409) a GPT-Live pre-warm from one that cannot.
+    public func livePrewarmGrant(_ id: Int) async throws -> LiveCallGrant {
         try await post("/api/v1/live_conversations/\(id)/client_secret",
-                       json: Self.mint(["prewarm": "1"]))
+                       json: Self.mint(["prewarm": "1", "standby": "1"]))
     }
 
-    public func startGptLiveSession(_ id: Int, sdp: String) async throws -> GptLiveAnswer {
-        try await post("/api/v1/live_conversations/\(id)/gpt_live_session", json: ["sdp": sdp])
+    public func startGptLiveSession(_ id: Int, sdp: String, standby: Bool) async throws -> GptLiveAnswer {
+        try await post("/api/v1/live_conversations/\(id)/gpt_live_session", json: standby ? ["sdp": sdp, "standby": "1"] : ["sdp": sdp])
     }
 
     public func answerLiveDelegation(_ id: Int, delegationID: String, pendingUserText: String) async throws -> LiveDelegation {

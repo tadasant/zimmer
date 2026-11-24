@@ -585,13 +585,7 @@ Heard note itself waits a further 1.5 s (`LiveCue.settle`) and is dropped if you
 resumes, so a pause mid-sentence sounds nothing unless it outlasts both. The phone logs each run of the person's
 transcript as `gpt_live.input_transcript`: how long they spoke by GPT-Live's intervals, over how
 long the fragments arrived, and `streamed` when the second is at least half the first. The first
-real call answers this. A CarPlay
-call taken from a [pre-warmed](/sessions/live/#carplay-pre-warm) Realtime connection runs on
-Realtime whatever the engine. Zimmer refuses to pre-warm while the settings pick GPT-Live, so this
-happens only with a connection warmed before the engine was switched, for at most its five minutes.
-While the engine is GPT-Live the car keeps asking to pre-warm, backing off to once every two minutes,
-and each refusal spends one of the drive's 15 pre-warms. Switching back to Realtime late in a long
-drive can find the budget spent, so the next call starts cold.
+real call answers this. 
 
 ### A sheet presented from inside a `List` row can reset itself
 
@@ -5302,25 +5296,48 @@ signal that it has fallen behind, and it is an accurate one.
 
 ---
 
-### CarPlay pre-warm has not run against OpenAI or in a car
+### GPT-Live standby has not run against OpenAI, on a device or in a car
 
-[CarPlay pre-warm](/sessions/live/#carplay-pre-warm) is on in every car, with no setting to turn it
-off. A server deploy that refuses prewarm mints stops it; so does a new app build. Its rules are tested
-on Linux (`LiveWarmStart`, `LiveWarmStartTests`) and Zimmer's prewarm mint is tested. CI compiles
-the app, but the app's half (`LiveWarmKeeper`, `LiveWarmLink`, `LiveCall.startWarm`) has never
-run: CI holds no Realtime key and drives no car. Four things are unproven until the first
-drives: that OpenAI keeps an idle Realtime WebSocket open for 5 minutes on 20 s pings;
-that the idle session bills nothing (check the usage page against `warm.ready` counts); that
-iOS keeps the socket while the CarPlay scene is behind another app (a tap after a suspension
-longer than 45 s starts cold); and the win itself, `call.startup` `tap_to_ready_ms` by `path`.
+[Standby](/sessions/live/#standby)'s rules are tested on Linux (`LiveWarmStart`, `GptLiveConductor`),
+Zimmer's half is tested, and CI compiles the app and drives the car's screens. But CI holds no OpenAI key and
+no microphone, so the app's half has never held a real connection or started a real call. The first drives
+settle these, and the call log says each one:
 
-The warm session's model, voice and reasoning effort are fixed when it is minted, as for any
-call. A change to them reaches a warm connection only when it is replaced, within 5 minutes.
-The call coming back from the car's gear never takes a warm connection, for that reason.
-Only **Continue** is warmed. **New** starts a fresh conversation, which cannot exist before the tap.
-New does not wait on `preparing` (it starts on the last prepared conversation's instructions and
-tool lists), but the create, the mint and the connect all run after the tap. GPT-Live, the
-engine the car ran on when this was measured, has no pre-warm at all.
+- that a session created with `wake_policy` sends `session.started` while it is still paused. If it
+  waits for speech instead, nothing is ever ready: every `warm.failed` would be a 15 s time-out, and taps would
+  start from cold or on a session still `warming`;
+- that OpenAI keeps a session in standby for 20 minutes on ICE and silence, and what its `expires_at` is
+  (`warm.ready` logs it as `session_life_ms`). No longest life is published;
+- that `gpt-live-1` on this account accepts `wake_policy`. A refusal is `warm.failed` with OpenAI's reason;
+- that a person's first words wake it and are heard whole. OpenAI says it wakes *while* they speak and
+  that the first answer to a short utterance may take longer;
+- what it bills: the OpenAI usage page against `voice_standby` on `/live/costs`. Zimmer counts a call from standby at the
+  active rate from the tap, though OpenAI's starts at the first word, so the ledger runs slightly high.
+  Whether the 15 s charge for starting a WebRTC session applies to one that starts in standby is not stated,
+  and the ledger has no row for it. So the standby cap cannot see it: if it applies, it is up to $0.0125 for each
+  session started, and what bounds those is the 15 starts for each tap in about an hour;
+- that libwebrtc holds two sessions at once on the one audio device, and that the silence on a muted
+  track is what OpenAI means by keeping it active. It is about 30 kbit/s for each session held;
+- the win itself: `call.startup` `tap_to_ready_ms` for `tap=new`, `path=warm`.
+
+Each failure leaves the tap starting from cold. **Standby cap per day** at 0 turns GPT-Live standby off with no deploy.
+
+### A cold New still meets the stall it always did
+
+About half the taps on New measured in November 2026 waited 5 s for the one request that makes the
+conversation, and the other half 0.35 s. The cause is not established: it adds 5.0 s to some requests from
+the car and not others, and the phone logs no timings inside a request. Standby takes that request out
+of the wait, and does not make it faster. A tap with nothing held (the first seconds after the car
+connects, 20 minutes after the last sign of a call, a spent cap, no network) still waits for it, behind the
+call screen's one *Connecting…*.
+
+### What is held in standby can be a few minutes behind
+
+A connection's instructions, voice and model are fixed when it is opened. A change to the Live settings
+made on the same phone, or on the car's panel, starts it again. One made anywhere else reaches a GPT-Live
+connection within 20 minutes and a Realtime one within 5, or on the call after. On Realtime the tap's
+`session.update` brings the instructions up to date; on GPT-Live nothing can. Continue's GPT-Live
+connection is made again when the open conversation is added to, as of the last read, up to 30 s ago.
 
 ### A new conversation starts on the last one's tool lists
 

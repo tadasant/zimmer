@@ -97,6 +97,7 @@ public actor FakeZimmerAPI: ZimmerAPI {
     var liveState = FakeLiveState.sample()
     /// How long the next client secret takes to mint.
     var liveSecretHold: Duration?
+    var liveStartHold: Duration?
 
     /// `live`: a running session's agent keeps talking, a line per read of its conversation
     /// after the first, so a screen that reads again can be seen to. `longTranscript`: 1044's
@@ -105,15 +106,17 @@ public actor FakeZimmerAPI: ZimmerAPI {
     /// site-wide banners show.
     /// `relayOnly`: the sign-in does not act as you, so a change to MCP Apps is a 403.
     /// `liveSettings`: Live settings already away from their default, as a voice call leaves
-    /// them. `liveSecretHold`: the first call stays on Connecting… this long.
+    /// them. `liveSecretHold`: the first call stays on Connecting… this long. `liveStartHold`: the first
+    /// new conversation takes this long to be answered.
     public init(sessions: [SessionSummary] = FakeZimmerAPI.sampleSessions(), now: Date = Date(), live: Bool = false,
                 longTranscript: Bool = false, relayOnly: Bool = false, degraded: Bool = false, trashedElsewhere: Int? = nil,
                 refuses: Set<String> = [], hold: FixtureHold? = nil,
-                liveSettings: [String: JSONValue] = [:], liveSecretHold: Duration? = nil,
+                liveSettings: [String: JSONValue] = [:], liveSecretHold: Duration? = nil, liveStartHold: Duration? = nil,
                 web: URL = URL(string: "https://fixture.invalid")!) {
         self.live = live
         self.liveState.settingOverrides = liveSettings
         self.liveSecretHold = liveSecretHold
+        self.liveStartHold = liveStartHold
         self.trashedElsewhere = trashedElsewhere
         self.refuses = refuses
         self.hold = hold

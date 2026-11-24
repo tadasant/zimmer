@@ -62,6 +62,9 @@ final class GptLiveLink: NSObject, @unchecked Sendable {
     private let lock = NSLock()
     private var closed = false
 
+    /// A connection held in standby (`LiveWarmKeeper`) is made muted, and stays so until the tap: the
+    /// factory's one microphone feeds every connection there is, and a muted track sends silence.
+    ///
     /// Opens nothing yet: `offer()` gathers the session description to send Zimmer.
     init(muted: Bool) throws {
         let factory = Self.factory
@@ -132,6 +135,10 @@ final class GptLiveLink: NSObject, @unchecked Sendable {
     func setMuted(_ muted: Bool) {
         microphone.isEnabled = !muted
     }
+
+    /// The connection is up this moment, which is what one held in standby is asked: ICE recovering
+    /// is not good enough to start a call on.
+    var isUp: Bool { peer.connectionState == .connected && channel.readyState == .open }
 
     /// The connection has not failed: what the call's health asks between events. `.disconnected`
     /// counts as alive, because ICE often recovers from it by itself (a dead spot on the road, Wi-Fi

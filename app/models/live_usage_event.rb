@@ -10,6 +10,8 @@
 # - `voice_tokens`      a Realtime response's tokens (openai_realtime)
 # - `transcription`     the Realtime transcription of one user line
 # - `voice_session`     a GPT-Live session's billed seconds (gpt_live_claude)
+# - `voice_standby`     a GPT-Live session's seconds held ready for a tap, at
+#                       OpenAI's standby rate (gpt_live_claude)
 # - `delegation`        one Claude Code run made to answer a delegation
 # - `tool_call`         one Zimmer tool Claude ran (unbilled; counted)
 # - `turn_latency`      a turn's timings as the client measured them (unbilled)
@@ -36,7 +38,7 @@
 # `idempotency_key` makes a retried report a no-op.
 class LiveUsageEvent < ApplicationRecord
   ENGINES = %w[openai_realtime gpt_live_claude livekit_claude].freeze
-  OPERATIONS = %w[voice_tokens transcription voice_session delegation tool_call turn_latency engine_fallback call].freeze
+  OPERATIONS = %w[voice_tokens transcription voice_session voice_standby delegation tool_call turn_latency engine_fallback call].freeze
   BILLING_BASES = %w[metered subscription].freeze
   # Money that was billed, for the caps and the reports: a SQL expression.
   BILLED_COST_SQL = "COALESCE(SUM(cost_usd) FILTER (WHERE billing_basis = 'metered'), 0)"

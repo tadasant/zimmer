@@ -78,6 +78,8 @@ public struct LiveAvailability: Decodable, Sendable, Equatable {
 
 public struct LiveConversation: Decodable, Sendable, Equatable, Identifiable {
     public enum Status: String, Sendable, Equatable {
+        /// Kept ready for the next New, and nobody's yet (`LiveAPI.liveStandby`).
+        case standby
         case preparing, active, ended, failed
 
         public var isOpen: Bool { self == .preparing || self == .active }
@@ -96,12 +98,14 @@ public struct LiveConversation: Decodable, Sendable, Equatable, Identifiable {
     /// Ended, and can be gone back to (`LiveAPI.switchLiveConversation`).
     public let reopenable: Bool
     public let errorMessage: String?
+    /// When it was last added to, as Zimmer wrote it. Only ever compared.
+    public let lastActivityAt: String?
     /// Present on `show`; for `after_turn_id` reads, only the turns after it.
     public let turns: [LiveTurn]?
 
     public init(id: Int, mode: LiveMode, status: Status, title: String, agentRoot: String, model: String,
                 instructionsSource: String? = nil, mcpServers: [String] = [], responding: Bool = false,
-                reopenable: Bool = false, errorMessage: String? = nil, turns: [LiveTurn]? = nil) {
+                reopenable: Bool = false, errorMessage: String? = nil, lastActivityAt: String? = nil, turns: [LiveTurn]? = nil) {
         self.id = id
         self.mode = mode
         self.status = status
@@ -113,11 +117,13 @@ public struct LiveConversation: Decodable, Sendable, Equatable, Identifiable {
         self.responding = responding
         self.reopenable = reopenable
         self.errorMessage = errorMessage
+        self.lastActivityAt = lastActivityAt
         self.turns = turns
     }
 
     enum CodingKeys: String, CodingKey {
         case id, mode, status, title, model, responding, reopenable, turns
+        case lastActivityAt = "last_activity_at"
         case agentRoot = "agent_root"
         case instructionsSource = "instructions_source"
         case mcpServers = "mcp_servers"
@@ -138,7 +144,19 @@ public struct LiveConversation: Decodable, Sendable, Equatable, Identifiable {
         responding = try c.decodeIfPresent(Bool.self, forKey: .responding) ?? false
         reopenable = try c.decodeIfPresent(Bool.self, forKey: .reopenable) ?? false
         errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
+        lastActivityAt = try c.decodeIfPresent(String.self, forKey: .lastActivityAt)
         turns = try c.decodeIfPresent([LiveTurn].self, forKey: .turns)
+    }
+}
+
+extension LiveConversation {
+    /// This conversation as it is once the call it was kept ready for has started on it: what the
+    /// screen shows from the tap, before Zimmer has answered it.
+    public var asStarted: LiveConversation {
+        guard status == .standby else { return self }
+        return LiveConversation(id: id, mode: .voice, status: .active, title: title, agentRoot: agentRoot, model: model,
+                                instructionsSource: instructionsSource, mcpServers: mcpServers, responding: responding, reopenable: false,
+                                errorMessage: errorMessage, lastActivityAt: lastActivityAt, turns: turns)
     }
 }
 

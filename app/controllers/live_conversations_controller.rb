@@ -51,6 +51,11 @@ class LiveConversationsController < ApplicationController
       format.html { redirect_to live_conversation_path(@conversation), notice: "Conversation ended." }
       format.json { render json: @conversation.as_api_json }
     end
+  rescue LiveConversations::Actions::Refused => e
+    respond_to do |format|
+      format.json { render json: { error: e.message }, status: e.status }
+      format.any { redirect_to live_conversation_path(@conversation), alert: e.message }
+    end
   end
 
   def messages

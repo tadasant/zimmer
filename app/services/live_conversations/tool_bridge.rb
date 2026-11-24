@@ -89,7 +89,7 @@ module LiveConversations
     # Attaching servers to itself is the person's to allow, for the same reason:
     # it is the setting that bounds the model.
     LIVE_MODEL_EXCLUDED = %i[voice_telemetry voice_max_output_tokens voice_engine_conversation_cap_usd voice_engine_daily_cap_usd
-                             direct_servers_enabled].freeze
+                             voice_standby_daily_cap_usd direct_servers_enabled].freeze
     SETTINGS_CHANGED = "Changed:"
     SETTINGS_SAVED_NO_EFFECT = "Saved, but this changes nothing on a call:"
     SAY_NO_EFFECT = "\nTell the person this out loud. Do not say the setting was changed or that it will help."

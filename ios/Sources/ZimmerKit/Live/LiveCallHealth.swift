@@ -41,7 +41,8 @@ public struct LiveCallHealth: Sendable, Equatable {
 
     /// How far a connecting call got, for the log.
     public enum Stage: String, Sendable {
-        case secret, microphone, session
+        /// `conversation`: finding or making the one to call.
+        case conversation, secret, microphone, session
     }
 
     public enum GiveUp: Equatable, Sendable {

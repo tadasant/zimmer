@@ -5,16 +5,17 @@
 #
 #   GET  /api/v1/live                              available? why not? each mode's model
 #   GET  /api/v1/live_conversations                recent conversations, and the current one
-#   POST /api/v1/live_conversations                start one (mode=text|voice, default text); ends the open one
+#   POST /api/v1/live_conversations                start one (mode=text|voice, default text; standby_id: from the one kept ready, again=1: this tap may have been answered); ends the open one
+#   POST /api/v1/live_conversations/standby        the one kept ready for the next New, made or brought up to date; ends nothing
 #   GET  /api/v1/live_conversations/:id            one conversation with its turns (?after_turn_id= for new ones)
 #   GET  /api/v1/live_conversations/:id/sessions   the sessions its tool calls have touched, newest first, with board rows
 #   POST /api/v1/live_conversations/switch         go back to one (id, or the last one; from_id, mode); ends the open one
 #   POST /api/v1/live_conversations/:id/finish     end it
 #   POST /api/v1/live_conversations/:id/mode       switch typed ⇄ spoken (mode=text|voice)
 #   POST /api/v1/live_conversations/:id/messages   typed: a message (content)
-#   POST /api/v1/live_conversations/:id/client_secret  voice: mint a Realtime client secret (prewarm=1: ahead of a CarPlay tap;
+#   POST /api/v1/live_conversations/:id/client_secret  voice: mint a Realtime client secret (prewarm=1: ahead of a tap, standby=1: can hold GPT-Live ready;
 #                                                      engines[]=gpt_live_claude: the app can run that engine, and may be told to)
-#   POST /api/v1/live_conversations/:id/gpt_live_session  voice, `gpt_live_claude`: the app's WebRTC offer (sdp) → OpenAI's answer
+#   POST /api/v1/live_conversations/:id/gpt_live_session  voice, `gpt_live_claude`: the app's WebRTC offer (sdp) → OpenAI's answer (standby=1: held ready for a tap)
 #   POST /api/v1/live_conversations/:id/delegations    voice, `gpt_live_claude`: Claude answers a delegation (delegation_id, pending_user_text)
 #   POST /api/v1/live_conversations/:id/usage          voice: the call's measured cost and timings, into the ledger (events)
 #   POST /api/v1/live_conversations/:id/tool_calls     voice: run a function call (name, arguments, call_id)
@@ -35,10 +36,10 @@ class Api::V1::LiveConversationsController < Api::BaseController
   accepts_native_app_tokens
 
   INDEX_LIMIT = 20
-  PERSON_ACTIONS = %i[create switch finish mode messages client_secret gpt_live_session delegations usage tool_calls turns session_update].freeze
+  PERSON_ACTIONS = %i[create standby switch finish mode messages client_secret gpt_live_session delegations usage tool_calls turns session_update].freeze
 
   before_action :require_a_person_on_the_app, only: PERSON_ACTIONS
-  before_action :set_conversation, except: %i[modes index create switch]
+  before_action :set_conversation, except: %i[modes index create standby switch]
 
   def modes
     render json: LiveConversations::Availability.current.as_api_json
@@ -83,10 +84,17 @@ class Api::V1::LiveConversationsController < Api::BaseController
       return render_api_error("Unprocessable Entity", "mode must be one of: #{LiveConversations.mode_keys.join(', ')}", status: :unprocessable_entity)
     end
 
-    conversation = LiveConversations::Start.call(mode, client_surface: api_turn_source.surface)
+    conversation = LiveConversations::Start.call(mode, client_surface: api_turn_source.surface, standby_id: params[:standby_id], again: flag(:again))
     render json: conversation.as_api_json, status: :created
+  rescue LiveConversations::Start::Left => e
+    render_api_error("Conflict", e.message, status: :conflict)
   rescue LiveConversations::Start::Unavailable => e
     render_api_error("Service Unavailable", e.message, status: :service_unavailable)
+  end
+
+  # Asked for ahead of a tap, as often as the app likes: one row, reused.
+  def standby
+    render json: LiveConversations::Standby.prepare(client_surface: api_turn_source.surface).as_api_json
   end
 
   # `switched` is false when it was already the current conversation.
@@ -108,14 +116,14 @@ class Api::V1::LiveConversationsController < Api::BaseController
     render json: turn.as_api_json, status: :created
   end
 
-  # `prewarm=1`: the CarPlay app minting ahead of a tap (Actions#client_secret).
+  # `prewarm=1`: the app asking ahead of a tap (Actions#client_secret).
   def client_secret
-    render json: actions.client_secret(prewarm: ActiveModel::Type::Boolean.new.cast(params[:prewarm]) == true)
+    render json: actions.client_secret(prewarm: flag(:prewarm), standby: flag(:standby))
   end
 
   # Voice, `gpt_live_claude`: the app's WebRTC offer in, OpenAI's answer out.
   def gpt_live_session
-    render json: actions.gpt_live_session(sdp: params[:sdp].to_s)
+    render json: actions.gpt_live_session(sdp: params[:sdp].to_s, standby: flag(:standby))
   end
 
   # Voice, `gpt_live_claude`: GPT-Live delegated a request; Claude answers it.
@@ -152,6 +160,8 @@ class Api::V1::LiveConversationsController < Api::BaseController
     @conversation = LiveConversation.find_by(id: params[:id])
     render_api_error("Not Found", "Live conversation not found", status: :not_found) unless @conversation
   end
+
+  def flag(name) = ActiveModel::Type::Boolean.new.cast(params[name]) == true
 
   # `listening_modes`: the client asks for each reply itself when Listening is
   # gated (LiveConversations::Listening); an app from before that is answered as

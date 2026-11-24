@@ -58,7 +58,16 @@ import os
 /// (`LiveAudioEngine.start(webRTC:)`); it does its own turn-taking, so Listening and Send now do
 /// nothing on it; its instructions are fixed when it starts, so a settings change or a hand-over
 /// reaches it from the next call; and a call that follows Live Mode to another conversation
-/// reconnects without speaking first. When the chosen engine cannot run, the call is Realtime and
+/// reconnects without speaking first.
+///
+/// **A tap on New or Continue starts the call at once** (`start(_ choice:)`), before the conversation
+/// is found or made: the call is what the screen shows from the tap, so there is one Connecting… and
+/// not one for the lookup and another for the call. With a connection in standby for it
+/// (`LiveWarmKeeper`), the call is up when its microphone is, and Zimmer is told behind it: `settled`
+/// says when Zimmer has the conversation, and until then the call follows nothing and what it would
+/// write waits. Anything that goes wrong with the connection before the call is up starts it from
+/// cold, with no second tap. Anything that goes wrong telling Zimmer ends the call, because a call on
+/// a conversation Zimmer does not have can do nothing. When the chosen engine cannot run, the call is Realtime and
 /// `engineNote` says why — on the phone's screen, and from the car spoken by the call itself.
 @MainActor
 final class LiveCall: ObservableObject {
@@ -86,6 +95,9 @@ final class LiveCall: ObservableObject {
     /// What Zimmer said about this call's engine: why the chosen one could not run, or how close it
     /// is to a spend cap (`LiveEngineChoice.note`). Nil when there is nothing to say.
     @Published private(set) var engineNote: String?
+    /// Zimmer has the conversation this call is on: it is the open one, with voice on. False from a
+    /// tap on New until Zimmer answers it.
+    @Published private(set) var settled = true
     /// The engine this call runs on (`LiveVoiceEngine`).
     @Published private(set) var engine = LiveVoiceEngine.realtime
 
@@ -135,7 +147,19 @@ final class LiveCall: ObservableObject {
     /// This call's tap, until `call.startup` and `call.first_audio` have been logged from it.
     private var tappedAt: TimeInterval?
     private var firstAudioFrom: TimeInterval?
-    /// How this call got going: on a warm connection from the car, or cold.
+    /// The choice that started this call, for the log: nil for one on a conversation on the screen.
+    private var tap: CarLiveChoice?
+    /// Zimmer being told of a call that began in standby; the conversation it answered with. Kept past
+    /// the call, which its last lines wait for, until another begins.
+    private var settling: Task<Int?, Never>?
+    /// Everything still asking Zimmer for a New, by how to stop it. Kept across calls: a retry of the same
+    /// New leaves the last one's asking, and whatever begins after that has to be able to reach it.
+    private var asking: [@MainActor () -> Void] = []
+    /// The last New that began from standby, and whether Zimmer has answered it (`LiveNew`).
+    private var new = LiveNew()
+    /// The car left while the call was still finding its conversation: the phone goes to it once found.
+    private var leftWhileFinding = false
+    /// How this call got going: on a connection in standby, or cold.
     private var startPath = LiveStartPath.cold
     /// A call on a warm connection keeps the microphone off the socket until the fresh
     /// `session.update` has gone up, so nothing said reaches a session still on the warm-up's
@@ -150,6 +174,10 @@ final class LiveCall: ObservableObject {
     private var warmSocketFailure: String?
     /// How long the tap waits for `session.updated` on a warm connection before falling back.
     private static let warmUpdateDeadline: TimeInterval = 3
+    /// How long the tap waits for a GPT-Live session that was on its way up before starting another.
+    private static let warmingDeadline: TimeInterval = 6
+    /// The waits before telling Zimmer of a call from standby again, after a request that got no answer.
+    private static let settleRetries: [Duration] = [.seconds(1), .seconds(3)]
     /// The last call ended because the person asked it to by voice (`hang_up`), not by a tap or
     /// a failure.
     private(set) var endedByVoice = false
@@ -220,9 +248,9 @@ final class LiveCall: ObservableObject {
     /// `startsMuted`: the microphone is off from the first frame, for a call coming back from
     /// the car's voice settings to a driver who had muted it.
     ///
-    /// `warm`: the car's Continue, which may take the connection CarPlay pre-warm holds for this
-    /// conversation (`LiveWarmKeeper`). A call coming back from the voice settings never does:
-    /// it must be minted from the row the panel wrote.
+    /// `warm`: it may take the connection held in standby for this conversation (`LiveWarmKeeper`).
+    /// A call coming back from the voice settings never does: it must be minted from the row the
+    /// panel wrote.
     func start(_ conversation: Int, voiceIsOn: Bool = false, opening: String? = nil, startsMuted: Bool = false,
                from surface: ClientSource.Surface = .ios, warm allowWarm: Bool = false) async {
         if isActive(for: conversation) {
@@ -235,6 +263,117 @@ final class LiveCall: ObservableObject {
             }
             return
         }
+        let (mine, warm) = begin(conversation, tap: nil, opening: opening, startsMuted: startsMuted, from: surface) {
+            allowWarm ? LiveWarmKeeper.shared.take(.open, conversation) : nil
+        }
+        await connect(conversation, voiceIsOn: voiceIsOn, warm: warm, generation: mine)
+    }
+
+    /// The person's choice, from the tap: Continue calls the open conversation, New ends it and calls
+    /// a fresh one. The call begins now, with the conversation still to be found or made if nothing is
+    /// in standby for it. False when there was nothing to continue, and then no call.
+    func start(_ choice: CarLiveChoice, startsMuted: Bool = false, from surface: ClientSource.Surface) async -> Bool {
+        var unanswered: Int?
+        switch choice {
+        case .startNew:
+            switch new.step {
+            case .start:
+                if let connecting = startFromStandby(startsMuted: startsMuted, from: surface) {
+                    await connecting.connect()
+                    return true
+                }
+            case let .askAgain(conversation):
+                unanswered = conversation
+            case let .carryOn(conversation):
+                let (mine, _) = begin(conversation, tap: choice, startsMuted: startsMuted, from: surface) { nil }
+                await connect(conversation, voiceIsOn: false, warm: nil, generation: mine)
+                return true
+            }
+        case .continueOpen:
+            if let known = LiveWarmKeeper.shared.openConversation() {
+                let (mine, warm) = begin(known, tap: choice, startsMuted: startsMuted, from: surface) { LiveWarmKeeper.shared.take(.open, known) }
+                await connect(known, voiceIsOn: false, warm: warm, generation: mine)
+                return true
+            }
+        }
+        let (mine, _) = begin(nil, tap: choice, startsMuted: startsMuted, from: surface) { nil }
+        do {
+            let asked = Self.now
+            let found = try await api.conversation(for: choice, unanswered: unanswered)
+            // Answered, though the call may be over: the next try goes back to it.
+            if let unanswered, let found { new.answered(unanswered, with: found) }
+            guard mine == generation else { return true }
+            guard let found else {
+                end(reason: "nothing_to_continue", farewell: [])
+                return false
+            }
+            // New's is made with voice on.
+            took(found, asked: asked)
+            await connect(found, voiceIsOn: choice == .startNew, warm: nil, generation: mine)
+        } catch {
+            // Given and left since: there is no going back to it, so the next try is a fresh New.
+            if unanswered != nil, case ZimmerError.http(status: 409, _) = error { new = LiveNew() }
+            if mine == generation { fail(Self.describe(error), generation: mine) }
+        }
+        return true
+    }
+
+    /// A New begun on the conversation in standby, with its connection still to be made the call's.
+    struct Standby {
+        /// As it will be once Zimmer has the tap: for a screen to show now.
+        let conversation: LiveConversation
+        fileprivate let finish: @MainActor () async -> Void
+
+        @MainActor func connect() async { await finish() }
+    }
+
+    /// New, on the connection held for it: the call has begun when this returns, so the screen can go
+    /// to it at once. Nil with nothing held, and nothing begun.
+    func startFromStandby(startsMuted: Bool = false, from surface: ClientSource.Surface) -> Standby? {
+        guard let fresh = LiveWarmKeeper.shared.newConversation(), let warm = LiveWarmKeeper.shared.take(.new, fresh.id) else { return nil }
+        let (mine, _) = begin(fresh.id, tap: .startNew, startsMuted: startsMuted, from: surface) { warm }
+        new.began(on: fresh.id)
+        return Standby(conversation: fresh.asStarted) { [weak self] in
+            await self?.connect(fresh.id, voiceIsOn: false, warm: warm, generation: mine)
+        }
+    }
+
+    /// A fresh New is about to begin: not another try at the last one, which is asked for no more. Not
+    /// with a call up, whose own New it may be.
+    func askedForNew() {
+        guard !isActive else { return }
+        stopAsking()
+        new = LiveNew()
+    }
+
+    /// The conversation a New was begun on that Zimmer has not answered yet: not one to be ready on.
+    var unansweredNew: Int? { new.unanswered }
+
+    /// Zimmer was read, and says `conversation` is the open one: a New that asked for it has its answer,
+    /// whatever became of the request.
+    func zimmerHas(open conversation: Int) {
+        new.answered(conversation, with: conversation)
+    }
+
+    /// The last New is not wanted now, so its conversation must not become the open one later.
+    private func stopAsking() {
+        for stop in asking { stop() }
+        asking = []
+    }
+
+    private static func path(of warm: LiveWarmTake?) -> LiveStartPath {
+        switch warm?.connection {
+        case nil: return .cold
+        case let .gptLive(call) where !call.hasStarted: return .warming
+        default: return .warm
+        }
+    }
+
+    /// The call begins: everything of the last one let go, and Connecting… from here. `conversation`:
+    /// nil while it is still to be found or made. `taking`: what standby holds for it, asked for before
+    /// the state moves, which the keeper reads as a call starting.
+    private func begin(_ conversation: Int?, tap: CarLiveChoice?, opening: String? = nil, startsMuted: Bool, from surface: ClientSource.Surface,
+                       taking: () -> LiveWarmTake?) -> (generation: Int, warm: LiveWarmTake?) {
         // A start nobody pressed for just now (the phone's button, a retry) is heard the same way.
         let alreadyHeard = pressHeard.map { Self.now - $0 < LiveCallHealth.connectDeadline } ?? false
         let tapped = pressedAt.flatMap { Self.now - $0 < LiveCallHealth.connectDeadline ? $0 : nil } ?? Self.now
@@ -242,11 +381,21 @@ final class LiveCall: ObservableObject {
         if !alreadyHeard { pressed() }
         pressHeard = nil
         pressedAt = nil
-        // Before the state moves, which the keeper reads as a call starting and closes what it holds.
-        let warm = allowWarm && surface == .carplay ? LiveWarmKeeper.shared.claim(conversation) : nil
+        let warm = taking()
         tappedAt = tapped
         firstAudioFrom = tapped
-        startPath = warm == nil ? .cold : .warm
+        startPath = Self.path(of: warm)
+        self.tap = tap
+        // A New that Zimmer has not answered has to be asked for before a call can be on it.
+        settled = conversation != nil && warm?.slot != .new && conversation != new.unanswered
+        // Another call than that New's: it must not become the open conversation under this one. The same
+        // one's goes on, being the same question, and what was said in it has somewhere to go.
+        if !new.isThis(tap: tap, conversation: conversation) {
+            stopAsking()
+            new = LiveNew()
+        }
+        settling = nil
+        leftWhileFinding = false
         holdingMicrophone = false
         warmUpdated = false
         warmSocketFailure = nil
@@ -263,6 +412,7 @@ final class LiveCall: ObservableObject {
         watchdog = MicWatchdog()
         health = LiveCallHealth()
         health.started(at: Self.now)
+        if conversation == nil { health.stage = .conversation }
         microphoneOpen = false
         sessionOpen = false
         mintedFor = surface
@@ -279,29 +429,220 @@ final class LiveCall: ObservableObject {
         telemetry.track(.callStarting(surface: surface.rawValue, opening: opening != nil))
         state = .connecting
         watch(generation: mine)
+        return (mine, warm)
+    }
+
+    /// Zimmer has the conversation this call is on.
+    private func took(_ conversation: Int, asked: TimeInterval) {
+        telemetry.callIsOn(conversation)
+        telemetry.track(.callSettled(sinceTap: (tappedAt ?? firstAudioFrom).map { Self.now - $0 }, request: Self.now - asked,
+                                     moved: conversationID != nil && conversationID != conversation))
+        if conversationID != conversation { conversationID = conversation }
+        settled = true
+        guard health.stage == .conversation else { return }
+        // Finding or making it had the deadline to itself; connecting has its own.
+        health.stage = .secret
+        health.started(at: Self.now)
+        if leftWhileFinding {
+            leftWhileFinding = false
+            handover.carLeft(conversation: conversation, callIsActive: true, at: Self.now)
+        }
+    }
+
+    /// The conversation is known: the connection held for it, or one made now.
+    private func connect(_ conversation: Int, voiceIsOn: Bool, warm: LiveWarmTake?, generation mine: Int) async {
+        guard mine == generation else {
+            // Ended, or replaced, before its connection was taken up: nobody else has it to close.
+            if let warm { Self.drop(warm) }
+            return
+        }
         do {
-            if let warm {
-                try await startWarm(warm, conversation: conversation, voiceIsOn: voiceIsOn, generation: mine)
-                return
+            switch warm?.connection {
+            case let .realtime(link):
+                try await startWarm(link, slot: warm?.slot ?? .open, conversation: conversation, voiceIsOn: voiceIsOn, generation: mine)
+            case let .gptLive(call):
+                try await startOnStandby(call, warm: warm, conversation: conversation, generation: mine)
+            case nil:
+                guard !settled else { return try await startCold(conversation, voiceIsOn: voiceIsOn, generation: mine) }
+                // On a New that Zimmer never answered: asked for again, with voice on.
+                let given = try await makeOpen(conversation, again: true, generation: mine)
+                guard mine == generation else { return }
+                try await startCold(given, voiceIsOn: true, generation: mine)
             }
-            if !voiceIsOn { try await turnVoiceOn(conversation) }
-            guard mine == generation else { return }
-            mintedFor = self.surface
-            let asked = Self.now
-            let grant = try await mintGrant(conversation)
-            guard mine == generation else { return }
-            adopt(grant, asked: asked)
-            guard let secret = grant.realtime else {
-                try await startGptLiveOrFallBack(conversation, generation: mine)
-                return
-            }
-            conductor = RealtimeConductor(listening: secret.listening)
-            openSocket(secret, generation: mine)
-            try await openMicrophone(generation: mine)
         } catch is CancellationError {
             return
         } catch {
             fail(Self.describe(error), generation: mine)
+        }
+    }
+
+    private static func drop(_ warm: LiveWarmTake) {
+        switch warm.connection {
+        case let .realtime(link): link.close()
+        case let .gptLive(call): call.end()
+        }
+    }
+
+    /// From nothing: voice on, the grant, the connection and the microphone.
+    private func startCold(_ conversation: Int, voiceIsOn: Bool, generation mine: Int) async throws {
+        if !voiceIsOn { try await turnVoiceOn(conversation) }
+        guard mine == generation else { return }
+        health.stage = .secret
+        mintedFor = surface
+        let asked = Self.now
+        let grant = try await mintGrant(conversation)
+        guard mine == generation else { return }
+        adopt(grant, asked: asked)
+        guard let secret = grant.realtime else {
+            try await startGptLiveOrFallBack(conversation, generation: mine)
+            return
+        }
+        conductor = RealtimeConductor(listening: secret.listening)
+        openSocket(secret, generation: mine)
+        try await openMicrophone(generation: mine)
+    }
+
+    // MARK: - From standby
+
+    /// The call on a GPT-Live session held ready: OpenAI has it, so all the person waits for is the
+    /// microphone. Zimmer is told at the same time, and the call does not wait for the answer.
+    private func startOnStandby(_ call: GptLiveCall, warm: LiveWarmTake?, conversation: Int, generation mine: Int) async throws {
+        if let grant = warm?.grant { adopt(grant, asked: nil) }
+        let isNew = warm?.slot == .new
+        let settling = Task { @MainActor [weak self] () -> Int? in
+            await self?.settle(conversation, isNew: isNew, on: call, generation: mine)
+        }
+        self.settling = settling
+        if isNew { asking.append { settling.cancel() } }
+        gptLive = call
+        call.adopt(surface: surface, settled: settling) { [weak self] signal in
+            self?.handleGptLive(signal, generation: mine)
+        }
+        if call.hasStarted {
+            health.heard(at: Self.now)
+            sessionOpen = true
+        } else {
+            giveUpOnWarming(call, generation: mine)
+        }
+        health.stage = .microphone
+        microphoneGeneration = mine
+        watchdog = MicWatchdog()
+        let audioToken = try await audio.start(
+            webRTC: LiveWebRTCAudioDevice.shared,
+            failed: { [weak self] message in Task { @MainActor in self?.microphoneFailed(message, microphone: mine) } }
+        )
+        guard mine == generation else { audio.stop(token: audioToken); return }
+        // Fallen back meanwhile: a newer start has the microphone, and this one's is let go of there.
+        guard gptLive === call else { return }
+        if let tappedAt { telemetry.track(.warmMicrophoneOpen(sinceTap: Self.now - tappedAt)) }
+        watchdog.arm(at: Self.now)
+        call.open(muted: muted)
+        microphoneOpen = true
+        health.stage = .session
+        connectIfReady(generation: mine)
+    }
+
+    /// Tell Zimmer about a call that began in standby: New's conversation becomes the open one, or
+    /// Continue's has voice on, and either way Zimmer records what the call runs on. The conversation
+    /// Zimmer has for it, or nil when it has none.
+    private func settle(_ conversation: Int, isNew: Bool, on call: GptLiveCall, generation mine: Int) async -> Int? {
+        let id: Int
+        do {
+            id = try await tellZimmer(conversation, isNew: isNew, generation: mine)
+        } catch {
+            if !(error is CancellationError) { fail(Self.describe(error), generation: mine) }
+            return nil
+        }
+        // From here Zimmer has the conversation, so what was said in it goes there whatever happens.
+        do {
+            let grant = try await repeating { _ in try await self.mintGrant(id) }
+            guard mine == generation else { return id }
+            engineNote = grant.choice?.note
+            // Zimmer decided otherwise since: a cap reached, a setting changed.
+            if !grant.isGptLive { leaveStandby("the call no longer runs on GPT-Live", on: call, to: id, generation: mine) }
+        } catch {
+            // Zimmer does not have the call on this engine, so it would answer no delegation.
+            if !(error is CancellationError) { fail(Self.describe(error), generation: mine) }
+        }
+        return id
+    }
+
+    /// `conversation` made the open one for a New (asking twice for the same one is answered the same,
+    /// `LiveAPI.startLiveConversation`), or its voice turned on. The conversation Zimmer has.
+    /// `again`: it may have been asked for before.
+    private func tellZimmer(_ conversation: Int, isNew: Bool, again: Bool = false, generation mine: Int) async throws -> Int {
+        let api = api
+        guard isNew else {
+            try await repeating { _ in try await self.turnVoiceOn(conversation) }
+            return conversation
+        }
+        let asked = Self.now
+        let id = try await repeating { tries in
+            try await api.startLiveConversation(.voice, standby: conversation, again: again || tries > 0).id
+        }
+        new.answered(conversation, with: id)
+        if mine == generation { took(id, asked: asked) }
+        LiveWarmKeeper.shared.newWasTaken()
+        return id
+    }
+
+    /// The same for a New, where the call waits for it. Stopped with the rest when another call begins.
+    private func makeOpen(_ conversation: Int, again: Bool, generation mine: Int) async throws -> Int {
+        let task = Task { try await self.tellZimmer(conversation, isNew: true, again: again, generation: mine) }
+        asking.append { task.cancel() }
+        return try await task.value
+    }
+
+    /// Sent again after a request that got no answer. Not once another call has begun, which cancels it.
+    /// `request` is told how many times it has been sent before.
+    private func repeating<T: Sendable>(_ request: @MainActor (Int) async throws -> T) async throws -> T {
+        for (tries, wait) in Self.settleRetries.enumerated() {
+            do {
+                return try await request(tries)
+            } catch let error as ZimmerError where error.mayPass {
+                try await Task.sleep(for: wait)
+            }
+        }
+        return try await request(Self.settleRetries.count)
+    }
+
+    /// A session taken on its way up that does not come up.
+    private func giveUpOnWarming(_ call: GptLiveCall, generation mine: Int) {
+        Task {
+            try? await Task.sleep(for: .seconds(Self.warmingDeadline))
+            guard mine == generation, gptLive === call, !call.hasStarted else { return }
+            leaveStandby("the session was not up \(Int(Self.warmingDeadline)) s after the tap", on: call, to: nil, generation: mine)
+        }
+    }
+
+    /// The session from standby is no good: the call starts again from cold, on the conversation
+    /// Zimmer has (`id`, or the one `settling` comes to). A call already up cannot: the person is
+    /// talking on it, so it ends, saying so, and the car calls back.
+    private func leaveStandby(_ reason: String, on call: GptLiveCall, to id: Int?, generation mine: Int) {
+        guard mine == generation, gptLive === call else { return }
+        guard !health.isConnected else {
+            fail("The call dropped: \(reason)", generation: mine)
+            return
+        }
+        log.error("call from standby fell back to cold: \(reason, privacy: .public)")
+        telemetry.track(.warmFallback(reason))
+        startPath = .fallback
+        gptLive = nil
+        call.end()
+        microphoneOpen = false
+        sessionOpen = false
+        Task {
+            var found = id
+            if found == nil, let settling { found = await settling.value }
+            // Zimmer has no conversation for it: the call has ended, saying so.
+            guard let found, mine == generation else { return }
+            do {
+                try await startCold(found, voiceIsOn: true, generation: mine)
+            } catch is CancellationError {
+                return
+            } catch {
+                fail(Self.describe(error), generation: mine)
+            }
         }
     }
 
@@ -325,9 +666,12 @@ final class LiveCall: ObservableObject {
 
     /// What Zimmer decided about the engine: logged, kept for the screen, and — from the car, where
     /// nothing is read — a fallback said by the call itself before anything else.
-    private func adopt(_ grant: LiveCallGrant, asked: TimeInterval, speaks: Bool = true) {
+    /// `asked`: nil for a grant standby had before the tap, which nobody waited for.
+    private func adopt(_ grant: LiveCallGrant, asked: TimeInterval?, speaks: Bool = true) {
         telemetry.adopt(grant.telemetry)
-        telemetry.track(.secretMinted(ms: Self.now - asked, model: grant.model, listening: grant.listening, telemetry: grant.telemetry))
+        if let asked {
+            telemetry.track(.secretMinted(ms: Self.now - asked, model: grant.model, listening: grant.listening, telemetry: grant.telemetry))
+        }
         telemetry.track(.engineChosen(grant))
         engine = grant.isGptLive ? LiveVoiceEngine.gptLive : LiveVoiceEngine.realtime
         engineNote = grant.choice?.note
@@ -428,8 +772,14 @@ final class LiveCall: ObservableObject {
             hangUpByVoice(generation: mine)
         case let .failure(message):
             lastError = message
+        case .woke:
+            break
         case let .dropped(reason):
             telemetry.track(.socketClosed(reason))
+            if !health.isConnected, startPath == .warm || startPath == .warming, let gptLive {
+                leaveStandby(reason, on: gptLive, to: nil, generation: mine)
+                return
+            }
             fail("The call dropped: \(reason)", generation: mine)
         case let .cue(cue):
             for action in cues.receive(cue) { perform(action) }
@@ -447,13 +797,13 @@ final class LiveCall: ObservableObject {
         receive(task, generation: mine)
     }
 
-    /// The car's Continue on the connection CarPlay pre-warm held (`LiveWarmKeeper`): OpenAI has
+    /// New or Continue on the Realtime connection standby held (`LiveWarmKeeper`): OpenAI has
     /// already said `session.created` on it, so what is left is the microphone and, alongside it,
     /// voice on and a fresh `session.update` — the warm-up's instructions are as old as the
     /// warm-up, and this brings them to the conversation as it is now, before anything said goes
     /// up. If those fail, the call falls back to the cold path on the same microphone: a new
     /// secret, a new socket, no second tap.
-    private func startWarm(_ warm: LiveWarmLink, conversation: Int, voiceIsOn: Bool, generation mine: Int) async throws {
+    private func startWarm(_ warm: LiveWarmLink, slot: LiveWarmStart.Slot, conversation: Int, voiceIsOn: Bool, generation mine: Int) async throws {
         telemetry.adopt(warm.secret.telemetry)
         conductor = RealtimeConductor(listening: warm.secret.listening)
         mintedFor = surface
@@ -465,7 +815,8 @@ final class LiveCall: ObservableObject {
         }
         // A refusal the warm connection had already heard ends the call during the hand-over.
         guard mine == generation else { return }
-        let readied = Task { await self.readyWarm(conversation, voiceIsOn: voiceIsOn, generation: mine) }
+        let readied = Task { await self.readyWarm(conversation, isNew: slot == .new, voiceIsOn: voiceIsOn, generation: mine) }
+        if slot == .new { asking.append { readied.cancel() } }
         health.stage = .microphone
         microphoneGeneration = mine
         let audioToken: Int
@@ -495,11 +846,14 @@ final class LiveCall: ObservableObject {
             warmLink = nil
             socket = nil
             sessionOpen = false
-            try await turnVoiceOn(conversation)
+            var target = conversationID ?? conversation
+            if !settled { target = try await makeOpen(target, again: true, generation: mine) }
+            guard mine == generation else { return }
+            try await turnVoiceOn(target)
             guard mine == generation else { return }
             mintedFor = surface
             let asked = Self.now
-            let grant = try await mintGrant(conversation)
+            let grant = try await mintGrant(target)
             guard mine == generation else { return }
             adopt(grant, asked: asked)
             guard let secret = grant.realtime else {
@@ -507,7 +861,7 @@ final class LiveCall: ObservableObject {
                 // goes to libwebrtc.
                 holdingMicrophone = false
                 microphoneOpen = false
-                try await startGptLiveOrFallBack(conversation, generation: mine)
+                try await startGptLiveOrFallBack(target, generation: mine)
                 return
             }
             conductor = RealtimeConductor(listening: secret.listening)
@@ -518,12 +872,19 @@ final class LiveCall: ObservableObject {
         connectIfReady(generation: mine)
     }
 
-    /// Voice on, then the `session.update` that brings the warm session to the conversation as it
-    /// is now, and OpenAI's `session.updated` for it: the proof the warm socket still works, before
-    /// the microphone is let through and the driver is told to talk. The failure, or nil.
-    private func readyWarm(_ conversation: Int, voiceIsOn: Bool, generation mine: Int) async -> String? {
+    /// Voice on (or New's conversation made the open one), then the `session.update` that brings the
+    /// warm session to the conversation as it is now, and OpenAI's `session.updated` for it: the proof
+    /// the warm socket still works, before the microphone is let through and the driver is told to
+    /// talk. The failure, or nil.
+    private func readyWarm(_ conversation: Int, isNew: Bool, voiceIsOn: Bool, generation mine: Int) async -> String? {
         do {
-            if !voiceIsOn { try await turnVoiceOn(conversation) }
+            if isNew {
+                guard try await tellZimmer(conversation, isNew: true, generation: mine) == conversation else {
+                    return "The conversation kept ready was gone."
+                }
+            } else if !voiceIsOn {
+                try await turnVoiceOn(conversation)
+            }
             guard mine == generation else { return nil }
             let session = try await api.liveSessionUpdate(conversation, recordingModel: warmLink?.secret.model)
             guard mine == generation else { return nil }
@@ -593,6 +954,9 @@ final class LiveCall: ObservableObject {
         mintedFor = surface
         tappedAt = nil
         firstAudioFrom = nil
+        // An ordinary connection from here: nothing of the standby the call began on.
+        startPath = .cold
+        settling = nil
         holdingMicrophone = false
         warmLink = nil
         pendingOpening = (text: RealtimeConductor.switchedOpening, recorded: false)
@@ -629,8 +993,10 @@ final class LiveCall: ObservableObject {
     /// answer is dropped. A call ended here is a call that dropped: the car retries, and a car's
     /// call turns voice on, because the driver is the one talking.
     private func followCurrent(generation mine: Int) {
+        // Zimmer has not answered the New this call is on: what it says is open is what New ended.
+        guard settled else { return }
         Task {
-            guard let overview = try? await api.liveConversations(), mine == generation else { return }
+            guard let overview = try? await api.liveConversations(), mine == generation, settled else { return }
             switch overview.move(forCallOn: conversationID) {
             case .stay: return
             case let .follow(conversation): await reattach(to: conversation)
@@ -645,7 +1011,7 @@ final class LiveCall: ObservableObject {
         health.connected(at: Self.now)
         telemetry.track(.connected(sinceStart: timeline.sinceStart(Self.now), listening: conductor.listening, gated: conductor.gated))
         if let tappedAt {
-            telemetry.track(.callStartup(path: startPath, tapToReady: Self.now - tappedAt, surface: surface.rawValue))
+            telemetry.track(.callStartup(path: startPath, tap: tap?.rawValue, engine: engine, tapToReady: Self.now - tappedAt, surface: surface.rawValue))
             self.tappedAt = nil
         }
         state = .listening
@@ -741,6 +1107,8 @@ final class LiveCall: ObservableObject {
         pendingOpening = nil
         holdingMicrophone = false
         warmLink = nil
+        settled = true
+        tap = nil
         tappedAt = nil
         firstAudioFrom = nil
         // Nothing left to send: the speech the call heard went with it.
@@ -860,12 +1228,14 @@ final class LiveCall: ObservableObject {
         pressHeard = nil
         handover.carLeft(conversation: conversationID, callIsActive: isActive, at: Self.now)
         guard isActive else { return }
+        leftWhileFinding = conversationID == nil
         telemetry.track(.carPlay("handover_armed"))
         Task { await carryOn(on: .ios) }
     }
 
     /// The CarPlay scene connected, so nothing is on its way to the phone's screen.
     func carCameBack() {
+        leftWhileFinding = false
         handover.carCameBack()
     }
 

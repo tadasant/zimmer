@@ -7,6 +7,15 @@ import Foundation
 /// its refresh token) and the only fix is to sign in again, while a transport error, a 5xx or
 /// an endpoint's own 401 means try again later with the sign-in kept.
 public enum ZimmerError: Error, Equatable, Sendable {
+    /// No answer, or the server failing rather than refusing: the same request may get one.
+    public var mayPass: Bool {
+        switch self {
+        case .transport, .timedOut: return true
+        case let .http(status, _): return status >= 500
+        default: return false
+        }
+    }
+
     /// No server is configured, or it is not an https origin.
     case notConfigured
     /// Not signed in, or the server refused the credential and a refresh could not save it.

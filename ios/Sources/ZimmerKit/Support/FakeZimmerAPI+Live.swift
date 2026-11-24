@@ -15,7 +15,7 @@ struct FakeLiveState: Sendable {
     var nextSettingChangeID = 1
     /// Every call-telemetry batch the app sent.
     var telemetryBatches: [LiveTelemetryBatch] = []
-    /// Every CarPlay prewarm secret minted (`livePrewarmSecret`).
+    /// Every standby connection granted (`livePrewarmGrant`).
     var prewarmMints = 0
     /// Every voice-engine ledger row the app reported (`reportLiveUsage`).
     var usageEvents: [LiveUsageEvent] = []
@@ -110,7 +110,7 @@ extension FakeZimmerAPI {
     }
 
     public func liveConversations() async throws -> LiveOverview {
-        let all = liveState.conversations.values.sorted { $0.id > $1.id }
+        let all = liveState.conversations.values.filter { $0.status != .standby }.sorted { $0.id > $1.id }
         return LiveOverview(conversations: all, current: all.first { $0.status.isOpen }?.id)
     }
 
@@ -120,9 +120,39 @@ extension FakeZimmerAPI {
         return conversation.with(turns: turns)
     }
 
-    public func startLiveConversation(_ mode: LiveMode) async throws -> LiveConversation {
+    /// As the server: one, reused, seeded from a conversation that was prepared.
+    public func liveStandby() async throws -> LiveConversation {
+        if let kept = liveState.conversations.values.first(where: { $0.status == .standby }) { return kept }
+        guard !liveState.conversations.isEmpty else {
+            throw ZimmerError.http(status: 409, message: "There is no earlier conversation to prepare a new one from yet.")
+        }
+        let id = liveState.nextConversationID
+        liveState.nextConversationID += 1
+        let kept = LiveConversation(id: id, mode: .voice, status: .standby, title: "Live Mode · now", agentRoot: "live-mode",
+                                    model: Self.liveModel(.voice), mcpServers: ["zimmer"])
+        liveState.conversations[id] = kept
+        liveState.turns[id] = []
+        return kept
+    }
+
+    public func startLiveConversation(_ mode: LiveMode, standby: Int?, again: Bool) async throws -> LiveConversation {
+        // Only the first: the car's drill sees what New shows while Zimmer has not answered it.
+        if let hold = liveStartHold {
+            liveStartHold = nil
+            try await Task.sleep(for: hold)
+        }
+        let kept = standby.flatMap { liveState.conversations[$0] }
+        if let kept, kept.status.isOpen, again || liveState.turns[kept.id]?.isEmpty != false { return kept }
+        if again, let kept, kept.status != .standby {
+            throw ZimmerError.http(status: 409, message: "That conversation was started and has ended. Start a new one.")
+        }
         for (id, conversation) in liveState.conversations where conversation.status.isOpen {
             liveState.conversations[id] = conversation.with(status: .ended)
+        }
+        if let kept, kept.status == .standby {
+            let started = kept.asStarted.with(mode: mode)
+            liveState.conversations[kept.id] = started
+            return started
         }
         let id = liveState.nextConversationID
         liveState.nextConversationID += 1
@@ -213,7 +243,7 @@ extension FakeZimmerAPI {
     }
 
     /// The fixture has no OpenAI behind it: the answer is an SDP no connection can be made with.
-    public func startGptLiveSession(_ id: Int, sdp: String) async throws -> GptLiveAnswer {
+    public func startGptLiveSession(_ id: Int, sdp: String, standby: Bool) async throws -> GptLiveAnswer {
         guard liveState.settingOverrides["voice_engine"]?.string == LiveVoiceEngine.gptLive else {
             throw ZimmerError.http(status: 409, message: "This call is not running on gpt_live_claude. Start the call again.")
         }
@@ -232,19 +262,22 @@ extension FakeZimmerAPI {
     /// The voice-engine ledger rows reported.
     public var usageEvents: [LiveUsageEvent] { liveState.usageEvents }
 
-    /// As the server: refused on a conversation that is not active;
+    /// As the server: refused on a conversation that is neither active nor kept ready;
     /// changes nothing on the conversation, and is counted so a test can see it happened.
-    public func livePrewarmSecret(_ id: Int) async throws -> LiveClientSecret {
-        guard liveState.conversations[id]?.status == .active else { throw ZimmerError.http(status: 409, message: "This conversation has ended. Start a new one.") }
-        guard liveState.settingOverrides["voice_engine"]?.string != LiveVoiceEngine.gptLive else {
-            throw ZimmerError.http(status: 409, message: "The next call runs on gpt_live_claude, which has no connection to pre-warm.")
+    public func livePrewarmGrant(_ id: Int) async throws -> LiveCallGrant {
+        guard [.active, .standby].contains(liveState.conversations[id]?.status) else {
+            throw ZimmerError.http(status: 409, message: "This conversation has ended. Start a new one.")
         }
         liveState.prewarmMints += 1
-        return LiveClientSecret(clientSecret: "ek_fixture_warm", model: "gpt-realtime-2.1-mini",
-                                websocketURL: URL(string: "wss://realtime.invalid/v1/realtime?model=gpt-realtime-2.1-mini")!, listening: "always")
+        if liveState.settingOverrides["voice_engine"]?.string == LiveVoiceEngine.gptLive {
+            return LiveCallGrant(engine: .gptLive, choice: LiveEngineChoice(engine: LiveVoiceEngine.gptLive, requested: LiveVoiceEngine.gptLive), model: "gpt-live-1")
+        }
+        let secret = LiveClientSecret(clientSecret: "ek_fixture_warm", model: "gpt-realtime-2.1-mini",
+                                      websocketURL: URL(string: "wss://realtime.invalid/v1/realtime?model=gpt-realtime-2.1-mini")!, listening: "always")
+        return LiveCallGrant(engine: .realtime(secret), model: secret.model)
     }
 
-    /// How many prewarm secrets were minted.
+    /// How many standby connections were granted.
     public var prewarmMints: Int { liveState.prewarmMints }
 
     public func reportLiveTelemetry(_ batch: LiveTelemetryBatch) async throws -> LiveTelemetryAnswer {
@@ -370,6 +403,7 @@ extension LiveConversation {
         LiveConversation(id: id, mode: mode ?? self.mode, status: status ?? self.status, title: title, agentRoot: agentRoot,
                          model: mode.map(FakeZimmerAPI.liveModel) ?? model,
                          instructionsSource: instructionsSource, mcpServers: mcpServers, responding: responding,
-                         reopenable: (status ?? self.status) == .ended, errorMessage: errorMessage, turns: turns ?? self.turns)
+                         reopenable: (status ?? self.status) == .ended, errorMessage: errorMessage, lastActivityAt: lastActivityAt,
+                         turns: turns ?? self.turns)
     }
 }
