@@ -229,14 +229,14 @@ final class CarPlayDrillUITests: XCTestCase {
         // New: one tap to the call screen, on a conversation Zimmer has not answered yet (the fixture
         // holds the first for far longer than the look for the screen). One Connecting…, the call's, from the tap: there is no tile
         // saying it first while the conversation is made. In this fixture the call cannot connect
-        // either, so it retries that conversation and gives up the same way.
+        // either. The hold outlasts `LiveRetry.budget`, so the car may give up without a retry.
         assertNoMicrophonePrompt("before New")
         tapTile(Self.newTitles[0], or: Self.newTitles[1], untilGone: true)
         let newIsUp = car.buttons["gearshape.fill"].waitForExistence(timeout: timeout)
         photograph("carplay-new-connecting")
         record("New, before Zimmer has answered it", car.debugDescription)
         XCTAssertTrue(newIsUp, "New goes straight to the call screen; \(whatTheCarShowed)")
-        XCTAssertTrue(waitFor(anyOf: Self.retryingTitles, seconds: 90), "New tries a call")
+        XCTAssertTrue(waitFor(anyOf: Self.retryingTitles + Self.retryTitles, seconds: 90), "New tries a call")
         XCTAssertTrue(waitFor(anyOf: Self.retryTitles, seconds: 90), "and gives up on its own conversation")
         assertNoCallScreen("once New has given up")
         assertAlive("after New")

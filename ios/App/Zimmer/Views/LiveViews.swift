@@ -174,6 +174,7 @@ struct LiveHomeView: View {
     private func start(_ mode: LiveMode = .text, animated: Bool = true) async {
         starting = true
         defer { starting = false }
+        call.askedForNew()
         do {
             let conversation = try await model.api.startLiveConversation(mode)
             var transaction = Transaction()
@@ -556,6 +557,7 @@ struct LiveConversationView: View {
     /// With a connection in standby for it, the call begins and this screen goes to it at once.
     private func startNew() async {
         if call.isActive(for: id) { call.hangUp() }
+        call.askedForNew()
         let mode = conversation?.mode ?? .text
         if mode == .voice, let standby = call.startFromStandby(from: .ios) {
             replaced(LiveDestination(id: standby.conversation.id, known: standby.conversation))

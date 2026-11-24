@@ -169,7 +169,8 @@ final class CarPlayLive {
         call.pressed()
         // A tap back to a New that Zimmer has not answered yet leaves it New, for the retry.
         if call.settled || !call.isActive { wish.tapped(tile, callIsActive: call.isActive) }
-        if tile == .newConversation { call.askedForNew() }
+        // Not a late tap on a tile already gone, which goes back to the call.
+        if tile == .newConversation, !call.isActive { call.askedForNew() }
         // A fresh start is asked for out loud: a mute left over from the call it replaces would
         // open a new conversation on a microphone that hears nothing. Retry keeps it.
         if wish.choice == .startNew { comeback = nil }

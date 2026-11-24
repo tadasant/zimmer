@@ -217,6 +217,7 @@ private final class LiveWarmHolder {
     private var minting: Task<Void, Never>?
     /// Continue's: the last read of what is open, and when. The tap uses it instead of asking again.
     private var overview: (value: LiveOverview, at: TimeInterval)?
+    private var talked = false
     /// New's: the conversation Zimmer keeps ready.
     private var standby: LiveConversation?
     private var loggedHold: LiveWarmStart.Hold?
@@ -245,12 +246,15 @@ private final class LiveWarmHolder {
         minting?.cancel()
         minting = nil
         overview = nil
+        talked = false
         standby = nil
         loggedHold = nil
     }
 
+    /// A call began: the conversation it is on is one the person talks in, until read otherwise.
     func forgetOverview() {
         overview = nil
+        talked = true
     }
 
     // MARK: - The tap
@@ -342,11 +346,7 @@ private final class LiveWarmHolder {
     }
 
     /// The person talks in the open conversation, as Continue's holder last read it.
-    var talks: Bool {
-        guard !LiveCall.shared.isActive else { return true }
-        guard let overview = overview?.value else { return false }
-        return overview.conversations.first { $0.id == overview.current }?.mode == .voice
-    }
+    var talks: Bool { LiveCall.shared.isActive || talked }
 
     private func refresh() {
         guard refreshing == nil else {
@@ -372,7 +372,10 @@ private final class LiveWarmHolder {
             }
             // The one a New has just taken, seen before Zimmer had answered it: not one to be ready on.
             if let found = standby, found.status != .standby || found.id == LiveCall.shared.unansweredNew { standby = nil }
-            if let overview { self.overview = (overview, Self.now) }
+            if let overview {
+                self.overview = (overview, Self.now)
+                self.talked = overview.conversations.first { $0.id == overview.current }?.mode == .voice
+            }
             if let standby { self.standby = standby }
             if overview == nil, standby == nil { self.start.refreshFailed(at: Self.now) }
             // Both: whether New is a call on the phone is the open conversation's mode.
