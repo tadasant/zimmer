@@ -23,6 +23,7 @@ module LiveConversations
       "voice_tokens" => %w[openai_realtime],
       "transcription" => %w[openai_realtime],
       "voice_session" => %w[gpt_live_claude],
+      "voice_standby" => %w[gpt_live_claude],
       "turn_latency" => LiveUsageEvent::ENGINES,
       "call" => LiveUsageEvent::ENGINES
     }.freeze
@@ -98,6 +99,9 @@ module LiveConversations
       when "voice_tokens" then { vendor: "openai_realtime", model: realtime_model }
       when "transcription" then { vendor: "openai_transcription", model: @setting.effective(:voice_transcription_model) }
       when "voice_session" then { vendor: "openai_live", model: GptLiveSession::MODEL }
+      # Held ready before a tap, so the conversation it is filed under may never
+      # have had a call: no engine on the row to check it against.
+      when "voice_standby" then { vendor: "openai_live_standby", model: GptLiveSession::MODEL }
       else { vendor: "zimmer", model: nil }
       end
     end

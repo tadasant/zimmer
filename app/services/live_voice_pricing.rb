@@ -26,7 +26,7 @@ module LiveVoicePricing
     cost = case vendor.to_s
     when "openai_realtime" then realtime(model, volumes)
     when "openai_transcription" then per_token(table.dig("openai_transcription", model.to_s), volumes)
-    when "openai_live" then per_minute(table.dig("openai_live", model.to_s), volumes)
+    when "openai_live", "openai_live_standby" then per_minute(table.dig(vendor.to_s, model.to_s), volumes)
     when "anthropic" then anthropic(model, volumes)
     when "zimmer" then 0.0 # tool calls and latency samples: measured, not billed
     end

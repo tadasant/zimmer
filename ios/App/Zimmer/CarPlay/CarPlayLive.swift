@@ -9,7 +9,9 @@ import os
 /// The call is `LiveCall.shared`, the same one the phone's Live screen drives, so a call started
 /// at the desk carries on in the car and the other way round. The home's two tiles are the
 /// driver's choice, one tap each with no confirmation: Continue calls the open conversation with
-/// voice on, New ends it and calls a fresh one (`CarLiveChoice`). With nothing open there is only
+/// voice on, New ends it and calls a fresh one (`CarLiveChoice`). Either way the call begins at the
+/// tap, and finds or makes its conversation as it connects, so the tap goes straight to the call
+/// screen (`LiveCall.start(_:)`). With nothing open there is only
 /// New. An ended conversation stays readable, so New needs no alert, which would be one more
 /// modal for CarPlay to refuse.
 ///
@@ -116,6 +118,10 @@ final class CarPlayLive {
         call.$canSendNow.removeDuplicates().dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
             MainActor.assumeIsolated { self?.activate() }
         }.store(in: &watchers)
+        // Zimmer answered the New the call began on: the choice is spent.
+        call.$settled.removeDuplicates().dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
+            MainActor.assumeIsolated { self?.settledChanged() }
+        }.store(in: &watchers)
         // Every assignment, not only changes: the same failure twice is two failures.
         call.$lastError.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] error in
             MainActor.assumeIsolated { self?.errorChanged(error) }
@@ -161,7 +167,8 @@ final class CarPlayLive {
         guard !retry.lookingUp else { return }
         // Heard at once, while the conversation is still being found (`LiveCall.pressed`).
         call.pressed()
-        wish.tapped(tile, callIsActive: call.isActive)
+        // A tap back to a New that Zimmer has not answered yet leaves it New, for the retry.
+        if call.settled || !call.isActive { wish.tapped(tile, callIsActive: call.isActive) }
         // A fresh start is asked for out loud: a mute left over from the call it replaces would
         // open a new conversation on a microphone that hears nothing. Retry keeps it.
         if wish.choice == .startNew { comeback = nil }
@@ -187,9 +194,9 @@ final class CarPlayLive {
                 onChange?()
                 return
             }
-            if call.isActive, let conversation = call.conversationID {
+            if call.isActive {
                 retry.lookedUp()
-                await call.start(conversation, from: .carplay)
+                if let conversation = call.conversationID { await call.start(conversation, from: .carplay) }
                 present()
                 return
             }
@@ -198,56 +205,11 @@ final class CarPlayLive {
                 await call.start(conversation, startsMuted: comeback?.muted == true, from: .carplay)
                 return
             }
-            // CarPlay pre-warm read what is open moments ago: Continue calls it without asking
-            // again, on the warm connection if one is held for it (`LiveWarmKeeper`).
-            if wish.choice == .continueOpen, let known = LiveWarmKeeper.shared.freshCurrent() {
-                retry.lookedUp()
-                wish.answered()
-                conversationOpen = true
-                await call.start(known, startsMuted: comeback?.muted == true, from: .carplay, warm: true)
-                return
-            }
-            onChange?()
-            do {
-                let choice = wish.choice
-                let found = try await conversationToCall()
-                retry.lookedUp()
-                wish.answered()
-                guard let found else {
-                    nothingToContinue()
-                    return
-                }
-                conversationOpen = true
-                guard retry.wanted else {
-                    onChange?()
-                    return
-                }
-                await call.start(found, startsMuted: comeback?.muted == true, from: .carplay, warm: choice == .continueOpen)
-            } catch {
-                retry.lookedUp()
-                guard retry.wanted else {
-                    onChange?()
-                    return
-                }
-                failed((error as? ZimmerError)?.userMessage ?? "Couldn't start the call.", retryable: true)
-            }
+            retry.lookedUp()
+            // False only when there was nothing to continue. Anything else that goes wrong ends the
+            // call with an error, which is retried (`errorChanged`).
+            if await !call.start(wish.choice, startsMuted: comeback?.muted == true, from: .carplay) { nothingToContinue() }
         }
-    }
-
-    /// The driver's choice as a conversation. This comes before the call exists, so the call's
-    /// own deadline does not cover it: it gets the same one here, and a request still out when
-    /// that passes is cancelled.
-    private func conversationToCall() async throws -> Int? {
-        let api = AppEnvironment.shared.connection.api.live(from: .carplay)
-        let lookup = Task { [choice = wish.choice] () throws -> Int? in
-            try await api.conversation(for: choice)
-        }
-        let deadline = Task {
-            try await Task.sleep(for: .seconds(LiveCallHealth.connectDeadline))
-            lookup.cancel()
-        }
-        defer { deadline.cancel() }
-        return try await lookup.value
     }
 
     /// Continue, with nothing open: it ended on the phone since the tiles were drawn, or under a
@@ -339,7 +301,10 @@ final class CarPlayLive {
         guard let navigator, settings == nil else { return }
         let panel = CarPlayVoiceSettings(api: AppEnvironment.shared.connection.api.live(from: .carplay), fromCall: fromCall)
         panel.onClose = { [weak self] in self?.closeSettings() }
-        panel.onWritten = { [telemetry] what in telemetry.track(.carPlay("settings_changed", ["what": .string(what)])) }
+        panel.onWritten = { [telemetry] what in
+            telemetry.track(.carPlay("settings_changed", ["what": .string(what)]))
+            LiveWarmKeeper.shared.settingsChanged()
+        }
         settings = panel
         onChange?()
         Task {
@@ -473,9 +438,7 @@ final class CarPlayLive {
         // the gear ended the call can arrive after the panel went up.
         if call.isActive {
             dropSettings()
-            // The call is the conversation now, whoever started it, and a New left over from a
-            // start that failed must not end it when this call drops.
-            wish.answered()
+            settledChanged()
         }
         if comeback?.isSpent(by: call.state) == true { comeback = nil }
         onChange?()
@@ -488,6 +451,15 @@ final class CarPlayLive {
         } else {
             activate()
         }
+    }
+
+    /// The call is the conversation now, whoever started it, and a New left over from a start that
+    /// failed must not end it when this call drops. Not before Zimmer has the conversation, though: a
+    /// New it never answered is still New to the retry.
+    private func settledChanged() {
+        guard call.isActive, call.settled else { return }
+        wish.answered()
+        conversationOpen = true
     }
 
     /// Put the call screen up: this call's, or a new one. The driver may have closed it with

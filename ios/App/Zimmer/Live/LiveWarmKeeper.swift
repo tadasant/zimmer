@@ -4,228 +4,173 @@ import Network
 import ZimmerKit
 import os
 
-/// CarPlay pre-warm, the app's half: while the car is connected and no call is up, keep one
-/// Realtime connection ready for Continue (`ios/CARPLAY_PREWARM_DESIGN.md`). What to do and when
-/// is `LiveWarmStart`'s (ZimmerKit, tested on Linux); this does it — reads Zimmer, mints, opens
-/// and pings the socket, closes it — and hands the connection to `LiveCall` when the driver taps.
+/// A connection in standby, taken by a tap: the call's from here.
+struct LiveWarmTake {
+    enum Connection {
+        case realtime(LiveWarmLink)
+        case gptLive(GptLiveCall)
+    }
+
+    let slot: LiveWarmStart.Slot
+    let conversation: Int
+    /// What Zimmer said the call runs on when the connection was opened.
+    let grant: LiveCallGrant
+    let connection: Connection
+}
+
+/// Standby, the app's half (`ios/CARPLAY_PREWARM_DESIGN.md`): while the car is connected, or Live is
+/// open on the phone on a conversation with voice on, hold a connection ready for **New** and one
+/// for **Continue**, so the tap has nothing to wait for but the microphone. What to do and when is
+/// `LiveWarmStart`'s (ZimmerKit, tested on Linux), one for each; this does it — reads Zimmer, opens
+/// the connection, sees that it is alive, closes it — and hands it to `LiveCall` at the tap.
 ///
-/// On for every car connection. There is no flag: what stops it is a hold (`LiveWarmStart.Hold`)
-/// — a call up, Low Power Mode, heat, Low Data Mode, no network, nothing open — or the per-drive
-/// budget.
+/// There is no flag in the app. What stops it is a hold (`LiveWarmStart.Hold`), the budget, or
+/// Zimmer refusing: the Live setting *Standby cap per day* at 0 turns GPT-Live standby off.
 ///
-/// **Nothing goes up a warm connection.** `LiveWarmLink` has no way to send an event: it opens the
-/// socket, reads what OpenAI says, and pings. The microphone is not touched, the audio session is
-/// not activated, and nothing is shown or played. Only `claim`, from the driver's tap, hands the
-/// connection to the call, and only the call sends on it.
+/// **Nothing a person says goes up a connection in standby.** A Realtime one (`LiveWarmLink`) has no
+/// way to send an event. A GPT-Live one (`GptLiveCall` in standby) sends none, and its microphone
+/// track is muted from the moment it is made, so the silence the track carries (`LiveStandbySilence`)
+/// is the only audio on it. The microphone is not opened, the audio session is not activated, and
+/// nothing is shown or played. Only `take`, from the person's tap, hands a connection to a call.
 @MainActor
 final class LiveWarmKeeper {
     static let shared = LiveWarmKeeper()
 
-    private var start = LiveWarmStart()
-    private var link: LiveWarmLink?
-    private var connected = false
+    /// Where a tap may come from. The car's name is the one its requests carry.
+    enum Place: Hashable { case car, phone }
+
+    private var places: Set<Place> = []
+    private lazy var open = LiveWarmHolder(.open, keeper: self)
+    private lazy var new = LiveWarmHolder(.new, keeper: self)
+    private var holders: [LiveWarmHolder] { [open, new] }
+    private let silence = LiveStandbySilence()
     private var ticking: Task<Void, Never>?
-    private var refreshing: Task<Void, Never>?
-    private var minting: Task<Void, Never>?
-    /// The last read of what is open, and when: Continue's tap uses it instead of asking again.
-    private var overview: (value: LiveOverview, at: TimeInterval)?
-    private var loggedHold: LiveWarmStart.Hold?
-    private var online = true
-    private var constrained = false
     private var monitor: NWPathMonitor?
     private var observers: [NSObjectProtocol] = []
     private var watchers: Set<AnyCancellable> = []
-    private let log = Logger(subsystem: "com.tadasant.zimmer", category: "live-warm")
-    private let telemetry = LiveTelemetry.shared
+    fileprivate private(set) var online = true
+    fileprivate private(set) var constrained = false
 
-    private static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
+    fileprivate static var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
-    private var api: any LiveAPI { AppEnvironment.shared.connection.api.live(from: .carplay) }
+    fileprivate var active: Bool { !places.isEmpty }
+    /// Live open on the phone with no car: only for a conversation the person talks in.
+    fileprivate var onPhoneOnly: Bool { !places.contains(.car) }
+    fileprivate var surface: ClientSource.Surface { onPhoneOnly ? .ios : .carplay }
 
-    // MARK: - The car
+    // MARK: - Where the taps are
 
-    /// The CarPlay scene connected: read what is open, and warm it.
+    /// The CarPlay scene connected.
     func carConnected() {
-        carDisconnected()
-        connected = true
-        watch()
-        perform(start.carConnected(at: Self.now))
-        ticking = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(LiveWarmStart.tickEvery))
-                guard let self, !Task.isCancelled else { return }
-                self.perform(self.start.tick(at: Self.now))
-            }
-        }
+        places.insert(.car)
+        restart()
     }
 
-    /// The scene went: close everything, and stop watching.
+    /// The scene went. Live may still be open on the phone.
     func carDisconnected() {
-        perform(start.carDisconnected())
-        connected = false
+        places.remove(.car)
+        restart()
+    }
+
+    /// Zimmer came to the front on the car's screen: a call may be near.
+    func cameToTheFront() {
+        guard active else { return }
+        perform { $0.interest(at: Self.now) }
+    }
+
+    /// Live opened on the phone, or came back to the front there.
+    func phoneOpened() {
+        // A simulator has no OpenAI to hold a connection to.
+        guard !AppEnvironment.shared.isFixture, !places.contains(.phone) else { return }
+        places.insert(.phone)
+        if places.contains(.car) { cameToTheFront() } else { restart() }
+    }
+
+    func phoneClosed() {
+        guard places.remove(.phone) != nil, places.isEmpty else { return }
+        restart()
+    }
+
+    /// The Live settings changed on this phone: what is held was made from the old ones.
+    func settingsChanged() {
+        guard active else { return }
+        perform { $0.settingsChanged(at: Self.now) }
+    }
+
+    /// Zimmer has answered a New: it can keep another ready.
+    func newWasTaken() {
+        guard active else { return }
+        new.perform(new.start.taken(at: Self.now))
+    }
+
+    private func restart() {
+        for holder in holders { holder.stop() }
         ticking?.cancel()
         ticking = nil
-        refreshing?.cancel()
-        refreshing = nil
-        minting?.cancel()
-        minting = nil
-        overview = nil
-        loggedHold = nil
         monitor?.cancel()
         monitor = nil
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         observers = []
         watchers.removeAll()
+        silence.stop()
+        guard active else { return }
+        watch()
+        perform { $0.activate(at: Self.now) }
+        ticking = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(LiveWarmStart.tickEvery))
+                guard let self, !Task.isCancelled else { return }
+                self.perform { $0.tick(at: Self.now) }
+            }
+        }
     }
 
     // MARK: - The tap
 
-    /// The conversation a warm connection is held for, when the last read (within `refreshEvery`)
-    /// still says it is the open one: Continue calls it without asking Zimmer again. Nil — no warm
-    /// connection, or a read that says otherwise — sends the tap the old way, lookup and all, so
-    /// the cold path is exactly what it was.
-    func freshCurrent() -> Int? {
-        guard connected, start.phase == .warm, let warm = start.conversation, let overview,
-              Self.now - overview.at < LiveWarmStart.refreshEvery, overview.value.current == warm else { return nil }
-        return warm
+    /// The open conversation, when a connection is held for it and the last read (within
+    /// `trustReadFor`) still says it is the open one: Continue calls it without asking Zimmer again.
+    func openConversation() -> Int? {
+        active ? open.readyConversation : nil
     }
 
-    /// The driver tapped, and the call is starting on `conversation`: the warm connection, if
-    /// there is one for it that can be trusted. Only this hands one over.
-    func claim(_ conversation: Int) -> LiveWarmLink? {
-        guard connected else { return nil }
-        let claim = start.claim(conversation, at: Self.now)
-        telemetry.track(.warmClaim(claim, hold: start.hold))
-        // Used once: a retry after this call fails asks Zimmer what is open again, rather than
-        // calling a conversation that may have ended since the read.
-        overview = nil
-        guard case .warm = claim, let link else { return nil }
-        self.link = nil
-        link.detach()
-        return link
+    /// The conversation a connection is held on for New, as it will be once it starts.
+    func newConversation() -> LiveConversation? {
+        active ? new.readyNew : nil
+    }
+
+    /// The person tapped, and the call is starting on `conversation`: the connection held for it, if
+    /// there is one that can be trusted. Only this hands one over.
+    func take(_ slot: LiveWarmStart.Slot, _ conversation: Int) -> LiveWarmTake? {
+        guard active else { return nil }
+        let take = (slot == .open ? open : new).take(conversation)
+        // The call's own microphone is what the connection carries from here.
+        if take != nil { silence.stop() }
+        return take
     }
 
     // MARK: - Internals
 
-    private func perform(_ actions: [LiveWarmStart.Action]) {
-        for action in actions {
-            switch action {
-            case .refresh: refresh()
-            case let .mint(conversation): mint(conversation)
-            case .ping: ping()
-            case let .close(reason): close(reason)
-            }
-        }
-        if start.hold != loggedHold {
-            loggedHold = start.hold
-            if let hold = start.hold { telemetry.track(.warmHeld(hold)) }
-        }
+    private func perform(_ change: (inout LiveWarmStart) -> [LiveWarmStart.Action]) {
+        for holder in holders { holder.perform(change(&holder.start)) }
+        connectionsChanged()
     }
 
-    private func conditions(_ overview: LiveOverview) -> LiveWarmStart.Conditions {
-        let thermal = ProcessInfo.processInfo.thermalState
-        return LiveWarmStart.Conditions(
-            callActive: LiveCall.shared.isActive, conversation: overview.current,
-            conversationReady: overview.currentIsReady, lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
-            hot: thermal == .serious || thermal == .critical, constrained: constrained, online: online
-        )
-    }
-
-    /// The phone changed under a warm connection: decide again on the last read.
-    private func reconsider() {
-        guard connected, let overview else { return }
-        perform(start.update(conditions(overview.value), at: Self.now))
-    }
-
-    private func refresh() {
-        guard refreshing == nil else { return }
-        let api = api
-        refreshing = Task { [weak self] in
-            let read = try? await api.liveConversations()
-            guard let self, !Task.isCancelled else { return }
-            self.refreshing = nil
-            guard let read else { return }
-            self.overview = (read, Self.now)
-            self.perform(self.start.update(self.conditions(read), at: Self.now))
-        }
-    }
-
-    private func mint(_ conversation: Int) {
-        minting?.cancel()
-        let asked = Self.now
-        let api = api
-        telemetry.track(.warmMinting(conversation: conversation, warms: start.warms))
-        minting = Task { [weak self] in
-            do {
-                let secret = try await api.livePrewarmSecret(conversation)
-                guard let self, !Task.isCancelled, self.start.phase == .warming, self.start.conversation == conversation else { return }
-                self.minting = nil
-                self.open(LiveWarmLink(conversation: conversation, secret: secret), asked: asked)
-            } catch is CancellationError {
-                return
-            } catch {
-                guard let self, !Task.isCancelled, self.start.phase == .warming, self.start.conversation == conversation else { return }
-                self.minting = nil
-                self.failed(Self.describe(error))
-            }
-        }
-    }
-
-    private func open(_ link: LiveWarmLink, asked: TimeInterval) {
-        link.onReady = { [weak self, weak link] in
-            guard let self, let link, self.link === link else { return }
-            self.start.ready(at: Self.now)
-            self.telemetry.track(.warmReady(sinceMint: Self.now - asked))
-        }
-        link.onHeard = { [weak self, weak link] in
-            guard let self, let link, self.link === link else { return }
-            self.start.heard(at: Self.now)
-        }
-        link.onFailed = { [weak self, weak link] message in
-            guard let self, let link, self.link === link else { return }
-            self.failed(message)
-        }
-        self.link = link
-        link.open()
-    }
-
-    private func failed(_ message: String) {
-        log.error("warm connection failed: \(message, privacy: .public)")
-        telemetry.track(.warmFailed(message))
-        perform(start.failed(at: Self.now))
-    }
-
-    private func ping() {
-        guard let link else { return }
-        link.ping { [weak self, weak link] failure in
-            guard let self, let link, self.link === link else { return }
-            if let failure {
-                self.failed(failure)
-            } else {
-                self.start.heard(at: Self.now)
-            }
-        }
-    }
-
-    private func close(_ reason: LiveWarmStart.CloseReason) {
-        minting?.cancel()
-        minting = nil
-        guard let link else { return }
-        self.link = nil
-        telemetry.track(.warmClosed(reason, age: Self.now - link.openedAt))
-        link.close()
+    /// A held GPT-Live connection carries silence while no call's engine is feeding the one
+    /// microphone there is.
+    fileprivate func connectionsChanged() {
+        if active, !LiveCall.shared.isActive, holders.contains(where: \.holdsGptLive) { silence.start() } else { silence.stop() }
     }
 
     /// The call, Low Power Mode, the thermal state and the network, each a reason to decide again.
     private func watch() {
         // Received on the main queue's next turn, as `CarPlayLive` does: by then `isActive` says
-        // the same as the state, and a tap has already claimed what it is going to.
+        // the same as the state, and a tap has already taken what it is going to.
         LiveCall.shared.$state.map { $0 != .idle }.removeDuplicates().dropFirst().receive(on: DispatchQueue.main).sink { [weak self] active in
             MainActor.assumeIsolated {
-                guard let self, self.connected else { return }
-                // Any call, warm or not, can change what is open (New ends it): read again after.
-                if active { self.overview = nil }
-                self.perform(active ? self.start.callStarted(at: Self.now) : self.start.callEnded(at: Self.now))
+                guard let self, self.active else { return }
+                // Any call, from standby or not, can change what is open (New ends it): read again after.
+                if active { self.open.forgetOverview() }
+                self.perform { active ? $0.callStarted(at: Self.now) : $0.callEnded(at: Self.now) }
             }
         }.store(in: &watchers)
         for name in [Notification.Name.NSProcessInfoPowerStateDidChange, ProcessInfo.thermalStateDidChangeNotification] {
@@ -248,9 +193,354 @@ final class LiveWarmKeeper {
         self.monitor = monitor
     }
 
+    /// The phone changed under what is held: decide again on the last read.
+    private func reconsider() {
+        guard active else { return }
+        for holder in holders { holder.reconsider() }
+        connectionsChanged()
+    }
+}
+
+/// One slot's connection and the machine that decides about it.
+@MainActor
+private final class LiveWarmHolder {
+    let slot: LiveWarmStart.Slot
+    var start: LiveWarmStart
+    private unowned let keeper: LiveWarmKeeper
+    private var grant: LiveCallGrant?
+    private var connection: LiveWarmTake.Connection?
+    private var openedAt: TimeInterval = 0
+    private var refreshing: Task<Void, Never>?
+    private var minting: Task<Void, Never>?
+    /// Continue's: the last read of what is open, and when. The tap uses it instead of asking again.
+    private var overview: (value: LiveOverview, at: TimeInterval)?
+    /// New's: the conversation Zimmer keeps ready.
+    private var standby: LiveConversation?
+    private var loggedHold: LiveWarmStart.Hold?
+    private let log = Logger(subsystem: "com.tadasant.zimmer", category: "live-warm")
+    private let telemetry = LiveTelemetry.shared
+
+    private static var now: TimeInterval { LiveWarmKeeper.now }
+    private var api: any LiveAPI { AppEnvironment.shared.connection.api.live(from: keeper.surface) }
+
+    init(_ slot: LiveWarmStart.Slot, keeper: LiveWarmKeeper) {
+        self.slot = slot
+        self.keeper = keeper
+        start = LiveWarmStart(slot)
+    }
+
+    var holdsGptLive: Bool {
+        if case .gptLive = connection { return true }
+        return false
+    }
+
+    func stop() {
+        perform(start.deactivate())
+        refreshing?.cancel()
+        refreshing = nil
+        minting?.cancel()
+        minting = nil
+        overview = nil
+        standby = nil
+        loggedHold = nil
+    }
+
+    func forgetOverview() {
+        overview = nil
+    }
+
+    // MARK: - The tap
+
+    var readyConversation: Int? {
+        guard connection != nil, start.phase != .idle, let held = start.conversation, let overview,
+              Self.now - overview.at < LiveWarmStart.trustReadFor, overview.value.current == held else { return nil }
+        return held
+    }
+
+    /// Up, or a GPT-Live one on its way up: a Realtime one that is not up has nothing worth taking.
+    var readyNew: LiveConversation? {
+        guard connection != nil, start.phase == .warm || (start.phase == .warming && holdsGptLive),
+              let standby, standby.id == start.conversation else { return nil }
+        return standby
+    }
+
+    func take(_ conversation: Int) -> LiveWarmTake? {
+        // Not what ICE was saying at the last ping: what it says at the tap.
+        if case let .gptLive(call) = connection, start.phase == .warm, !call.isStandingBy {
+            failed("the connection was not up at the tap")
+        }
+        let engine = start.engine
+        let claim = start.claim(conversation, at: Self.now)
+        telemetry.track(.warmClaim(slot, claim, hold: start.hold, engine: engine))
+        // Used once: a retry after this call fails asks Zimmer again, rather than calling a
+        // conversation that may have ended since the read.
+        overview = nil
+        switch claim {
+        case .cold: return nil
+        case .warm, .warming: break
+        }
+        standby = nil
+        guard let connection, let grant else { return nil }
+        self.connection = nil
+        self.grant = nil
+        minting = nil
+        switch connection {
+        case let .realtime(link): link.detach()
+        case let .gptLive(call): call.detach()
+        }
+        return LiveWarmTake(slot: slot, conversation: conversation, grant: grant, connection: connection)
+    }
+
+    // MARK: - Internals
+
+    func perform(_ actions: [LiveWarmStart.Action]) {
+        for action in actions {
+            switch action {
+            case .refresh: refresh()
+            case let .mint(conversation): mint(conversation)
+            case .ping: ping()
+            case let .close(reason): close(reason)
+            }
+        }
+        if start.hold != loggedHold {
+            loggedHold = start.hold
+            if let hold = start.hold { telemetry.track(.warmHeld(slot, hold)) }
+        }
+    }
+
+    func reconsider() {
+        guard let conditions else { return }
+        perform(start.update(conditions, at: Self.now))
+    }
+
+    /// Nil before the first read.
+    private var conditions: LiveWarmStart.Conditions? {
+        let thermal = ProcessInfo.processInfo.thermalState
+        var conditions = LiveWarmStart.Conditions(
+            callActive: LiveCall.shared.isActive, conversation: nil, lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            hot: thermal == .serious || thermal == .critical, constrained: keeper.constrained, online: keeper.online
+        )
+        switch slot {
+        case .open:
+            guard let overview = overview?.value else { return nil }
+            let current = overview.conversations.first { $0.id == overview.current }
+            conditions.conversation = overview.current
+            conditions.conversationReady = overview.currentIsReady
+            conditions.version = current?.lastActivityAt
+            conditions.typing = keeper.onPhoneOnly && current?.mode == .text
+        case .new:
+            guard let standby else { return nil }
+            conditions.conversation = standby.id
+            // On the phone, New starts a call only from a conversation with voice on.
+            conditions.typing = keeper.onPhoneOnly && !keeper.phoneTalks
+        }
+        return conditions
+    }
+
+    /// The mode of the open conversation, as Continue's holder last read it.
+    var talks: Bool { overview.map { read in read.value.conversations.first { $0.id == read.value.current }?.mode != .text } ?? true }
+
+    private func refresh() {
+        guard refreshing == nil else { return }
+        let api = api
+        let slot = slot
+        refreshing = Task { [weak self] in
+            var overview: LiveOverview?
+            var standby: LiveConversation?
+            switch slot {
+            case .open: overview = try? await api.liveConversations()
+            case .new: standby = try? await api.liveStandby()
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.refreshing = nil
+            if let overview { self.overview = (overview, Self.now) }
+            // The one just taken, seen before Zimmer had answered the tap: not one to be ready on.
+            if let standby, standby.status == .standby, standby.id != LiveCall.shared.conversationID { self.standby = standby }
+            if overview == nil, standby == nil { self.start.refreshFailed(at: Self.now) }
+            self.reconsider()
+            self.keeper.connectionsChanged()
+        }
+    }
+
+    private func mint(_ conversation: Int) {
+        minting?.cancel()
+        let asked = Self.now
+        let api = api
+        let surface = keeper.surface
+        telemetry.track(.warmMinting(slot, conversation: conversation, warms: start.warms))
+        minting = Task { [weak self] in
+            do {
+                let grant = try await api.livePrewarmGrant(conversation)
+                guard let self, self.isWarming(conversation) else { return }
+                self.grant = grant
+                self.start.connecting(grant.isGptLive ? .gptLive : .realtime)
+                if let secret = grant.realtime {
+                    self.minting = nil
+                    self.open(LiveWarmLink(conversation: conversation, secret: secret), asked: asked)
+                } else {
+                    try await self.openGptLive(conversation, surface: surface, asked: asked)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, self.isWarming(conversation) else { return }
+                self.minting = nil
+                self.failed(Self.describe(error))
+            }
+        }
+    }
+
+    private func isWarming(_ conversation: Int) -> Bool {
+        !Task.isCancelled && start.phase == .warming && start.conversation == conversation
+    }
+
+    private func open(_ link: LiveWarmLink, asked: TimeInterval) {
+        func isHeld(_ link: LiveWarmLink) -> Bool {
+            if case let .realtime(held) = connection { return held === link }
+            return false
+        }
+        link.onReady = { [weak self, weak link] in
+            guard let self, let link, isHeld(link) else { return }
+            self.start.ready(at: Self.now)
+            self.telemetry.track(.warmReady(self.slot, engine: .realtime, sinceMint: Self.now - asked))
+        }
+        link.onHeard = { [weak self, weak link] in
+            guard let self, let link, isHeld(link) else { return }
+            self.start.heard(at: Self.now)
+        }
+        link.onFailed = { [weak self, weak link] message in
+            guard let self, let link, isHeld(link) else { return }
+            self.failed(message)
+        }
+        connection = .realtime(link)
+        openedAt = Self.now
+        link.open()
+    }
+
+    /// The session, started with inference paused. A tap may take it before it is up: then what
+    /// goes wrong with it is the call's to hear, not this holder's.
+    private func openGptLive(_ conversation: Int, surface: ClientSource.Surface, asked: TimeInterval) async throws {
+        let call = try GptLiveCall(conversation: conversation, surface: surface, muted: true, standby: true) { _ in }
+        call.onStandby { [weak self, weak call] signal in
+            guard let self, let call, self.holds(call) else { return }
+            self.handle(signal, from: call, asked: asked)
+        }
+        connection = .gptLive(call)
+        openedAt = Self.now
+        keeper.connectionsChanged()
+        do {
+            try await call.start()
+        } catch {
+            call.failedToStart(Self.describe(error))
+        }
+    }
+
+    private func holds(_ call: GptLiveCall) -> Bool {
+        if case let .gptLive(held) = connection { return held === call }
+        return false
+    }
+
+    private func handle(_ signal: GptLiveCall.Signal, from call: GptLiveCall, asked: TimeInterval) {
+        switch signal {
+        case .started:
+            minting = nil
+            start.ready(at: Self.now, life: call.lifeLeft)
+            telemetry.track(.warmReady(slot, engine: .gptLive, sinceMint: Self.now - asked, life: call.lifeLeft))
+        case .heard:
+            start.heard(at: Self.now)
+        case .woke:
+            failed("GPT-Live woke before a tap")
+        case let .dropped(reason):
+            failed(reason)
+        case let .failure(message):
+            failed(message)
+        case .state, .firstAudio, .recorded, .delegated, .hangUp, .cue, .inputTiming:
+            break
+        }
+    }
+
+    private func failed(_ message: String) {
+        log.error("standby connection failed: \(message, privacy: .public)")
+        telemetry.track(.warmFailed(slot, message))
+        perform(start.failed(at: Self.now))
+        keeper.connectionsChanged()
+    }
+
+    private func ping() {
+        switch connection {
+        case let .realtime(link):
+            link.ping { [weak self, weak link] failure in
+                guard let self, let link, case let .realtime(held) = self.connection, held === link else { return }
+                if let failure {
+                    self.failed(failure)
+                } else {
+                    self.start.heard(at: Self.now)
+                }
+            }
+        case let .gptLive(call):
+            // No ping on a data channel: ICE says whether the connection is there. One recovering
+            // is left unheard, and is dead if it stays that way.
+            if call.isStandingBy { start.heard(at: Self.now) }
+        case nil:
+            break
+        }
+    }
+
+    private func close(_ reason: LiveWarmStart.CloseReason) {
+        minting?.cancel()
+        minting = nil
+        grant = nil
+        guard let connection else { return }
+        self.connection = nil
+        telemetry.track(.warmClosed(slot, reason, age: Self.now - openedAt))
+        switch connection {
+        case let .realtime(link):
+            link.close()
+        case let .gptLive(call):
+            call.detach()
+            call.end()
+        }
+    }
+
     private static func describe(_ error: Error) -> String {
         if let zimmer = error as? ZimmerError { return zimmer.userMessage }
         return error.localizedDescription
+    }
+}
+
+extension LiveWarmKeeper {
+    /// The open conversation has voice on, as last read: on the phone, New is then a call.
+    fileprivate var phoneTalks: Bool { open.talks }
+}
+
+/// The silence a GPT-Live connection in standby carries. OpenAI wants the microphone track of one
+/// kept active, and a connection with no media at all is one a server may give up on; the microphone
+/// itself stays shut until the tap. This makes the silence in memory and hands it to libwebrtc, whose
+/// tracks are muted besides. It runs only while no call does: a call's own microphone feeds every
+/// connection then, and the muted ones carry silence made from that.
+@MainActor
+final class LiveStandbySilence {
+    private static let every: TimeInterval = 0.1
+    private let queue = DispatchQueue(label: "com.tadasant.zimmer.live-standby-silence")
+    private var timer: DispatchSourceTimer?
+
+    func start() {
+        guard timer == nil else { return }
+        LiveWebRTCAudioDevice.shared.audioThreadsChanged()
+        let silence = MicWatchdog.silence(Self.every)
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + Self.every, repeating: Self.every)
+        timer.setEventHandler { @Sendable in LiveWebRTCAudioDevice.shared.deliver(silence) }
+        timer.resume()
+        self.timer = timer
+    }
+
+    /// Stopped, and nothing of it still on its way: the call's engine is next to deliver.
+    func stop() {
+        guard let timer else { return }
+        self.timer = nil
+        timer.cancel()
+        queue.sync {}
     }
 }
 
@@ -265,7 +555,6 @@ final class LiveWarmLink {
     let conversation: Int
     let secret: LiveClientSecret
     let task: URLSessionWebSocketTask
-    let openedAt = ProcessInfo.processInfo.systemUptime
 
     var onReady: (@MainActor () -> Void)?
     var onHeard: (@MainActor () -> Void)?

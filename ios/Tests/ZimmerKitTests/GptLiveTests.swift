@@ -64,7 +64,7 @@ final class GptLiveAPITests: XCTestCase {
                                        "engine": "openai_realtime",
                                        "voice_engine": ["engine": "openai_realtime", "requested": "gpt_live_claude",
                                                         "fallback_reason": "Zimmer has no current Claude Code account"]]) },
-            { _ in Fixtures.json(409, ["error": "Conflict", "message": "The next call runs on gpt_live_claude, which has no connection to pre-warm."]) },
+            { _ in Fixtures.json(409, ["error": "Conflict", "message": "Standby reached its daily cap ($3.00 of $3.00 today)."]) },
         ])
         let grant = try await api.liveCallGrant(7)
         XCTAssertEqual(grant.realtime?.clientSecret, "ek_1")
@@ -72,7 +72,7 @@ final class GptLiveAPITests: XCTestCase {
         XCTAssertEqual(grant.choice?.spokenFallback,
                        "(Zimmer: this call is on OpenAI Realtime, not the gpt_live_claude engine, because Zimmer has no current Claude Code account. Say that in one short sentence, then stop.)")
 
-        await XCTAssertThrowsAsync(try await api.livePrewarmSecret(7), "Zimmer refuses to pre-warm Realtime for a GPT-Live call")
+        await XCTAssertThrowsAsync(try await api.livePrewarmGrant(7), "standby's daily cap is spent: nothing to hold, and the call starts from cold")
         XCTAssertEqual(LiveEngineChoice.spokenLine("GPT-Live could not start."),
                        "(Zimmer: GPT-Live could not start. Say that in one short sentence, then stop.)")
         let prewarm = try body(transport.sent[1])
@@ -92,7 +92,8 @@ final class GptLiveAPITests: XCTestCase {
         XCTAssertTrue(gptLive.isGptLive)
         let answer = try await fake.startGptLiveSession(conversation.id, sdp: "v=0")
         XCTAssertEqual(answer.sessionID, "sess_fixture")
-        await XCTAssertThrowsAsync(try await fake.livePrewarmSecret(conversation.id), "no Realtime pre-warm for a GPT-Live call")
+        let prewarm = try await fake.livePrewarmGrant(conversation.id)
+        XCTAssertTrue(prewarm.isGptLive, "standby is of whatever the call would run on")
 
         let realtimeAfterAll = try await fake.liveCallGrant(conversation.id, engines: [])
         XCTAssertFalse(realtimeAfterAll.isGptLive, "GPT-Live could not start: the app asks again, able to run nothing else")
@@ -106,6 +107,71 @@ final class GptLiveAPITests: XCTestCase {
 final class GptLiveConductorTests: XCTestCase {
     private func event(_ type: String, _ fields: [String: JSONValue] = [:]) -> JSONValue {
         .object(fields.merging(["type": .string(type)]) { $1 })
+    }
+
+    // MARK: - Standby
+
+    private func standingBy(at now: TimeInterval = 0) -> GptLiveConductor {
+        var conductor = GptLiveConductor(callKey: "k", standby: true)
+        let session: JSONValue = .object(["id": .string("live_1"), "expires_at": .number(1_788_555_600)])
+        XCTAssertEqual(conductor.handle(event("session.started", ["session": session]), at: now), [.started], "standing by: no state, no cue")
+        return conductor
+    }
+
+    /// The hard rule: nothing goes up a session in standby, and its seconds are the only thing written.
+    func testASessionInStandbySendsNothingAndReportsItsSecondsAsStandby() {
+        var conductor = standingBy()
+        XCTAssertEqual(conductor.expiresAt, 1_788_555_600)
+        var effects: [GptLiveConductor.Effect] = []
+        var now: TimeInterval = 0
+        while now < 130 { now += 0.5; effects += conductor.tick(at: now) }
+        XCTAssertEqual(reports(effects).count, effects.count, "nothing but ledger rows")
+        XCTAssertEqual(reports(effects).map(\.operation), ["voice_standby", "voice_standby"])
+        XCTAssertEqual(reports(effects).map(\.seconds), [60, 60])
+        XCTAssertEqual(conductor.handle(event("session.usage.updated"), at: now), [])
+        XCTAssertTrue(conductor.inStandby)
+    }
+
+    func testTheTapMakesItACallThatStartsThere() {
+        var conductor = standingBy()
+        let claimed = conductor.claim(at: 45)
+        XCTAssertEqual(reports(claimed).map(\.operation), ["voice_standby"])
+        XCTAssertEqual(reports(claimed).first?.seconds, 45)
+        XCTAssertEqual(claimed.count, 1)
+        XCTAssertFalse(conductor.inStandby)
+        XCTAssertEqual(conductor.claim(at: 46), [], "once")
+
+        // From here it is a call like any other.
+        XCTAssertTrue(conductor.handle(event("session.input_transcript.delta", ["delta": .string("What's running?")]), at: 50).contains(.state(.listening)))
+        _ = conductor.close(at: 105)
+        let ended = reports(conductor.handle(event("session.closed", ["usage": .object(["seconds": .number(105)])]), at: 106))
+        XCTAssertEqual(ended.first { $0.operation == "call" }?.seconds, 60, "timed from the tap")
+        XCTAssertEqual(ended.first { $0.operation == "voice_session" }?.seconds, 61, "the call's own seconds: OpenAI's total covers the standby too")
+        XCTAssertFalse(ended.contains { $0.operation == "voice_standby" })
+    }
+
+    func testASessionTakenOnItsWayUpIsACallFromItsStart() {
+        var conductor = GptLiveConductor(callKey: "k", standby: true)
+        XCTAssertEqual(conductor.claim(at: 1), [], "never held, so nothing held to report")
+        XCTAssertEqual(conductor.handle(event("session.started"), at: 2), [.started, .state(.listening)])
+        XCTAssertTrue(conductor.hasStarted)
+    }
+
+    func testASessionThatWakesBeforeTheTapIsNotStandingBy() {
+        for type in ["session.resumed", "session.input_transcript.delta", "session.output_transcript.delta", "session.delegation.created"] {
+            var conductor = standingBy()
+            XCTAssertEqual(conductor.handle(event(type, ["delta": .string("hello")]), at: 5), [.woke], type)
+        }
+    }
+
+    func testAnUnusedSessionReportsWhatItWasHeldForAsItCloses() {
+        var conductor = standingBy()
+        _ = conductor.tick(at: 60)
+        XCTAssertEqual(conductor.close(at: 80).count, 1, "session.close")
+        let closed = conductor.handle(event("session.closed", ["usage": .object(["seconds": .number(80)])]), at: 81)
+        XCTAssertEqual(reports(closed).map(\.operation), ["voice_standby"], "and no call or voice_session: nobody called")
+        XCTAssertEqual(reports(closed).first?.seconds, 20)
+        XCTAssertEqual(closed.last, .closed)
     }
 
     private func sent(_ effects: [GptLiveConductor.Effect]) -> [JSONValue] {

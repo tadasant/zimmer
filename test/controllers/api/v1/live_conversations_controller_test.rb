@@ -267,7 +267,112 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_response :conflict, "a call's own mint still needs voice on"
 
     post "/api/v1/live_conversations/#{conversation.id}/client_secret", params: { prewarm: "1" }, headers: @headers.merge("X-Zimmer-Client" => "ios/1.6.0")
-    assert_response :unprocessable_entity, "only the car pre-warms"
+    assert_response :success, "the phone's Live screen pre-warms too"
+    assert_equal before.except("updated_at"), conversation.reload.attributes.except("updated_at")
+
+    assert_raises(LiveConversations::Actions::Refused, "only the iOS app pre-warms") do
+      LiveConversations::Actions.new(conversation, client_surface: "web").client_secret(prewarm: true)
+    end
+  end
+
+  # What the app does around a tap on New: hold a session ready on a conversation
+  # nobody is in, then take it.
+  test "New on GPT-Live: prepared, held in standby, and taken by the tap, with nothing written before it" do
+    stub_live_root
+    stub_live_key
+    use_voice_engine("gpt_live_claude")
+    open = create_live_conversation(mode: "text", instructions: "# Live")
+    car = @headers.merge("X-Zimmer-Client" => "carplay/1.9.0")
+
+    post "/api/v1/live_conversations/standby", headers: car, as: :json
+    assert_response :success
+    id = response.parsed_body["id"]
+    assert_equal "standby", response.parsed_body["status"]
+    standby = LiveConversation.find(id)
+    before = standby.attributes
+
+    get "/api/v1/live_conversations", headers: car
+    assert_equal open.id, response.parsed_body["current_id"]
+    assert_not_includes response.parsed_body["live_conversations"].pluck("id"), id
+
+    post "/api/v1/live_conversations/#{id}/client_secret", params: { prewarm: "1", standby: "1", engines: [ "gpt_live_claude" ] }, headers: car, as: :json
+    assert_response :success
+    assert_equal [ "gpt_live_claude", nil ], response.parsed_body.values_at("engine", "client_secret")
+
+    body = nil
+    OpenaiClient.any_instance.stubs(:create_live_session).with { |request| body = request }
+                .returns({ "session" => { "id" => "live_9" }, "transport" => { "sdp" => "v=0 answer" } })
+    post "/api/v1/live_conversations/#{id}/gpt_live_session", params: { sdp: "v=0 offer", standby: "1" }, headers: car, as: :json
+    assert_response :success
+    assert_equal [ "live_9", "v=0 answer" ], response.parsed_body.values_at("session_id", "sdp")
+    assert_equal({ type: "speech" }, body[:session][:wake_policy], "inference waits for the person, at the standby rate")
+    assert_not body[:session].key?(:idle_timeout_s), "once woken it stays awake, as any call does"
+    assert_includes body[:session][:instructions], "the person is in a car"
+
+    post "/api/v1/live_conversations/#{id}/usage", params: { events: [ { engine: "gpt_live_claude", operation: "voice_standby", key: "ios1.1", seconds: 60 } ] },
+                                                   headers: car, as: :json
+    assert_response :created
+    assert_in_delta 0.02, LiveUsageEvent.sole.cost_usd.to_f
+    assert_equal before, standby.reload.attributes, "nobody is in it yet"
+    assert open.reload.active?
+
+    post "/api/v1/live_conversations", params: { mode: "voice", standby_id: id }, headers: car, as: :json
+    assert_response :created
+    assert_equal [ id, "active", "voice" ], response.parsed_body.values_at("id", "status", "mode")
+    assert open.reload.ended?
+
+    post "/api/v1/live_conversations/#{id}/client_secret", params: { engines: [ "gpt_live_claude" ] }, headers: car, as: :json
+    assert_response :success
+    standby.reload
+    assert_equal [ "gpt_live_claude", "gpt-live-1", "carplay", true ], standby.values_at(:voice_engine, :model, :client_surface, :car_call)
+    assert_equal LiveConversations::VoiceEngine.mode_for("gpt_live_claude"), standby.voice_mode, "written here: a held session never asks for another"
+  end
+
+  test "Continue on GPT-Live is held the same way, and nothing on the open conversation changes" do
+    use_voice_engine("gpt_live_claude")
+    conversation = create_live_conversation(mode: "text", client_surface: "ios")
+    conversation.turns.create!(role: "user", source: "typed", content: "Ship the docs.")
+    before = conversation.reload.attributes
+    phone = @headers.merge("X-Zimmer-Client" => "ios/1.9.0")
+    body = nil
+    OpenaiClient.any_instance.stubs(:create_live_session).with { |request| body = request }
+                .returns({ "session" => { "id" => "live_9" }, "transport" => { "sdp" => "v=0 answer" } })
+
+    post "/api/v1/live_conversations/#{conversation.id}/gpt_live_session", params: { sdp: "v=0 offer", standby: "1" }, headers: phone, as: :json
+
+    assert_response :success
+    assert_includes body[:session][:instructions], "Them: Ship the docs."
+    assert_includes body[:session][:instructions], "## Right now: spoken", "built for the call it may become"
+    assert_equal before, conversation.reload.attributes
+  end
+
+  test "a GPT-Live session is not held once standby has cost its daily cap, or on the wrong engine or client" do
+    use_voice_engine("gpt_live_claude")
+    conversation = create_live_conversation(mode: "voice")
+    base = "/api/v1/live_conversations/#{conversation.id}"
+    car = @headers.merge("X-Zimmer-Client" => "carplay/1.9.0")
+    LiveConversations::GptLiveSession.expects(:start).never
+
+    assert_raises(LiveConversations::Actions::Refused) { LiveConversations::Actions.new(conversation, client_surface: "web").gpt_live_session(sdp: "v=0", standby: true) }
+
+    LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "voice_standby", vendor: "openai_live_standby", model: "gpt-live-1", seconds: 60 * 150) # $3.00
+    post "#{base}/client_secret", params: { prewarm: "1", standby: "1", engines: [ "gpt_live_claude" ] }, headers: car, as: :json
+    assert_response :conflict
+    assert_match(/daily cap \(\$3\.00 of \$3\.00 today\)/, response.parsed_body["message"])
+    post "#{base}/gpt_live_session", params: { sdp: "v=0", standby: "1" }, headers: car, as: :json
+    assert_response :conflict
+
+    post "#{base}/client_secret", params: { engines: [ "gpt_live_claude" ] }, headers: car, as: :json
+    assert_equal "gpt_live_claude", response.parsed_body["engine"], "a call still runs on it, from cold"
+
+    use_voice_engine("openai_realtime")
+    post "#{base}/gpt_live_session", params: { sdp: "v=0", standby: "1" }, headers: car, as: :json
+    assert_response :conflict
+  end
+
+  test "an API key cannot keep a conversation ready" do
+    post "/api/v1/live_conversations/standby", headers: @key_headers, as: :json
+    assert_response :forbidden
   end
 
   test "the tap's session_update on a warm connection records the model the call runs on" do
@@ -588,7 +693,7 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     assert_response :conflict
   end
 
-  test "the car pre-warms no Realtime connection for a call that will run on GPT-Live" do
+  test "an app from before standby is refused a pre-warm for a call that will run on GPT-Live" do
     conversation = create_live_conversation(mode: "voice")
     use_voice_engine("gpt_live_claude")
     LiveConversations::RealtimeSession.any_instance.expects(:create_secret).never
@@ -596,7 +701,7 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
     post "/api/v1/live_conversations/#{conversation.id}/client_secret", params: { prewarm: "1", engines: [ "gpt_live_claude" ] },
                                                                         headers: @headers.merge("X-Zimmer-Client" => "carplay/1.7.0"), as: :json
     assert_response :conflict
-    assert_match(/no connection to pre-warm/, response.parsed_body["message"])
+    assert_match(/cannot hold ready/, response.parsed_body["message"])
   end
 
   test "an API key cannot start a GPT-Live session, ask Claude, or write the cost ledger" do

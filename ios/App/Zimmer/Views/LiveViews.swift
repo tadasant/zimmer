@@ -5,6 +5,15 @@ import ZimmerKit
 struct LiveDestination: Hashable {
     let id: Int
     var voice = false
+    /// The conversation, when it is known before its screen opens: shown from the first frame.
+    var known: LiveConversation?
+
+    static func == (a: Self, b: Self) -> Bool { a.id == b.id && a.voice == b.voice }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(voice)
+    }
 }
 
 /// Live Mode — the app's side of `/live`. The session list's waveform button opens it straight
@@ -14,6 +23,7 @@ struct LiveDestination: Hashable {
 struct LiveHomeView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var call = LiveCall.shared
     @State private var availability: LiveAvailability?
     @State private var overview = LiveOverview(conversations: [], current: nil)
@@ -62,7 +72,11 @@ struct LiveHomeView: View {
                 // entry, and SwiftUI would otherwise keep the one view and its turns: a read of the
                 // old thread that starts after the new thread's first read asks for every turn,
                 // and the fresh conversation shows the old one's turns from then on.
-                LiveConversationView(id: destination.id, api: model.api, startsVoice: destination.voice) { replacement in path = [replacement] }
+                LiveConversationView(id: destination.id, api: model.api, startsVoice: destination.voice,
+                                     known: destination.known) { replacement in
+                    // Twice for one move (the button, and the call moving): the first has the screen.
+                    if path.last?.id != replacement.id { path = [replacement] }
+                }
                     .id(destination.id)
             }
             .task {
@@ -78,6 +92,14 @@ struct LiveHomeView: View {
             }
         }
         .onChange(of: path, initial: true) { _, path in model.liveThreadOnScreen = path.last?.id }
+        // Standby (`LiveWarmKeeper`): a connection held for New and one for Talk while Live is on
+        // screen, on a conversation with voice on.
+        .onAppear { LiveWarmKeeper.shared.phoneOpened() }
+        .onDisappear { LiveWarmKeeper.shared.phoneClosed() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { LiveWarmKeeper.shared.phoneClosed() }
+            if phase == .active { LiveWarmKeeper.shared.phoneOpened() }
+        }
         // A call the car left on the phone. Voice stays out of it: the thread opens on the
         // call as it is, and neither `setLiveMode` nor `call.start` runs.
         .onChange(of: model.liveLanding, initial: true) { _, conversation in
@@ -156,7 +178,7 @@ struct LiveHomeView: View {
             let conversation = try await model.api.startLiveConversation(mode)
             var transaction = Transaction()
             transaction.disablesAnimations = !animated
-            withTransaction(transaction) { path = [LiveDestination(id: conversation.id, voice: mode == .voice)] }
+            withTransaction(transaction) { path = [LiveDestination(id: conversation.id, voice: mode == .voice, known: conversation)] }
             await load()
         } catch {
             self.error = (error as? ZimmerError)?.userMessage ?? "Couldn't start the conversation."
@@ -173,6 +195,8 @@ struct LiveConversationView: View {
     let api: ZimmerAPI
     /// Turn voice on and start the call as the thread opens: the waveform button's landing.
     var startsVoice = false
+    /// The conversation as its screen opens, when the one opening it had it already.
+    var known: LiveConversation?
     /// "New conversation" replaced this one with that one.
     var replaced: (LiveDestination) -> Void = { _ in }
 
@@ -262,6 +286,7 @@ struct LiveConversationView: View {
             NavigationStack { LiveSettingsView(api: api) }
         }
         .task(id: id) {
+            if conversation == nil { conversation = known }
             await landInVoice()
             await poll()
         }
@@ -371,7 +396,7 @@ struct LiveConversationView: View {
                     .accessibilityIdentifier("live.mute")
                 }
                 Button {
-                    if mine { call.hangUp() } else { Task { await call.start(conversation.id) } }
+                    if mine { call.hangUp() } else { Task { await call.start(conversation.id, warm: true) } }
                 } label: {
                     Label(mine ? "Hang up" : "Talk", systemImage: mine ? "phone.down.fill" : "waveform")
                         .frame(minWidth: 120)
@@ -407,7 +432,7 @@ struct LiveConversationView: View {
     private func readAll() async {
         do {
             let fresh = try await api.liveConversation(id, afterTurn: nil)
-            conversation = fresh
+            conversation = seen(fresh)
             turns = fresh.turns ?? []
             error = nil
         } catch {
@@ -419,7 +444,7 @@ struct LiveConversationView: View {
         guard conversation != nil else { return await readAll() }
         do {
             let fresh = try await api.liveConversation(id, afterTurn: turns.last?.id ?? 0)
-            conversation = fresh
+            conversation = seen(fresh)
             let known = Set(turns.map(\.id))
             turns += (fresh.turns ?? []).filter { !known.contains($0.id) }
             turns.sort { $0.id < $1.id }
@@ -427,6 +452,11 @@ struct LiveConversationView: View {
         } catch {
             self.error = (error as? ZimmerError)?.userMessage ?? "Couldn't reach Zimmer."
         }
+    }
+
+    /// A call begun from standby is up before Zimmer has made its conversation the open one.
+    private func seen(_ fresh: LiveConversation) -> LiveConversation {
+        call.isActive(for: id) ? fresh.asStarted : fresh
     }
 
     /// The composer lets the words go at the tap; a send the server refuses puts them back.
@@ -462,11 +492,14 @@ struct LiveConversationView: View {
     private func landInVoice() async {
         guard startsVoice, landedIn != id else { return }
         landedIn = id
-        do {
-            conversation = try await api.setLiveMode(id, mode: .voice)
-        } catch {
-            self.error = (error as? ZimmerError)?.userMessage ?? "Couldn't turn voice on."
-            return
+        // A conversation just made with voice on has nothing to turn on.
+        if conversation?.mode != .voice || known == nil {
+            do {
+                conversation = try await api.setLiveMode(id, mode: .voice)
+            } catch {
+                self.error = (error as? ZimmerError)?.userMessage ?? "Couldn't turn voice on."
+                return
+            }
         }
         guard !AppEnvironment.shared.isFixture else { return }
         landingCall = true
@@ -520,12 +553,18 @@ struct LiveConversationView: View {
     }
 
     /// Fresh, in the mode this one is in: voice on, with its call started, if voice is on here.
+    /// With a connection in standby for it, the call begins and this screen goes to it at once.
     private func startNew() async {
         if call.isActive(for: id) { call.hangUp() }
         let mode = conversation?.mode ?? .text
+        if mode == .voice, let standby = call.startFromStandby(from: .ios) {
+            replaced(LiveDestination(id: standby.conversation.id, known: standby.conversation))
+            await standby.connect()
+            return
+        }
         do {
             let fresh = try await api.startLiveConversation(mode)
-            replaced(LiveDestination(id: fresh.id, voice: mode == .voice))
+            replaced(LiveDestination(id: fresh.id, voice: mode == .voice, known: fresh))
         } catch {
             self.error = (error as? ZimmerError)?.userMessage ?? "Couldn't start a new conversation."
         }
@@ -865,7 +904,10 @@ struct LiveSettingsView: View {
             show(fresh)
             error = nil
             notice = fresh.summary
-            if fresh.changed ?? true { await LiveCall.shared.refreshSession() }
+            if fresh.changed ?? true {
+                LiveWarmKeeper.shared.settingsChanged()
+                await LiveCall.shared.refreshSession()
+            }
         } catch {
             self.error = (error as? ZimmerError)?.userMessage ?? "Couldn't save the Live settings."
         }

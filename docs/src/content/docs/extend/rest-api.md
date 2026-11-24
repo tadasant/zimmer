@@ -1231,7 +1231,13 @@ mode it is in right now, empty when there is none ·
 `POST /live_conversations` (`mode`, `text` by default or `voice`) → 201, the new conversation, which
 ends the open one. It is `active` at once when an earlier conversation on the root was prepared
 (it starts on that one's instructions and tool lists, read again in the background), and
-`preparing` otherwise; 503 with the reasons when Live Mode is off, 422 on an unknown mode ·
+`preparing` otherwise; 503 with the reasons when Live Mode is off, 422 on an unknown mode. With
+`standby_id`, the conversation started is the one kept ready; asking again is answered the same, and one
+that is gone starts another ·
+`POST /live_conversations/standby` → the conversation kept ready for the next New
+([Standby](/sessions/live/#standby)), made or brought up to date. Status `standby`, one at most, on no list; it
+ends nothing. The app's sign-in only. 409 when there is no prepared conversation to make it from, 503 when Live
+Mode is off ·
 `GET /live_conversations/:id` (`after_turn_id` for only newer turns) → the conversation with `turns` ·
 `GET /live_conversations/:id/sessions` → `{sessions: [...], board_rows: {<id>: {agent_root,
 status_summary}}}`, the sessions the conversation's tool calls have named — started, checked on,
@@ -1278,10 +1284,12 @@ Voice — the relay a client holding the audio connection makes:
   the spoken mode with a recap of the thread, tools, and the [Live settings](/sessions/live/#live-settings))
   Zimmer chose. Open WebRTC by posting an SDP offer to `calls_url`, or a WebSocket to `websocket_url`,
   with `Authorization: Bearer <client_secret>`. 409 while the conversation is still `preparing` or
-  voice is off; 502 when OpenAI refuses. With `prewarm=1` it is the CarPlay app minting ahead of a
-  tap ([CarPlay pre-warm](/sessions/live/#carplay-pre-warm)). Voice need not be on, and nothing on
-  the conversation changes: no client noted, no car call, no model written. 422 from any client but CarPlay; 409 when the conversation
-  is not active, or when the call would run on `gpt_live_claude`, which has no connection to pre-warm.
+  voice is off; 502 when OpenAI refuses. With `prewarm=1` it is the iOS app asking ahead of a
+  tap ([Standby](/sessions/live/#standby)). Voice need not be on, and nothing on
+  the conversation changes: no client noted, no car call, no model written. 422 from any client but the
+  app, phone or car; 409 when the conversation is neither active nor the one kept ready. When the call would run on
+  `gpt_live_claude`, 409 too unless `standby=1` says the app can hold that engine ready, and 409 once the
+  standby cap is spent.
   `engines` (an array) names the [voice engines](/sessions/live/#voice-engines) the client can run
   besides the default: the app sends `["gpt_live_claude"]`. The answer always carries `engine` and
   `voice_engine: {engine, requested, fallback_reason, warning}`. On `gpt_live_claude` it is
@@ -1290,6 +1298,8 @@ Voice — the relay a client holding the audio connection makes:
   track and an `oai-events` data channel) → `{session_id, sdp, model}`: Zimmer starts the GPT-Live
   session with OpenAI and returns its SDP answer, so the OpenAI key stays on the server. 409 when the
   call was not told `gpt_live_claude`, or can no longer run on it (a cap reached, the setting changed).
+  With `standby=1` the session is held ready for a tap: OpenAI starts it with inference paused, nothing on
+  the conversation changes, voice need not be on, and the standby cap applies (409).
 - `POST /live_conversations/:id/delegations` (`delegation_id` from `session.delegation.created`,
   `pending_user_text`, the person's line still in flight) → `{text, chunks, end_call, hung_up,
   warning, rounds, cost_usd, billed_usd}`: Claude's answer. Append each chunk as
@@ -1313,8 +1323,7 @@ Voice — the relay a client holding the audio connection makes:
 - `POST /live_conversations/:id/session_update` → `{session}`: the `session.update` payload that
   brings an open call up to the current Live settings and guidance. Send it after the settings
   changed somewhere else, such as the app's own settings screen. `model` records the model the call
-  runs on, for a call that started on a [CarPlay pre-warm](/sessions/live/#carplay-pre-warm)
-  connection; 422 when it is not a model name.
+  runs on, for a call that started on a Realtime connection held in [standby](/sessions/live/#standby); 422 when it is not a model name.
 - `POST /live_conversations/:id/turns` (`role` user|assistant, `content`) → 201 with the turn,
   `respond: true` and `listening`, the mode that decided. A finished transcript line, so the thread carries what was said. With
   `listening_modes` on a call whose [Listening](/sessions/live/#listening-which-lines-get-an-answer)

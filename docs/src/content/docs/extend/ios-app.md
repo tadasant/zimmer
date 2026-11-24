@@ -844,8 +844,10 @@ that one screen, reads Connecting… while it reconnects, and the model says whe
 by saying so too: "hang up" or "stop listening" ends the call once the model has said it is hanging up,
 with the hung-up cue, and counts as End, so nothing retries and the tiles come back with Continue
 ([Hanging up by voice](/sessions/live/#hanging-up-by-voice)). With
-[CarPlay pre-warm](/sessions/live/#carplay-pre-warm), the car holds an idle connection ready for
-Continue while it is connected. It sends nothing and shows nothing until you tap.
+[standby](/sessions/live/#standby), the car holds a connection ready for Continue and one for New while
+it is connected, so a tap goes straight to the call screen and is usually talking as soon as the
+microphone is open. Nothing is heard or shown until you tap. The phone does the same while Live is on
+screen on a conversation with voice on.
 
 **Unplug with a call up and the phone goes to it.** The call carries on, and the phone lands on its
 Live thread, with Mute and Hang up, about three seconds later if the app is open, or the next time it

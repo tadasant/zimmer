@@ -146,7 +146,7 @@ public final class LiveTelemetry: @unchecked Sendable {
     /// The call under way, as the next launch will find it if this one dies.
     private struct OpenCall: Codable {
         let id: String
-        let conversation: Int?
+        var conversation: Int?
         let startedAt: Date
         var lastSeenAt: Date
         var lastSeq: Int
@@ -232,6 +232,16 @@ public final class LiveTelemetry: @unchecked Sendable {
             saveOpenCall()
         }
         return id
+    }
+
+    /// The call under way is on `conversation`: a New that Zimmer had not answered when it began.
+    public func callIsOn(_ conversation: Int) {
+        lock.withLock {
+            guard let open = call, open.conversation != conversation else { return }
+            call = (open.id, conversation)
+            openCall?.conversation = conversation
+            saveOpenCall()
+        }
     }
 
     /// Write `what` on the open call's record now, not on the next stamp. Events wait in memory

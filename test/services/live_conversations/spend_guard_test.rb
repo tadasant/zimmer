@@ -36,6 +36,30 @@ class LiveConversations::SpendGuardTest < ActiveSupport::TestCase
     assert_match(/daily cap \(\$1\.00 of \$1\.00 today\)/, check.reason)
   end
 
+  test "standby has its own daily cap, counts toward the engine's, and not toward a conversation's" do
+    conversation = create_live_conversation
+    standby = ->(minutes, at = Time.current) do
+      LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "voice_standby", vendor: "openai_live_standby", model: "gpt-live-1",
+                             seconds: 60 * minutes, live_conversation: conversation, occurred_at: at)
+    end
+    standby.(500, 2.days.ago)
+    assert_nil LiveConversations::SpendGuard.standby_refusal
+
+    standby.(125) # $2.50
+    assert_nil LiveConversations::SpendGuard.standby_refusal
+    check = LiveConversations::SpendGuard.check(engine: "gpt_live_claude", conversation: conversation)
+    assert_equal 0.0, check.conversation_spend
+    assert_in_delta 2.5, check.daily_spend, 0.0001
+
+    standby.(25)
+    assert_match(/\$3\.00 of \$3\.00/, LiveConversations::SpendGuard.standby_refusal)
+
+    LiveSetting.editable.update!(voice_standby_daily_cap_usd: 5.0)
+    assert_nil LiveConversations::SpendGuard.standby_refusal
+    LiveSetting.editable.update!(voice_standby_daily_cap_usd: 0.0)
+    assert_match(/off/, LiveConversations::SpendGuard.standby_refusal)
+  end
+
   def claude(basis, conversation:, input_tokens: 1_000_000)
     LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "delegation", vendor: "anthropic", model: "claude-opus-5-5",
                            input_tokens: input_tokens, live_conversation: conversation, billing_basis: basis)

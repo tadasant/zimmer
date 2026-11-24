@@ -13,7 +13,9 @@
 # them. See docs/sessions/live.md.
 #
 # Lifecycle: preparing (AGENTS.md being fetched) → active → ended, or failed
-# when it could not be prepared. At most one open conversation at a time. An
+# when it could not be prepared. At most one open conversation at a time. Beside
+# them, at most one `standby`: kept ready for the next New, on no list and not
+# open until it is taken (LiveConversations::Standby, #start_from_standby!). An
 # ended conversation can come back (reopen!, through LiveConversations::Switch):
 # the same row, so its id, its thread and the sessions it touched all survive.
 class LiveConversation < ApplicationRecord
@@ -23,7 +25,8 @@ class LiveConversation < ApplicationRecord
   ACTIVE = "active"
   ENDED = "ended"
   FAILED = "failed"
-  STATUSES = [ PREPARING, ACTIVE, ENDED, FAILED ].freeze
+  STANDBY = "standby"
+  STATUSES = [ STANDBY, PREPARING, ACTIVE, ENDED, FAILED ].freeze
   OPEN_STATUSES = [ PREPARING, ACTIVE ].freeze
 
   # A text turn whose job died mid-flight must not leave the thread locked
@@ -43,7 +46,8 @@ class LiveConversation < ApplicationRecord
   validate :mode_instructions_is_a_map_of_modes
 
   scope :unfinished, -> { where(status: OPEN_STATUSES) }
-  scope :recent_first, -> { order(updated_at: :desc, id: :desc) }
+  # Every list of conversations. The one kept in standby is on none of them.
+  scope :recent_first, -> { where.not(status: STANDBY).order(updated_at: :desc, id: :desc) }
   # What Switch can move to, the most recently left first. A conversation nobody
   # said anything in is not one to go back to, and one from a retired root has
   # no instructions Live Mode reads any more.
@@ -67,6 +71,9 @@ class LiveConversation < ApplicationRecord
     unfinished.order(id: :desc).first
   end
 
+  # The one kept ready for the next New, or nil.
+  def self.standby = find_by(status: STANDBY)
+
   # The conversation "go back" means: the one left most recently.
   def self.previous = to_go_back_to.first
 
@@ -78,6 +85,7 @@ class LiveConversation < ApplicationRecord
   def active? = status == ACTIVE
   def ended? = status == ENDED
   def failed? = status == FAILED
+  def standby? = status == STANDBY
   def open? = OPEN_STATUSES.include?(status)
 
   def responding?
@@ -243,6 +251,15 @@ class LiveConversation < ApplicationRecord
       car_call: false,
       last_activity_at: Time.current
     )
+  end
+
+  # From standby to the current conversation: the person chose New. Only Start
+  # calls this, under the locks that keep it the only open one. It starts now,
+  # whenever it was made ready, and on `attributes` (Start's seed) rather than
+  # the ones it has been standing by on.
+  def start_from_standby!(attributes)
+    now = Time.current
+    update!(**attributes, created_at: now, last_activity_at: now, car_call: false, voice_engine: nil, voice_engine_fallback: nil, voice_mode: nil)
   end
 
   def fail!(message)

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_23_150100) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_24_160000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -567,6 +567,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_150100) do
     t.string "voice_engine_fallback"
     t.string "voice_mode"
     t.index "(true)", name: "index_live_conversations_one_open", unique: true, where: "(((status)::text = 'preparing'::text) OR ((status)::text = 'active'::text))"
+    t.index "(true)", name: "index_live_conversations_one_standby", unique: true, where: "((status)::text = 'standby'::text)"
     t.index ["mode", "status"], name: "index_live_conversations_on_mode_and_status"
     t.index ["updated_at"], name: "index_live_conversations_on_updated_at"
   end
@@ -611,6 +612,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_23_150100) do
     t.string "voice_noise_reduction"
     t.string "voice_reasoning_effort"
     t.float "voice_speed"
+    t.float "voice_standby_daily_cap_usd"
     t.string "voice_telemetry"
     t.string "voice_transcription_model"
     t.string "voice_turn_detection"

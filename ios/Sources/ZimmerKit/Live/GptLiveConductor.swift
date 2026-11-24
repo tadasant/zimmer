@@ -29,6 +29,10 @@ import Foundation
 ///                Zimmer could not answer is a failure
 ///   cost         the session's billed seconds every `sessionReportEvery` and at the end, each
 ///                turn's time to first audio, and the call's length → `.report` for the ledger
+///   standby      a session held ready ahead of a tap (`LiveWarmStart`): nothing is sent and nothing
+///                is read but that it started, its seconds go on the ledger at the standby rate, and
+///                `claim` makes it a call from then on. A session that woke, or said anything,
+///                before the tap is not one to keep: `.woke`
 ///   end          `session.close`, then `session.closed` (its usage) or `closeGrace`, whichever
 ///                is first
 public struct GptLiveConductor: Sendable {
@@ -58,6 +62,8 @@ public struct GptLiveConductor: Sendable {
         case state(LiveVoiceState)
         /// `session.started`: the call is up.
         case started
+        /// In standby, inference began before anybody tapped: the session is not standing by.
+        case woke
         /// GPT-Live's answer has begun to sound: the call's first audio, for the log.
         case firstAudio
         /// A row for the voice-engine ledger.
@@ -79,7 +85,16 @@ public struct GptLiveConductor: Sendable {
     /// The backend said the call is ending (`end_call`): the next answer to stop sounding ends it.
     public var hangingUp: Bool { goodbyePending || saidGoodbye }
 
+    /// Held ready, and nobody's call yet.
+    public private(set) var inStandby: Bool
+    /// `session.started`'s `expires_at`, in Unix seconds: when OpenAI ends the session.
+    public private(set) var expiresAt: TimeInterval?
+    public private(set) var hasStarted = false
+
     private let callKey: String
+    /// It was held before it was a call, so `session.closed`'s seconds cover more than the call.
+    private var wasHeld: Bool
+    private var heldSince: TimeInterval?
     private var seq = 0
     private var eventSeq = 0
     private var userText = ""
@@ -115,8 +130,10 @@ public struct GptLiveConductor: Sendable {
     private var closedUsage: JSONValue?
 
     /// `callKey`: unique to the call; every ledger row's key starts with it.
-    public init(callKey: String = GptLiveConductor.newCallKey()) {
+    public init(callKey: String = GptLiveConductor.newCallKey(), standby: Bool = false) {
         self.callKey = callKey
+        inStandby = standby
+        wasHeld = standby
     }
 
     public static func newCallKey() -> String {
@@ -128,15 +145,55 @@ public struct GptLiveConductor: Sendable {
         sessionID = id
     }
 
+    /// The person tapped: from now on this is a call. Its seconds in standby go on the ledger; the
+    /// call's own start here, at the active rate from the first, whatever moment OpenAI wakes it.
+    public mutating func claim(at now: TimeInterval) -> [Effect] {
+        guard inStandby, !ended, !closing else { return [] }
+        let effects = reportHeld(at: now, partial: false)
+        inStandby = false
+        if hasStarted { callBegan(at: now) }
+        return effects
+    }
+
+    private mutating func callBegan(at now: TimeInterval) {
+        startedAt = now
+        callMark = now
+        nextSessionReport = now + Self.sessionReportEvery
+    }
+
+    /// What a session in standby says. Nothing is asked of it, so nothing is recorded or answered.
+    private mutating func handleInStandby(_ event: JSONValue, at now: TimeInterval) -> [Effect] {
+        switch event["type"]?.string {
+        case "session.started":
+            started(event)
+            heldSince = now
+            nextSessionReport = now + Self.sessionReportEvery
+            return [.started]
+        case "session.resumed", "session.input_transcript.delta", "session.output_transcript.delta", "session.delegation.created":
+            return [.woke]
+        case "session.closed":
+            return finish(at: now)
+        case "error":
+            return [.failure(event["error"]?["message"]?.string ?? "GPT-Live reported an error.")]
+        default:
+            return []
+        }
+    }
+
+    private mutating func started(_ event: JSONValue) {
+        hasStarted = true
+        if sessionID == nil { sessionID = event["session"]?["id"]?.string }
+        if case let .number(at)? = event["session"]?["expires_at"] { expiresAt = at }
+    }
+
     /// One server event from the data channel.
     public mutating func handle(_ event: JSONValue, at now: TimeInterval) -> [Effect] {
         guard !ended else { return [] }
+        if inStandby { return handleInStandby(event, at: now) }
         switch event["type"]?.string {
         case "session.started":
-            if sessionID == nil { sessionID = event["session"]?["id"]?.string }
-            startedAt = now
-            callMark = now
-            nextSessionReport = now + Self.sessionReportEvery
+            started(event)
+            callBegan(at: now)
             return [.started, .state(.listening)]
         case "session.input_transcript.delta":
             var effects = flushAssistant()
@@ -277,6 +334,7 @@ public struct GptLiveConductor: Sendable {
         }
         if let next = nextSessionReport, now >= next {
             nextSessionReport = now + Self.sessionReportEvery
+            effects += reportHeld(at: now, partial: true)
             effects += reportCall(at: now, partial: true)
             effects += reportSession(at: now, partial: true)
         }
@@ -298,6 +356,7 @@ public struct GptLiveConductor: Sendable {
         guard !ended else { return [] }
         if endedAt == nil { endedAt = now }
         var effects = flushUser() + flushAssistant()
+        effects += reportHeld(at: now, partial: false)
         effects += reportCall(at: now, partial: false)
         effects += reportSession(at: now, partial: false)
         ended = true
@@ -361,15 +420,27 @@ public struct GptLiveConductor: Sendable {
                                        details: ["partial": .bool(partial)]))]
     }
 
+    /// The seconds a session was held in standby since the last report, at OpenAI's standby rate.
+    private mutating func reportHeld(at now: TimeInterval, partial: Bool) -> [Effect] {
+        guard inStandby, let since = heldSince else { return [] }
+        let to = partial ? now : (endedAt ?? now)
+        heldSince = partial ? to : nil
+        guard to > since else { return [] }
+        seq += 1
+        return [.report(LiveUsageEvent(engine: Self.engine, operation: "voice_standby", key: key(), seconds: Self.round(to - since),
+                                       details: ["session_id": .string(sessionID ?? ""), "partial": .bool(partial)]))]
+    }
+
     /// GPT-Live bills the session's seconds: reported every minute and the rest at the end. The
-    /// total is `session.closed`'s final usage when it came, else the seconds this call saw.
+    /// total is `session.closed`'s final usage when it came, else the seconds this call saw; on a
+    /// session held in standby first, the seconds this call saw, because the usage covers both.
     private mutating func reportSession(at now: TimeInterval, partial: Bool) -> [Effect] {
         guard !sessionReported, let startedAt else { return [] }
         var total = now - startedAt
         var fromUsage = false
         if !partial {
             sessionReported = true
-            if let reported = Self.billedSeconds(closedUsage) {
+            if !wasHeld, let reported = Self.billedSeconds(closedUsage) {
                 total = reported
                 fromUsage = true
             }

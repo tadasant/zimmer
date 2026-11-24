@@ -266,6 +266,7 @@ Rails.application.routes.draw do
       get "live/costs", to: "live_costs#show"
       get "live/usage_events", to: "live_costs#events"
       resources :live_conversations, only: [ :index, :show, :create ] do
+        post :standby, on: :collection
         post :switch, on: :collection
         member do
           get :sessions
