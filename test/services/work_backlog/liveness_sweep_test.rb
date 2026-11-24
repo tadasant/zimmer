@@ -502,7 +502,7 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
       sweep(probes: { 1 => probe(references: [ merged_pr(merged_at: 1.day.ago) ]) })
 
       assert_equal 1, alerts.pages.size
-      assert_match(/stranded for over 1 week\z/, alerts.pages.first[:message])
+      assert_equal "Work backlog stranded: new zimmer#1 (9d)", alerts.pages.first[:message]
     end
 
     assert_equal WorkBacklogItem::LIVENESS_PR_MERGED_ISSUE_OPEN, item.reload.liveness_state
@@ -518,9 +518,9 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
     with_alerts do |alerts|
       sweep(probes: { 1 => probe(references: []) })
 
-      # The GlitchTip event is the page: its title names the band and the problem.
+      # The GlitchTip event is the page: its title names the problem and the news.
       assert_equal 1, alerts.pages.size
-      assert_match(/stranded for over 1 week\z/, alerts.pages.first[:message])
+      assert_equal "Work backlog stranded: new zimmer#1 (9d)", alerts.pages.first[:message]
       assert_equal :warning, alerts.pages.first[:level]
       assert_equal [ WorkBacklog::LivenessSweep::ALERT_FINGERPRINT, "weeks-1", "rows-1" ],
                    alerts.pages.first[:fingerprint].first(3)
@@ -530,6 +530,159 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
       assert_equal 1, alerts.records.size
       assert_match(/\AW, .* WARN -- : .*9\.0 days/, alerts.records.first)
       assert_empty alerts.error_records
+    end
+  end
+
+  # --- the message (#1665) ----------------------------------------------------
+  #
+  # Slack shows only the message. These pin what it says, and the fingerprints
+  # beside it, and never when it goes out: the tests around them do that.
+
+  # GlitchTip #214 and #215: two pages two days apart, each for one row, both
+  # titled "Work backlog rows have been stranded for over 10 weeks".
+  test "the message names the newly stranded row, whatever the oldest row's age" do
+    started_row(key: "zimmer#217", number: 217, started_at: 73.days.ago)
+    (2..6).each { |n| started_row(key: "zimmer##{n}", number: n, started_at: 30.days.ago) }
+
+    with_alerts do |alerts|
+      sweep
+      started_row(key: "zimmer#1560", number: 1560, started_at: 7.days.ago - 1.hour)
+      travel(1.hour) { sweep }
+
+      assert_equal 2, alerts.pages.size
+      assert_equal "Work backlog stranded: new zimmer#217 (73d), zimmer#2 (30d), zimmer#3 (30d) +3 more",
+                   alerts.events.first[:message]
+      assert_equal "Work backlog stranded: new zimmer#1560 (7d)", alerts.events.last[:message]
+      assert_equal [ "weeks-10", "rows-1" ], alerts.events.last[:fingerprint][1..2], "the band stays in the fingerprint"
+      assert_includes alerts.records.last, "Work backlog stranded: new zimmer#1560 (7d)", "the log line leads with it"
+    end
+  end
+
+  test "several newly stranded rows are all named, oldest first" do
+    started_row(key: "zimmer#1", number: 1, started_at: 8.days.ago)
+    started_row(key: "zimmer#2", number: 2, started_at: 12.days.ago)
+    started_row(key: "zimmer#3", number: 3, started_at: 9.days.ago)
+
+    with_alerts do |alerts|
+      sweep
+
+      assert_equal [ "Work backlog stranded: new zimmer#2 (12d), zimmer#3 (9d), zimmer#1 (8d)" ],
+                   alerts.events.map { |event| event[:message] }
+      assert_equal %w[zimmer#2 zimmer#3 zimmer#1], alerts.events.last.dig(:context, :newly_stranded)
+    end
+  end
+
+  test "newly stranded rows over the cap are counted, and the context still names more of them" do
+    (1..25).each { |n| started_row(key: "zimmer##{n}", number: n, started_at: (40 - n).days.ago) }
+
+    with_alerts do |alerts|
+      sweep
+
+      assert_equal "Work backlog stranded: new zimmer#1 (39d), zimmer#2 (38d), zimmer#3 (37d) +22 more",
+                   alerts.events.sole[:message]
+      assert_equal WorkBacklog::LivenessSweep::NAMED_ROWS_MAX, alerts.events.sole.dig(:context, :newly_stranded).size
+      assert_equal 25, alerts.events.sole.dig(:context, :newly_stranded_rows)
+      assert_match(/ and 5 more/, alerts.records.sole)
+    end
+  end
+
+  test "a count through a band is reported as the count and the step it crossed" do
+    started_row(key: "zimmer#1", number: 1, started_at: 9.days.ago)
+
+    with_alerts do |alerts|
+      sweep
+      # Too young to be new rows, so the count is the only news.
+      (2..12).each { |n| started_row(key: "zimmer##{n}", number: n, started_at: 2.days.ago) }
+      sweep
+
+      assert_equal [ "more_rows" ], alerts.events.last.dig(:context, :paged_for)
+      assert_equal "Work backlog stranded: now 12 rows (hit 10)", alerts.events.last[:message]
+    end
+  end
+
+  test "a page with two reasons states both" do
+    started_row(key: "zimmer#217", number: 217, started_at: 8.days.ago)
+
+    with_alerts do |alerts|
+      sweep
+      (2..10).each { |n| started_row(key: "zimmer##{n}", number: n, started_at: Time.current) }
+      travel(6.days + 1.hour) { sweep }
+
+      assert_equal [ "more_rows", "older" ], alerts.events.last.dig(:context, :paged_for)
+      assert_equal "Work backlog stranded: now 10 rows (hit 10); oldest zimmer#217 at 2 weeks",
+                   alerts.events.last[:message]
+    end
+  end
+
+  test "a page with every reason states every one of them" do
+    started_row(key: "zimmer#217", number: 217, started_at: 8.days.ago)
+
+    with_alerts do |alerts|
+      sweep
+      (2..9).each { |n| started_row(key: "zimmer##{n}", number: n, started_at: Time.current) }
+      started_row(key: "zimmer#1560", number: 1560, started_at: 1.day.ago)
+      travel(6.days + 1.hour) { sweep }
+
+      assert_equal [ "new_rows", "more_rows", "older" ], alerts.events.last.dig(:context, :paged_for)
+      assert_equal "Work backlog stranded: new zimmer#1560 (7d); now 10 rows (hit 10); oldest zimmer#217 at 2 weeks",
+                   alerts.events.last[:message]
+      assert_equal 2, alerts.events.map { |event| event[:fingerprint] }.uniq.size
+    end
+  end
+
+  # GlitchTip cuts a title at 100 characters. Names give way; reasons do not.
+  test "a message too long for a GlitchTip title drops names, never a reason" do
+    sweep_class = WorkBacklog::LivenessSweep
+    now = Time.current
+    row = ->(id, key, days) { sweep_class::StrandedRow.new(id: id, key: key, since: now - days.days, paged_at: nil, lapsed: true) }
+    all = %w[new_rows more_rows older]
+
+    [ 8, 40, 200 ].each do |length|
+      rows = (1..1200).map { |id| row.call(id, "k" * length, 7 + 1200 - id) }
+      title = sweep_class.send(:page_title, rows, all, rows, now)
+
+      assert_operator title.length, :<=, sweep_class::TITLE_MAX, title
+      assert title.start_with?(sweep_class::TITLE_PREFIX), title
+      assert_match(/\bnew\b.*; now 1200 rows \(hit 1000\); oldest .*at 172 weeks\z/, title)
+    end
+
+    long = [ row.call(1, "k" * 200, 8) ]
+    assert_equal "Work backlog stranded: 1 new", sweep_class.send(:page_title, long, [ "new_rows" ], long, now)
+    assert_equal "Work backlog stranded: oldest at 1 week", sweep_class.send(:page_title, long, [ "older" ], [], now)
+  end
+
+  test "a message gives up the oldest row's key first, then the newly stranded keys from the youngest" do
+    sweep_class = WorkBacklog::LivenessSweep
+    now = Time.current
+    title = lambda do |prefix|
+      fresh = [ 12, 9, 8 ].each_with_index.map do |days, i|
+        sweep_class::StrandedRow.new(id: i, key: "#{prefix}##{i}", since: now - days.days, paged_at: nil, lapsed: false)
+      end
+      oldest = sweep_class::StrandedRow.new(id: 9, key: "zimmer#217", since: now - 115.days, paged_at: now, lapsed: false)
+      sweep_class.send(:page_title, fresh + [ oldest ], [ "new_rows", "older" ], fresh, now)
+    end
+
+    assert_equal "Work backlog stranded: new a#0 (12d), a#1 (9d), a#2 (8d); oldest zimmer#217 at 16 weeks", title.call("a")
+
+    nine, twelve, twenty = [ 9, 12, 20 ].map { |length| "r" * length }
+    assert_equal "Work backlog stranded: new #{nine}#0 (12d), #{nine}#1 (9d), #{nine}#2 (8d); oldest at 16 weeks", title.call(nine)
+    assert_equal "Work backlog stranded: new #{twelve}#0 (12d), #{twelve}#1 (9d) +1 more; oldest at 16 weeks", title.call(twelve)
+    assert_equal "Work backlog stranded: new #{twenty}#0 (12d) +2 more; oldest at 16 weeks", title.call(twenty)
+    assert_equal "Work backlog stranded: 3 new; oldest at 16 weeks", title.call("r" * 60)
+  end
+
+  # The one page an unreadable pass may send. Its census is unreliable, so the
+  # message names the lapsed row and nothing about the rest.
+  test "a lapse-only page names the row whose hold lapsed, and says so" do
+    held_row(started_at: 22.days.ago)
+    started_row(key: "zimmer#2", number: 2, started_at: 60.days.ago)
+
+    with_alerts do |alerts|
+      travel(WorkBacklogItem::HOLD_DURATION + 1.hour) { sweep(probe_error: "repository not found") }
+
+      assert_equal [ "Work backlog stranded: new zimmer#1 (36d, hold lapsed)" ],
+                   alerts.events.map { |event| event[:message] }
+      assert_equal [ "zimmer#1" ], alerts.events.sole.dig(:context, :newly_stranded)
     end
   end
 
@@ -591,7 +744,7 @@ class WorkBacklog::LivenessSweepTest < ActiveSupport::TestCase
       assert_equal %w[weeks-1 weeks-2 weeks-4 weeks-8 weeks-16], alerts.events.map { |event| event[:fingerprint][1] }
       assert_equal [ [ "new_rows" ], [ "older" ], [ "older" ], [ "older" ], [ "older" ] ],
                    alerts.events.map { |event| event.dig(:context, :paged_for) }
-      assert_match(/stranded for over 2 weeks\z/, alerts.events.second[:message])
+      assert_equal "Work backlog stranded: oldest zimmer#1 at 2 weeks", alerts.events.second[:message]
     end
   end
 
