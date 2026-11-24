@@ -882,6 +882,13 @@ Both run `.github/scripts/migration-versions-vs-main.rb` (`check` and `sweep`), 
 with `MigrationVersionGuard.merge_collisions`. `sweep --dry-run` prints the verdicts without writing
 anything.
 
+A transient GitHub failure (a 5xx, 408 or 429, a GraphQL execution error, a dropped connection) is
+retried up to four times, waiting 2, 5, 10 and 20 seconds. No retry starts more than 300 seconds
+into the run, which leaves the sweep half of its 10-minute timeout. A permanent error such as a 404 or 403
+fails on the first attempt, and so do the two writes that must not land twice: the comment and the
+CI re-run. When the retries run out, the call fails the way a permanent error does: `check` exits
+non-zero, and the sweep checks the other PRs and then fails.
+
 One window is still open. The sweep can queue for a runner for a few minutes after the push, and
 a PR that merges in that time is not stopped. A merge that ignores the
 red `all-checks-pass` or the missing label isn't stopped either. The setting that closes this
