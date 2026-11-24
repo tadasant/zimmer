@@ -327,8 +327,12 @@
               <p class="mt-1.5 text-sm text-gray-800 whitespace-pre-wrap break-words"><%= entry.content %></p>
               <% if entry.confirmed_pr_url.present? %>
                 <div class="mt-1.5 border-l-2 border-gray-200 pl-3" data-live-mode-read-back>
-                  <p class="text-xs text-gray-500 break-words">Answering Zimmer's read-back of <%= entry.confirmed_pr_url %>:</p>
-                  <p class="mt-0.5 text-sm text-gray-600 whitespace-pre-wrap break-words"><%= entry.read_back %></p>
+                  <% if entry.read_back.present? %>
+                    <p class="text-xs text-gray-500 break-words">Yes to merging <%= entry.confirmed_pr_url %>. Zimmer's question:</p>
+                    <p class="mt-0.5 text-sm text-gray-600 whitespace-pre-wrap break-words"><%= entry.read_back %></p>
+                  <% else %>
+                    <p class="text-xs text-gray-500 break-words">Yes to merging <%= entry.confirmed_pr_url %>, the PR the conversation had open.</p>
+                  <% end %>
                 </div>
               <% elsif entry.replying_to.present? %>
                 <div class="mt-1.5 border-l-2 border-gray-200 pl-3" data-live-mode-replying-to>

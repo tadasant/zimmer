@@ -60,8 +60,8 @@ module LiveConversations
   #    writes is this conversation's and no other. A write mid-call hands a
   #    voice client a `session.update`, so the call's instructions carry it.
   # 8. **Merging** — `authorize_merge`, the Merge button by voice: Zimmer names
-  #    the PR in one short question, and only a fresh, signed-in yes to it
-  #    sends the same authorization the button sends. Always present. See
+  #    the PR, and one fresh, signed-in yes to merging it sends the same
+  #    authorization the button sends. Always present. See
   #    LiveConversations::AuthorizeMerge.
   #
   # Every call is recorded as a `tool` turn on the conversation.

@@ -221,8 +221,9 @@ module Mcp
 
     # What a short `live_mode` reply was answering. A sign-off through the
     # voice Merge button (`live_mode.authorize_merge`) carries the PR Zimmer
-    # named and the read-back Zimmer composed; any other entry carries the
-    # assistant line just before the person's words. Both are shown as what
+    # named, the question Zimmer composed if it did, and the nearest assistant
+    # line; any other entry carries the assistant line just before the person's
+    # words. Each is shown as what
     # they are — Zimmer's record, or the model's line — and never as the
     # person's words.
     def replying_to_lines(entry, content_limit)
@@ -234,8 +235,16 @@ module Mcp
         lines.concat(fenced(entry.read_back.to_s, content_limit))
       elsif entry.confirmed_pr_url.present?
         url = Sanitize.sanitize_for_markdown_line(entry.confirmed_pr_url)
-        lines << "  They were answering Zimmer's read-back of #{url} (composed by Zimmer, not by the Live Mode assistant: the repository and number from Zimmer's record of the PR, a few words of the title from the session, whether the merge gate held it):"
-        lines.concat(fenced(entry.read_back.to_s, content_limit))
+        if entry.read_back.present?
+          lines << "  They said yes to merging #{url}. The question Zimmer composed for the Live Mode assistant to ask, in its own words (the repository and number from Zimmer's record of the PR, a few words of the title from the session, whether the merge gate held it):"
+          lines.concat(fenced(entry.read_back.to_s, content_limit))
+        else
+          lines << "  They said yes to merging #{url}, the PR of the session Zimmer had last shown the Live Mode assistant, before Zimmer composed any question."
+        end
+        if entry.replying_to.present?
+          lines << "  The nearest line from the Live Mode assistant (the model's words, not theirs):"
+          lines.concat(fenced(entry.replying_to, content_limit))
+        end
       elsif entry.replying_to.present?
         lines << "  They were answering this line from the Live Mode assistant (the model's words, not theirs):"
         lines.concat(fenced(entry.replying_to, content_limit))

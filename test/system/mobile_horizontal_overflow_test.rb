@@ -302,9 +302,16 @@ class MobileHorizontalOverflowTest < ApplicationSystemTestCase
                     "replying_to" => "#{LONG_TOKEN_TITLE} is held. Should I merge it?", "relayed_message" => "Merge #{pr}" }
     )
 
+    session.human_messages.create!(
+      author: "tadasant", channel: HumanMessage::LIVE_MODE, content: "Great. Merge it", occurred_at: Time.utc(2026, 11, 13, 6, 20),
+      provenance: { "entry_point" => "live_mode.authorize_merge", "surface" => "carplay", "heard" => "spoken",
+                    "confirmed_pr_url" => pr, "relayed_message" => "Merge #{pr}" }
+    )
+
     visit session_path(session)
     open_provenance_panels
-    assert_selector "[data-live-mode-read-back]", text: "Answering Zimmer's read-back of #{pr}"
+    assert_selector "[data-live-mode-read-back]", text: "Yes to merging #{pr}. Zimmer's question:"
+    assert_selector "[data-live-mode-read-back]", text: "Yes to merging #{pr}, the PR the conversation had open."
     assert_selector "[data-live-mode-replying-to]", text: "Answering the Live Mode assistant"
 
     assert_no_horizontal_overflow("session detail with a Live Mode merge sign-off")

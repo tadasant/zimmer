@@ -89,6 +89,7 @@ final class LiveCall: ObservableObject {
     /// The engine this call runs on (`LiveVoiceEngine`).
     @Published private(set) var engine = LiveVoiceEngine.realtime
 
+    private let turns = LiveTurnQueue()
     private var conductor = RealtimeConductor() {
         didSet { if conductor.canEndTurn != canSendNow { canSendNow = conductor.canEndTurn } }
     }
@@ -1123,9 +1124,9 @@ final class LiveCall: ObservableObject {
                 relay(callID: callID, name: name, arguments: arguments, generation: generation)
             case let .record(role, text):
                 guard let conversation = conversationID else { continue }
-                Task {
-                    _ = try? await api.recordLiveTurn(conversation, role: role, content: text, gated: false)
-                    activity += 1
+                turns.add {
+                    _ = try? await self.api.recordLiveTurn(conversation, role: role, content: text, gated: false)
+                    self.activity += 1
                 }
             case let .hear(itemID, text):
                 hear(itemID: itemID, text: text, generation: generation)

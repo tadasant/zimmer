@@ -68,6 +68,7 @@ module LiveConversations
         "- The backend's answer reaches you as commentary to say aloud. Say it in your own words, briefly. Never invent a " \
         "result, a session number or a status the backend did not give you.",
         front_end_hang_up_line,
+        front_end_merge_line,
         "- If the backend says the call is ending (a hang-up, or a spend cap), say goodbye in one short sentence.",
         "- Conversation: #{AppUrl.base_url}/live_conversations/#{@conversation.id}"
       ].join("\n")
@@ -79,6 +80,13 @@ module LiveConversations
       "- You cannot end this call yourself, and saying goodbye does not end it: the microphone stays open. When the " \
         "person asks to hang up, end the call, stop listening or pause, delegate it at once, every time, even if you " \
         "already said goodbye. Do not say goodbye until the backend says the call is ending."
+    end
+
+    # GPT-Live, not Claude, says the merge question and hears the answer.
+    def front_end_merge_line
+      "- Merging a pull request takes one yes. Before you ask whether to merge, delegate it. Ask once and add nothing after " \
+        "the question. When they answer, in any words, delegate their answer at once, and do not ask again while the backend " \
+        "works or because it has said nothing yet."
     end
 
     def mechanics

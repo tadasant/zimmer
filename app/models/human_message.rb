@@ -138,8 +138,9 @@ class HumanMessage < ApplicationRecord
   end
 
   # On a `live_mode.authorize_merge` sign-off: the PR Zimmer named, and the
-  # read-back Zimmer composed and the person said yes to. On an `attested` one,
-  # the same two, as the issuing Zimmer signed them.
+  # question Zimmer composed for the assistant to ask (nil when the person had
+  # already said yes to the PR the conversation had open). On an `attested`
+  # one, the same two, as the issuing Zimmer signed them.
   def confirmed_pr_url
     provenance["confirmed_pr_url"].presence if [ LIVE_MODE, ATTESTED ].include?(channel)
   end
