@@ -5,7 +5,7 @@
 #
 #   GET  /api/v1/live                              available? why not? each mode's model
 #   GET  /api/v1/live_conversations                recent conversations, and the current one
-#   POST /api/v1/live_conversations                start one (mode=text|voice, default text; standby_id: from the one kept ready); ends the open one
+#   POST /api/v1/live_conversations                start one (mode=text|voice, default text; standby_id: from the one kept ready, again=1: this tap may have been answered); ends the open one
 #   POST /api/v1/live_conversations/standby        the one kept ready for the next New, made or brought up to date; ends nothing
 #   GET  /api/v1/live_conversations/:id            one conversation with its turns (?after_turn_id= for new ones)
 #   GET  /api/v1/live_conversations/:id/sessions   the sessions its tool calls have touched, newest first, with board rows
@@ -84,7 +84,7 @@ class Api::V1::LiveConversationsController < Api::BaseController
       return render_api_error("Unprocessable Entity", "mode must be one of: #{LiveConversations.mode_keys.join(', ')}", status: :unprocessable_entity)
     end
 
-    conversation = LiveConversations::Start.call(mode, client_surface: api_turn_source.surface, standby_id: params[:standby_id])
+    conversation = LiveConversations::Start.call(mode, client_surface: api_turn_source.surface, standby_id: params[:standby_id], again: flag(:again))
     render json: conversation.as_api_json, status: :created
   rescue LiveConversations::Start::Unavailable => e
     render_api_error("Service Unavailable", e.message, status: :service_unavailable)

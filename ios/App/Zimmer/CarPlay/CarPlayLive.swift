@@ -169,6 +169,7 @@ final class CarPlayLive {
         call.pressed()
         // A tap back to a New that Zimmer has not answered yet leaves it New, for the retry.
         if call.settled || !call.isActive { wish.tapped(tile, callIsActive: call.isActive) }
+        if tile == .newConversation { call.askedForNew() }
         // A fresh start is asked for out loud: a mute left over from the call it replaces would
         // open a new conversation on a microphone that hears nothing. Retry keeps it.
         if wish.choice == .startNew { comeback = nil }
@@ -282,8 +283,10 @@ final class CarPlayLive {
 
     /// The gear: end the call, take its screen down, and put the panel up.
     private func openSettings() {
-        guard navigator != nil, settings == nil,
-              let ended = CarCallComeback(conversation: call.conversationID, callIsActive: call.isActive, muted: call.muted) else { return }
+        guard navigator != nil, settings == nil, call.isActive else { return }
+        // Nil while the call is still finding its conversation: there is none to call back, and the
+        // panel's way out is the tiles.
+        let ended = CarCallComeback(conversation: call.conversationID, callIsActive: call.isActive, muted: call.muted)
         telemetry.track(.carPlay("settings_opened", ["state": .string(String(describing: call.state))]))
         #if DEBUG
         drillHearing = false
@@ -293,7 +296,7 @@ final class CarPlayLive {
         retry.stopped()
         call.hangUp()
         dismiss()
-        showSettings(fromCall: true)
+        showSettings(fromCall: ended != nil)
     }
 
     /// Push the panel. From the call, a panel CarPlay refuses brings the call straight back.

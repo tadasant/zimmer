@@ -17,9 +17,9 @@ module LiveConversations
   #
   # With `standby_id`, the conversation started is the one kept ready for this
   # (Standby), so a call the app already has open on it is a call on the
-  # conversation that is current. Asking again for one already taken answers
-  # with it, so a request whose answer was lost can be sent twice; one that is
-  # gone is not missed, and the conversation started is a new one like any other.
+  # conversation that is current. Asking again (`again`) for one already taken
+  # answers with it, so a request whose answer was lost can be sent twice; one that
+  # is gone is not missed, and the conversation started is a new one like any other.
   class Start
     class Unavailable < StandardError; end
 
@@ -27,7 +27,8 @@ module LiveConversations
     #   starting it (web, ios, carplay, mcp), so a delegation the live model makes
     #   can say where the person was.
     # @param standby_id [Integer, nil] the standby conversation to start from.
-    def self.call(mode_key = "text", client_surface: nil, standby_id: nil) = new(mode_key, client_surface:, standby_id:).call
+    # @param again [Boolean] the client says this tap may have been answered already.
+    def self.call(mode_key = "text", client_surface: nil, standby_id: nil, again: false) = new(mode_key, client_surface:, standby_id:, again:).call
 
     # What a new conversation on `root` would start from, or nil when nothing on
     # it has been prepared yet.
@@ -42,7 +43,8 @@ module LiveConversations
     def self.defaults(root) = Array(root.default_mcp_servers).map(&:to_s).select { |name| ServersConfig.find(name) }.uniq
     private_class_method :prepared_before
 
-    def initialize(mode_key, client_surface: nil, standby_id: nil)
+    def initialize(mode_key, client_surface: nil, standby_id: nil, again: false)
+      @again = again
       @standby_id = standby_id.presence && Integer(standby_id, exception: false)
       @mode = LiveConversations.mode(mode_key)
       @client_surface = LiveConversation.normalize_client_surface(client_surface)
@@ -60,9 +62,9 @@ module LiveConversations
       taken = false
       conversation = LiveConversation.transaction do
         standby = LiveConversation.lock.find_by(id: @standby_id) if @standby_id
-        # Taken already, and nobody has said anything in it: this is the same tap,
-        # asking again. One somebody is talking in was another device's New.
-        if standby&.open? && standby.turns.none?
+        # Taken already. The same tap asking again: it says so, or nobody has said
+        # anything in it yet. One somebody is talking in was another device's New.
+        if standby&.open? && (@again || standby.turns.none?)
           taken = true
           next standby
         end

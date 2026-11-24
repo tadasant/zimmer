@@ -259,7 +259,9 @@ class LiveConversation < ApplicationRecord
   # the ones it has been standing by on.
   def start_from_standby!(attributes)
     now = Time.current
-    update!(**attributes, created_at: now, last_activity_at: now, car_call: false, voice_engine: nil, voice_engine_fallback: nil, voice_mode: nil)
+    # Nobody's until now, so nothing anybody left on it comes with it.
+    scratchpad_entries.delete_all
+    update!(**attributes, agent_wrote_scratchpad_at: nil, created_at: now, last_activity_at: now, car_call: false, voice_engine: nil, voice_engine_fallback: nil, voice_mode: nil)
   end
 
   def fail!(message)

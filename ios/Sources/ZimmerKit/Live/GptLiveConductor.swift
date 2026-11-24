@@ -95,6 +95,9 @@ public struct GptLiveConductor: Sendable {
     /// It was held before it was a call, so `session.closed`'s seconds cover more than the call.
     private var wasHeld: Bool
     private var heldSince: TimeInterval?
+    /// When this last ran while held. A gap is the app suspended, with no ICE consent going, so OpenAI
+    /// has let the session go and is billing nothing.
+    private var heldSeen: TimeInterval?
     private var seq = 0
     private var eventSeq = 0
     private var userText = ""
@@ -167,6 +170,7 @@ public struct GptLiveConductor: Sendable {
         case "session.started":
             started(event)
             heldSince = now
+            heldSeen = now
             nextSessionReport = now + Self.sessionReportEvery
             return [.started]
         case "session.resumed", "session.input_transcript.delta", "session.output_transcript.delta", "session.delegation.created":
@@ -299,6 +303,10 @@ public struct GptLiveConductor: Sendable {
     public mutating func tick(at now: TimeInterval) -> [Effect] {
         guard !ended else { return [] }
         var effects: [Effect] = []
+        if inStandby, !closing {
+            if let heldSeen, now - heldSeen > Self.longestHeldGap { effects += reportHeld(at: now, partial: true) }
+            heldSeen = now
+        }
         if let closeDeadline, now >= closeDeadline { return finish(at: now) }
         if closing { return [] }
         if let heardDeadline, now >= heardDeadline {
@@ -423,8 +431,14 @@ public struct GptLiveConductor: Sendable {
     /// The seconds a session was held in standby since the last report, at OpenAI's standby rate.
     private mutating func reportHeld(at now: TimeInterval, partial: Bool) -> [Effect] {
         guard inStandby, let since = heldSince else { return [] }
-        let to = partial ? now : (endedAt ?? now)
-        heldSince = partial ? to : nil
+        var to = partial ? now : (endedAt ?? now)
+        var over = !partial
+        // Asleep since: held only as far as this last ran, and no further.
+        if let heldSeen, to - heldSeen > Self.longestHeldGap {
+            to = heldSeen
+            over = true
+        }
+        heldSince = over ? nil : to
         guard to > since else { return [] }
         seq += 1
         return [.report(LiveUsageEvent(engine: Self.engine, operation: "voice_standby", key: key(), seconds: Self.round(to - since),
@@ -464,6 +478,9 @@ public struct GptLiveConductor: Sendable {
         if case let .number(ms)? = usage["duration_ms"] { return ms / 1_000 }
         return nil
     }
+
+    /// A gap longer than this while held is the app suspended, not a late tick.
+    static let longestHeldGap: TimeInterval = 5
 
     private static func round(_ seconds: Double) -> Double { (seconds * 1_000).rounded() / 1_000 }
 

@@ -5313,7 +5313,9 @@ settle these, and the call log says each one:
   that the first answer to a short utterance may take longer;
 - what it bills: the OpenAI usage page against `voice_standby` on `/live/costs`. Zimmer counts a call from standby at the
   active rate from the tap, though OpenAI's starts at the first word, so the ledger runs slightly high.
-  Whether the 15 s charge for starting a WebRTC session applies to one that starts in standby is not stated;
+  Whether the 15 s charge for starting a WebRTC session applies to one that starts in standby is not stated,
+  and the ledger has no row for it. So the standby cap cannot see it: if it applies, it is up to $0.0125 for each
+  session started, and what bounds those is the 15 starts for each tap in about an hour;
 - that libwebrtc holds two sessions at once on the one audio device, and that the silence on a muted
   track is what OpenAI means by keeping it active. It is about 30 kbit/s for each session held;
 - the win itself: `call.startup` `tap_to_ready_ms` for `tap=new`, `path=warm`.

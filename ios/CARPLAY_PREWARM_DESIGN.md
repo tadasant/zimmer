@@ -86,9 +86,11 @@ sequenceDiagram
   microphone and no audio session before the tap.
 - **Zimmer is told behind the call** (`LiveCall.settle`). Until it answers (`settled`), the call follows
   no other conversation, and its lines, its delegations and its ledger rows wait. A request that gets
-  no answer is sent again after 1 s and 3 s, which is safe: asking twice for one conversation is
-  answered the same. If Zimmer never answers, the call ends saying so, because a call on a
-  conversation Zimmer does not have can do nothing.
+  no answer is sent again after 1 s and 3 s (`LiveCall.asking`), which is safe: a New asked for again
+  (`again=1`) is answered the same. If Zimmer never answers, the call ends saying so, because a call on a
+  conversation Zimmer does not have can do nothing. The car's retry of that New asks for the same
+  conversation, or goes back to it if Zimmer answered late (`LiveCall.lastNew`), so a retry never ends
+  the conversation the driver just asked for. Another call beginning stops the asking.
 - **A session still on its way up is taken too**, and finishes coming up as the call's. It is seconds
   ahead of one started at the tap. It gets 6 s.
 - **Anything that goes wrong with the connection before the call is up starts it from cold**, on the
@@ -108,8 +110,8 @@ is never the current one and takes no message or turn; on no list; and it ends n
 most one, by a unique index, and asking again answers with the same row brought up to date. So an app
 that holds one all day and never taps New leaves one unused row. The tap takes it
 (`LiveConversations::Start`, `standby_id`): in one transaction the open conversation ends and this one
-starts, dated from the tap. One that is gone is not missed: the conversation started is a new one, and
-the answer's id says so.
+starts, dated from the tap. One that is gone, or that another device took and is talking in, is not
+missed: the conversation started is a new one, and the answer's id says so.
 
 ## Can the provider hold it, and for what?
 
@@ -136,6 +138,8 @@ So a held connection is $0.02 a minute, and two are $0.04. What bounds that:
 - **Place.** In the car while it is connected. On the phone, only while Live is on screen and on a
   conversation with voice on. Continue's is not held during a call; New's is, because New is what
   replaces the conversation a call is on.
+- **Suspended.** Seconds iOS had the app asleep are not counted as held: no ICE consent went out, so
+  OpenAI let the session go (`GptLiveConductor.longestHeldGap`).
 - **Waking early.** A session that wakes, or says anything, before the tap is closed at once.
 
 With `idle_timeout_s` left out, a session that has woken stays awake until it ends. So a call from
@@ -204,7 +208,7 @@ Rails
 | Rest | never | 20 min after the last sign of a call | It costs money |
 | After a suspend | ping | close and start again | ICE consent lapsed while iOS had the app |
 | Backoff | 5, 15, 60, 120 s | same | One per failure in a row |
-| Budget | 15 mints a visit | same | A visit is a car connection, or Live opened on the phone |
+| Budget | 15 mints a visit | same | A car connection or Live open on the phone, and any within the hour after |
 
 Nothing is held on Low Power Mode, at a serious thermal state, on Low Data Mode or with no network. A
 change to the Live settings made on this phone, the car's panel included, closes what is held and

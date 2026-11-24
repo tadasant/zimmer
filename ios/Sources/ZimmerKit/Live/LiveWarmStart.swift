@@ -61,9 +61,11 @@ public struct LiveWarmStart: Sendable, Equatable {
     public static let restAfter: TimeInterval = 1_200
     /// The waits after a failed warm-up, one per failure in a row; the last repeats.
     public static let backoff: [TimeInterval] = [5, 15, 60, 120]
-    /// The most mints in one car connection, or one opening of Live on the phone: an hour and a
-    /// quarter of a home screen nobody taps, at `maxAge` each. Past it calls start cold.
+    /// The most mints in one visit: an hour and a quarter of a home screen nobody taps, at `maxAge`
+    /// each. Past it calls start cold. A visit is a car connection, or Live open on the phone, with any
+    /// that begins within `visitLasts` of it: putting the phone down and picking it up is no new budget.
     public static let warmsPerVisit = 15
+    public static let visitLasts: TimeInterval = 3_600
     /// A gap between ticks longer than this means iOS suspended the app: nothing heard can be
     /// trusted, so the connection is pinged and the open conversation read at once.
     public static let longestTickGap: TimeInterval = 5
@@ -210,13 +212,16 @@ public struct LiveWarmStart: Sendable, Equatable {
     public private(set) var phase = Phase.idle
     /// The conversation the connection warming or warm is for.
     public private(set) var conversation: Int?
-    /// What the connection is, and what the last one was. Nil until Zimmer has said.
+    /// What the connection is. Nil until Zimmer has said.
     public private(set) var engine: Engine?
     /// Mints in this visit.
     public private(set) var warms = 0
     /// Why nothing is warming, as of the last decision. Nil while one is, or before the first.
     public private(set) var hold: Hold?
     private var active = false
+    private var visitBegan: TimeInterval?
+    /// What the last connection was: whether holding one costs money, until Zimmer says otherwise.
+    private var lastEngine: Engine?
     private var conditions: Conditions?
     private var version: String?
     private var life: TimeInterval = LiveWarmStart.maxAge
@@ -235,7 +240,14 @@ public struct LiveWarmStart: Sendable, Equatable {
 
     /// The car connected, or Live opened on the phone: a fresh budget, and read what to be ready for.
     public mutating func activate(at now: TimeInterval) -> [Action] {
+        let (visit, spent) = (visitBegan, warms)
         self = LiveWarmStart(slot)
+        if let visit, now - visit < Self.visitLasts {
+            visitBegan = visit
+            warms = spent
+        } else {
+            visitBegan = now
+        }
         active = true
         interestAt = now
         lastRefresh = now
@@ -246,7 +258,10 @@ public struct LiveWarmStart: Sendable, Equatable {
     /// The car went, or Live closed: close whatever is open, and do nothing more until it is back.
     public mutating func deactivate() -> [Action] {
         let open = phase != .idle
+        let (visit, spent) = (visitBegan, warms)
         self = LiveWarmStart(slot)
+        visitBegan = visit
+        warms = spent
         return open ? [.close(.left)] : []
     }
 
@@ -273,6 +288,7 @@ public struct LiveWarmStart: Sendable, Equatable {
     public mutating func connecting(_ engine: Engine) {
         guard phase == .warming else { return }
         self.engine = engine
+        lastEngine = engine
     }
 
     /// The connection is up: OpenAI said `session.created`, or `session.started`. `life`: how long
@@ -396,7 +412,7 @@ public struct LiveWarmStart: Sendable, Equatable {
     private var refreshInterval: TimeInterval { slot == .new ? Self.standbyRefreshEvery : Self.refreshEvery }
 
     private func resting(at now: TimeInterval) -> Bool {
-        engine == .gptLive && now - interestAt >= Self.restAfter
+        lastEngine == .gptLive && now - interestAt >= Self.restAfter
     }
 
     private mutating func taken() {
@@ -438,6 +454,8 @@ public struct LiveWarmStart: Sendable, Equatable {
         hold = nil
         phase = .warming
         conversation = target
+        // Until Zimmer says what this one is.
+        engine = nil
         version = conditions.version
         since = now
         lastHeard = now

@@ -271,6 +271,8 @@ module LiveConversations
     end
 
     def finish
+      raise Refused.new("This conversation has not started.", status: :conflict) if @conversation.standby?
+
       @conversation.end!
       @conversation
     end

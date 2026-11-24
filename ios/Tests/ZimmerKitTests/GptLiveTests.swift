@@ -118,6 +118,15 @@ final class GptLiveConductorTests: XCTestCase {
         return conductor
     }
 
+    /// Ticked as the app ticks it.
+    @discardableResult
+    private func hold(_ conductor: inout GptLiveConductor, to end: TimeInterval) -> [GptLiveConductor.Effect] {
+        var effects: [GptLiveConductor.Effect] = []
+        var now: TimeInterval = 0
+        while now < end { now += 1; effects += conductor.tick(at: now) }
+        return effects
+    }
+
     /// The hard rule: nothing goes up a session in standby, and its seconds are the only thing written.
     func testASessionInStandbySendsNothingAndReportsItsSecondsAsStandby() {
         var conductor = standingBy()
@@ -134,6 +143,7 @@ final class GptLiveConductorTests: XCTestCase {
 
     func testTheTapMakesItACallThatStartsThere() {
         var conductor = standingBy()
+        hold(&conductor, to: 45)
         let claimed = conductor.claim(at: 45)
         XCTAssertEqual(reports(claimed).map(\.operation), ["voice_standby"])
         XCTAssertEqual(reports(claimed).first?.seconds, 45)
@@ -148,6 +158,19 @@ final class GptLiveConductorTests: XCTestCase {
         XCTAssertEqual(ended.first { $0.operation == "call" }?.seconds, 60, "timed from the tap")
         XCTAssertEqual(ended.first { $0.operation == "voice_session" }?.seconds, 61, "the call's own seconds: OpenAI's total covers the standby too")
         XCTAssertFalse(ended.contains { $0.operation == "voice_standby" })
+    }
+
+    /// Suspended, the app kept no session going: OpenAI let it go, and the hours are nobody's bill.
+    func testTimeSpentSuspendedIsNotTimeHeld() {
+        var ticked = standingBy()
+        hold(&ticked, to: 10)
+        XCTAssertEqual(reports(ticked.tick(at: 7_200)).map(\.seconds), [10], "as far as it was seen")
+        XCTAssertEqual(reports(ticked.tick(at: 7_300)), [], "and nothing more: it is over")
+
+        var closed = standingBy()
+        hold(&closed, to: 10)
+        _ = closed.close(at: 7_200)
+        XCTAssertEqual(reports(closed.finish(at: 7_203)).map(\.seconds), [10], "closed as it woke, before any tick")
     }
 
     func testASessionTakenOnItsWayUpIsACallFromItsStart() {
@@ -166,7 +189,7 @@ final class GptLiveConductorTests: XCTestCase {
 
     func testAnUnusedSessionReportsWhatItWasHeldForAsItCloses() {
         var conductor = standingBy()
-        _ = conductor.tick(at: 60)
+        hold(&conductor, to: 80)
         XCTAssertEqual(conductor.close(at: 80).count, 1, "session.close")
         let closed = conductor.handle(event("session.closed", ["usage": .object(["seconds": .number(80)])]), at: 81)
         XCTAssertEqual(reports(closed).map(\.operation), ["voice_standby"], "and no call or voice_session: nobody called")

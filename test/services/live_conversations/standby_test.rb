@@ -94,6 +94,26 @@ class LiveConversations::StandbyTest < ActiveSupport::TestCase
     assert again.active?
   end
 
+  test "one another device took and is talking in is not this tap's, unless this tap says it may have been answered" do
+    standby = LiveConversations::Standby.prepare
+    LiveConversations::Start.call("voice", standby_id: standby.id).turns.create!(role: "user", source: "spoken", content: "Hello")
+
+    assert_equal standby, LiveConversations::Start.call("voice", standby_id: standby.id, again: true), "the same tap, whose answer was lost"
+    assert_not_equal standby, LiveConversations::Start.call("voice", standby_id: standby.id)
+    assert standby.reload.ended?
+  end
+
+  test "it cannot be finished, and nothing left on it comes with it" do
+    standby = LiveConversations::Standby.prepare
+    standby.scratchpad_entries.create!(body: "A note", written_by: "mcp")
+    standby.update_columns(agent_wrote_scratchpad_at: Time.current)
+
+    assert_raises(LiveConversations::Actions::Refused) { LiveConversations::Actions.new(standby).finish }
+    started = LiveConversations::Start.call("voice", standby_id: standby.id)
+    assert_empty started.scratchpad_entries.reload
+    assert_not started.agent_written?
+  end
+
   test "one that is gone is not missed: the conversation started is a new one" do
     standby = LiveConversations::Standby.prepare
     LiveConversations::Start.call("voice", standby_id: standby.id).end!

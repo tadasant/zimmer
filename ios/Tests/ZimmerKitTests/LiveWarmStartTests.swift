@@ -243,6 +243,11 @@ final class LiveWarmStartTests: XCTestCase {
             start.connecting(engine)
             XCTAssertEqual(start.claim(30, at: 2), claim)
         }
+        // Again, after one that was GPT-Live: what the last was is not what this one is.
+        var again = newStarted()
+        XCTAssertEqual(again.settingsChanged(at: 2), [.close(.settingsChanged), .mint(conversation: 30)])
+        XCTAssertEqual(again.claim(30, at: 2.5), .cold(.warming))
+
         var unasked = LiveWarmStart(.new)
         _ = unasked.activate(at: 0)
         _ = unasked.update(.init(conversation: 30), at: 0)
@@ -317,6 +322,21 @@ final class LiveWarmStartTests: XCTestCase {
         var backingOff = newStarted()
         _ = backingOff.failed(at: 10)
         XCTAssertEqual(backingOff.settingsChanged(at: 11), [.mint(conversation: 30)], "and what was refused may not be now")
+    }
+
+    /// Putting the phone down and picking it up is no new budget.
+    func testTheBudgetIsTheHoursNotTheOpenings() {
+        var start = LiveWarmStart(.new)
+        var mints = 0
+        for opening in 0..<40 {
+            let now = TimeInterval(opening) * 30
+            _ = start.activate(at: now)
+            mints += start.update(.init(conversation: 30), at: now).count
+            _ = start.deactivate()
+        }
+        XCTAssertEqual(mints, LiveWarmStart.warmsPerVisit)
+        _ = start.activate(at: LiveWarmStart.visitLasts + 1)
+        XCTAssertEqual(start.update(.init(conversation: 30), at: LiveWarmStart.visitLasts + 1), [.mint(conversation: 30)])
     }
 
     func testNothingIsHeldForAPersonWhoIsTyping() {
@@ -441,7 +461,7 @@ final class LiveWarmAPITests: XCTestCase {
         _ = try await api.startGptLiveSession(standby.id, sdp: "v=0 offer", standby: true)
         XCTAssertEqual(try body(2)["standby"] as? String, "1")
 
-        let started = try await api.startLiveConversation(.voice, standby: standby.id)
+        let started = try await api.startLiveConversation(.voice, standby: standby.id, again: false)
         XCTAssertEqual(transport.sent[3].url.path, "/api/v1/live_conversations")
         XCTAssertEqual(try body(3)["standby_id"] as? Int, 30)
         XCTAssertEqual(started.status, .active)
@@ -457,9 +477,9 @@ final class LiveWarmAPITests: XCTestCase {
         let before = try await fake.liveConversations()
         XCTAssertFalse(before.conversations.contains { $0.id == kept.id })
         XCTAssertEqual(before.current, 21, "asking ends nothing")
-        let started = try await fake.startLiveConversation(.voice, standby: kept.id)
+        let started = try await fake.startLiveConversation(.voice, standby: kept.id, again: false)
         XCTAssertEqual(started.id, kept.id)
-        let repeated = try await fake.startLiveConversation(.voice, standby: kept.id)
+        let repeated = try await fake.startLiveConversation(.voice, standby: kept.id, again: true)
         XCTAssertEqual(repeated.id, kept.id, "the same tap, asked again")
         let after = try await fake.liveConversations()
         XCTAssertEqual(after.current, kept.id)

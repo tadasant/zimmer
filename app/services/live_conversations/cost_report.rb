@@ -48,9 +48,15 @@ module LiveConversations
       }
     end
 
+    # A conversation had no call of an engine's in either: a fallback names the
+    # engine that did not run, and a connection held ready for a tap may never
+    # have been taken. Their money counts; they are no conversation.
+    NOT_A_CONVERSATION = %w[engine_fallback voice_standby].freeze
+    CONVERSATIONS_SQL = "COUNT(DISTINCT live_conversation_id) FILTER (WHERE operation NOT IN ('engine_fallback', 'voice_standby'))"
+
     def totals
       row = scope.pick(Arel.sql(LiveUsageEvent::BILLED_COST_SQL), Arel.sql("COALESCE(SUM(cost_usd), 0)"), Arel.sql("COUNT(*)"),
-                       Arel.sql("COUNT(*) FILTER (WHERE NOT priced)"), Arel.sql("COUNT(DISTINCT live_conversation_id)"))
+                       Arel.sql("COUNT(*) FILTER (WHERE NOT priced)"), Arel.sql(CONVERSATIONS_SQL))
       { billed_usd: row[0].to_f.round(6), list_usd: row[1].to_f.round(6), events: row[2].to_i, unpriced_events: row[3].to_i, conversations: row[4].to_i }
     end
 
@@ -63,8 +69,7 @@ module LiveConversations
         :engine, :mode,
         Arel.sql(LiveUsageEvent::BILLED_COST_SQL),
         Arel.sql("SUM(cost_usd)"),
-        # A fallback names the engine that did NOT run, so it is no conversation of that engine's.
-        Arel.sql("COUNT(DISTINCT live_conversation_id) FILTER (WHERE operation <> 'engine_fallback')"),
+        Arel.sql(CONVERSATIONS_SQL),
         Arel.sql("SUM(seconds) FILTER (WHERE operation = 'call')"),
         # A tab closing mid-call sends its minutes so far as a partial row; the call is one call.
         Arel.sql("COUNT(*) FILTER (WHERE operation = 'call' AND COALESCE((details->>'partial')::boolean, false) = false)"),
@@ -108,13 +113,13 @@ module LiveConversations
     def by_day
       day = Arel.sql("DATE(occurred_at AT TIME ZONE 'UTC' AT TIME ZONE #{ActiveRecord::Base.connection.quote(zone_name)})")
       scope.group(day, :engine).order(day).pluck(day, :engine, Arel.sql(LiveUsageEvent::BILLED_COST_SQL), Arel.sql("SUM(cost_usd)"),
-                                                Arel.sql("COUNT(DISTINCT live_conversation_id) FILTER (WHERE operation <> 'engine_fallback')"))
+                                                Arel.sql(CONVERSATIONS_SQL))
            .map { |date, engine, billed, list, conversations| { date: date.to_s, engine: engine, billed_usd: billed.to_f.round(6), list_usd: list.to_f.round(6), conversations: conversations.to_i } }
     end
 
     def by_conversation
-      # A fallback row is the engine that did not run: the conversation is listed under the one that did.
-      rows = scope.where.not(live_conversation_id: nil).where.not(operation: "engine_fallback").group(:live_conversation_id, :engine)
+      # The engine that ran it, and only what was spent in it.
+      rows = scope.where.not(live_conversation_id: nil).where.not(operation: NOT_A_CONVERSATION).group(:live_conversation_id, :engine)
                   .order(Arel.sql("SUM(cost_usd) DESC")).limit(TOP_CONVERSATIONS)
                   .pluck(:live_conversation_id, :engine, Arel.sql(LiveUsageEvent::BILLED_COST_SQL), Arel.sql("SUM(cost_usd)"),
                          Arel.sql("COUNT(*) FILTER (WHERE operation = 'delegation')"), Arel.sql("SUM(seconds) FILTER (WHERE operation = 'call')"),

@@ -297,7 +297,7 @@ final class AppEnvironment {
                 refuses: refuses, hold: hold,
                 liveSettings: voiceTurnedUp ? ["voice_max_output_tokens": .number(180), "voice_vad_eagerness": .string("low"), "voice_vad_threshold": .number(0.92), "voice_listening": .string("dynamic")] : [:],
                 liveSecretHold: voiceTurnedUp || carScript ? .seconds(600) : nil,
-                liveStartHold: voiceTurnedUp ? .seconds(8) : nil,
+                liveStartHold: voiceTurnedUp ? .seconds(45) : nil,
                 web: deployment.origins.web)
             return Connection(deployment: deployment, auth: auth, api: api, edge: nil)
         }

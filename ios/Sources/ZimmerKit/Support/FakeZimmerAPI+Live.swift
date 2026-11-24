@@ -135,14 +135,14 @@ extension FakeZimmerAPI {
         return kept
     }
 
-    public func startLiveConversation(_ mode: LiveMode, standby: Int?) async throws -> LiveConversation {
+    public func startLiveConversation(_ mode: LiveMode, standby: Int?, again: Bool) async throws -> LiveConversation {
         // Only the first: the car's drill sees what New shows while Zimmer has not answered it.
         if let hold = liveStartHold {
             liveStartHold = nil
             try await Task.sleep(for: hold)
         }
         let kept = standby.flatMap { liveState.conversations[$0] }
-        if let kept, kept.status.isOpen, liveState.turns[kept.id]?.isEmpty != false { return kept }
+        if let kept, kept.status.isOpen, again || liveState.turns[kept.id]?.isEmpty != false { return kept }
         for (id, conversation) in liveState.conversations where conversation.status.isOpen {
             liveState.conversations[id] = conversation.with(status: .ended)
         }

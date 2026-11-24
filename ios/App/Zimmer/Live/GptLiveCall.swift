@@ -76,7 +76,11 @@ final class GptLiveCall {
     /// Held from `end()` until the session has closed, after `LiveCall` has let go of it.
     private var keepAlive: GptLiveCall?
 
-    private var api: any LiveAPI { AppEnvironment.shared.connection.api.live(from: surface) }
+    /// The deployment the call began on. Its last lines and its ledger rows can go seconds after another
+    /// has come to the front, and they are this one's.
+    private let deployment = AppEnvironment.shared.connection.api
+
+    private var api: any LiveAPI { deployment.live(from: surface) }
 
     init(conversation: Int, surface: ClientSource.Surface, muted: Bool, standby: Bool = false, signal: @escaping (Signal) -> Void) throws {
         self.conversation = conversation
@@ -296,9 +300,14 @@ final class GptLiveCall {
         let api = self.api
         let held = conversation
         let destination = self.destination
-        while !usage.isEmpty {
-            let batch = Array(usage.prefix(Self.maxBatch))
-            usage.removeFirst(batch.count)
+        // Standby's rows apart from the call's: Zimmer takes a batch whole or not at all, and takes the
+        // call's only once it has the call on this engine.
+        let rows = [usage.filter { $0.operation == "voice_standby" }, usage.filter { $0.operation != "voice_standby" }]
+        usage = []
+        let batches = rows.flatMap { rows in
+            stride(from: 0, to: rows.count, by: Self.maxBatch).map { Array(rows[$0..<min($0 + Self.maxBatch, rows.count)]) }
+        }
+        for batch in batches {
             Task {
                 do {
                     let conversation = await destination() ?? held

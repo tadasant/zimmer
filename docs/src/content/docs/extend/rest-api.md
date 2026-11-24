@@ -1232,8 +1232,9 @@ mode it is in right now, empty when there is none ·
 ends the open one. It is `active` at once when an earlier conversation on the root was prepared
 (it starts on that one's instructions and tool lists, read again in the background), and
 `preparing` otherwise; 503 with the reasons when Live Mode is off, 422 on an unknown mode. With
-`standby_id`, the conversation started is the one kept ready; asking again is answered the same, and one
-that is gone starts another ·
+`standby_id`, the conversation started is the one kept ready. `again=1` says this request may have been
+answered already, and one already taken is then answered the same. One that is gone, or that another
+device took and is talking in, starts a new one, and the answer's id says which ·
 `POST /live_conversations/standby` → the conversation kept ready for the next New
 ([Standby](/sessions/live/#standby)), made or brought up to date. Status `standby`, one at most, on no list; it
 ends nothing. The app's sign-in only. 409 when there is no prepared conversation to make it from, 503 when Live

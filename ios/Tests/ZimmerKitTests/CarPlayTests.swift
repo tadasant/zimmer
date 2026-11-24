@@ -596,6 +596,23 @@ final class CarPlayTests: XCTestCase {
         XCTAssertEqual(wish.choice, .startNew)
     }
 
+    /// A New on the conversation kept ready, whose answer never came: the retry asks for the same one,
+    /// whether or not Zimmer had given it, and not for a second that would end it.
+    func testARetryOfANewThatWasNeverAnsweredAsksForTheSameConversation() async throws {
+        for landed in [false, true] {
+            let api = FakeZimmerAPI()
+            let kept = try await api.liveStandby()
+            if landed {
+                _ = try await api.startLiveConversation(.voice, standby: kept.id, again: false)
+                _ = try await api.recordLiveTurn(kept.id, role: .user, content: "Hello", gated: false)
+            }
+            let found = try await api.conversation(for: .startNew, unanswered: kept.id)
+            XCTAssertEqual(found, kept.id, "landed: \(landed)")
+            let current = try await api.liveConversations().current
+            XCTAssertEqual(current, kept.id)
+        }
+    }
+
     func testContinueWithNothingOpenFindsNothingAndStartsNothing() async throws {
         let api = FakeZimmerAPI()
         _ = try await api.finishLiveConversation(21)

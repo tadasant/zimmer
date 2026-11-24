@@ -14,9 +14,10 @@ public protocol LiveAPI: Sendable {
     /// One conversation with its turns; `afterTurn` reads only turns newer than that one.
     func liveConversation(_ id: Int, afterTurn: Int?) async throws -> LiveConversation
     /// Start a fresh conversation, typed or spoken from the start, ending the open one. `standby`:
-    /// from the one kept ready (`liveStandby`), which becomes the current one. Asked twice it answers
-    /// the same; one that is gone starts another, so the answer says which conversation it is.
-    func startLiveConversation(_ mode: LiveMode, standby: Int?) async throws -> LiveConversation
+    /// from the one kept ready (`liveStandby`), which becomes the current one. `again`: this tap may
+    /// have been answered already, and then it is answered the same. One that is gone starts another, so
+    /// the answer says which conversation it is.
+    func startLiveConversation(_ mode: LiveMode, standby: Int?, again: Bool) async throws -> LiveConversation
     /// The conversation Zimmer keeps ready for the next New, made or brought up to date. Asking ends
     /// nothing and starts nothing, and there is only ever one.
     func liveStandby() async throws -> LiveConversation
@@ -89,7 +90,7 @@ extension LiveAPI {
 
     /// A fresh conversation, not from one kept ready.
     public func startLiveConversation(_ mode: LiveMode) async throws -> LiveConversation {
-        try await startLiveConversation(mode, standby: nil)
+        try await startLiveConversation(mode, standby: nil, again: false)
     }
 
     /// The session for a call that is starting now.
@@ -138,9 +139,10 @@ extension ZimmerHTTPClient {
         return try await get("/api/v1/live_conversations/\(id)", query: query)
     }
 
-    public func startLiveConversation(_ mode: LiveMode, standby: Int?) async throws -> LiveConversation {
+    public func startLiveConversation(_ mode: LiveMode, standby: Int?, again: Bool) async throws -> LiveConversation {
         var body: [String: Any] = ["mode": mode.rawValue]
         if let standby { body["standby_id"] = standby }
+        if again { body["again"] = "1" }
         return try await post("/api/v1/live_conversations", json: body)
     }
 

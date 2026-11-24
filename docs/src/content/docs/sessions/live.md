@@ -793,7 +793,7 @@ told at the same time. The design, the measurements behind it and every number a
   On Realtime, which bills by tokens, an idle connection makes none.
 - **Bounded.** One connection for each tap at most. A Realtime one is replaced after 5 minutes and a
   GPT-Live one after 20. After a failure the app waits 5 s, then 15, 60 and 120, and stops after 15
-  tries in one visit. Nothing is held on Low Power Mode, a serious thermal state, Low Data Mode or no network. A
+  tries in about an hour. Nothing is held on Low Power Mode, a serious thermal state, Low Data Mode or no network. A
   settings change made on the phone or the car's panel starts them again.
 - **Everything else starts from cold**, on the same call screen and with no second tap: a tap with nothing
   held, or with one not heard from for 45 s or held through a suspend, and one whose connection fails

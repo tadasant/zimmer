@@ -110,4 +110,20 @@ class LiveConversations::CostReportTest < ActiveSupport::TestCase
   test "refuses an engine that does not exist" do
     assert_raises(ArgumentError) { LiveConversations::CostReport.new(engine: "nope") }
   end
+
+  test "a connection held ready and never taken is money, and no conversation" do
+    held = create_live_conversation(status: LiveConversation::STANDBY)
+    LiveUsageEvent.record!(engine: "gpt_live_claude", operation: "voice_standby", vendor: "openai_live_standby", model: "gpt-live-1",
+                           seconds: 600, live_conversation: held)
+
+    report = LiveConversations::CostReport.new(days: 1)
+
+    assert_in_delta 0.2, report.totals[:billed_usd]
+    assert_equal 0, report.totals[:conversations]
+    assert_equal 0, report.by_mode.sole[:conversations]
+    assert_nil report.by_mode.sole[:billed_per_conversation_usd]
+    assert_empty report.by_conversation
+    assert_equal "voice_standby", report.by_operation.sole[:operation]
+  end
+
 end

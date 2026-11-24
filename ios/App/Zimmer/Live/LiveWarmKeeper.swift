@@ -171,6 +171,8 @@ final class LiveWarmKeeper {
                 // Any call, from standby or not, can change what is open (New ends it): read again after.
                 if active { self.open.forgetOverview() }
                 self.perform { active ? $0.callStarted(at: Self.now) : $0.callEnded(at: Self.now) }
+                // A call is the person talking, whatever the conversation was when it was last read.
+                self.reconsider()
             }
         }.store(in: &watchers)
         for name in [Notification.Name.NSProcessInfoPowerStateDidChange, ProcessInfo.thermalStateDidChangeNotification] {
@@ -193,8 +195,8 @@ final class LiveWarmKeeper {
         self.monitor = monitor
     }
 
-    /// The phone changed under what is held: decide again on the last read.
-    private func reconsider() {
+    /// The phone, or what was read, changed under what is held: decide again.
+    fileprivate func reconsider() {
         guard active else { return }
         for holder in holders { holder.reconsider() }
         connectionsChanged()
@@ -211,6 +213,7 @@ private final class LiveWarmHolder {
     private var connection: LiveWarmTake.Connection?
     private var openedAt: TimeInterval = 0
     private var refreshing: Task<Void, Never>?
+    private var refreshAgain = false
     private var minting: Task<Void, Never>?
     /// Continue's: the last read of what is open, and when. The tap uses it instead of asking again.
     private var overview: (value: LiveOverview, at: TimeInterval)?
@@ -238,6 +241,7 @@ private final class LiveWarmHolder {
         perform(start.deactivate())
         refreshing?.cancel()
         refreshing = nil
+        refreshAgain = false
         minting?.cancel()
         minting = nil
         overview = nil
@@ -337,11 +341,19 @@ private final class LiveWarmHolder {
         return conditions
     }
 
-    /// The mode of the open conversation, as Continue's holder last read it.
-    var talks: Bool { overview.map { read in read.value.conversations.first { $0.id == read.value.current }?.mode != .text } ?? true }
+    /// The person talks in the open conversation, as Continue's holder last read it.
+    var talks: Bool {
+        guard !LiveCall.shared.isActive else { return true }
+        guard let overview = overview?.value else { return false }
+        return overview.conversations.first { $0.id == overview.current }?.mode == .voice
+    }
 
     private func refresh() {
-        guard refreshing == nil else { return }
+        guard refreshing == nil else {
+            // What is on its way may have been answered before whatever this is asked for.
+            refreshAgain = true
+            return
+        }
         let api = api
         let slot = slot
         refreshing = Task { [weak self] in
@@ -353,12 +365,18 @@ private final class LiveWarmHolder {
             }
             guard let self, !Task.isCancelled else { return }
             self.refreshing = nil
+            if self.refreshAgain {
+                self.refreshAgain = false
+                self.refresh()
+                return
+            }
+            // The one a New has just taken, seen before Zimmer had answered it: not one to be ready on.
+            if let found = standby, found.status != .standby || found.id == LiveCall.shared.unansweredNew { standby = nil }
             if let overview { self.overview = (overview, Self.now) }
-            // The one just taken, seen before Zimmer had answered the tap: not one to be ready on.
-            if let standby, standby.status == .standby, standby.id != LiveCall.shared.conversationID { self.standby = standby }
+            if let standby { self.standby = standby }
             if overview == nil, standby == nil { self.start.refreshFailed(at: Self.now) }
-            self.reconsider()
-            self.keeper.connectionsChanged()
+            // Both: whether New is a call on the phone is the open conversation's mode.
+            self.keeper.reconsider()
         }
     }
 
