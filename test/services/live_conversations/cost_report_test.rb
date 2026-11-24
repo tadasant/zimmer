@@ -125,5 +125,4 @@ class LiveConversations::CostReportTest < ActiveSupport::TestCase
     assert_empty report.by_conversation
     assert_equal "voice_standby", report.by_operation.sole[:operation]
   end
-
 end
