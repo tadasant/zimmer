@@ -43,7 +43,7 @@ final class CarPlayHome {
         }
         if showsSettings {
             buttons.append(CPGridButton(titleVariants: CarHomeSettingsTile.titleVariants, image: CarPlayImages.tile(CarHomeSettingsTile.symbol),
-                                        handler: CarPlayImages.tapped("tile.settings") { [weak self] in self?.onSettings?() }))
+                                        handler: { _ in }))
         }
         #if DEBUG
         CarPlayDrillRecord.note("drew the tiles")
