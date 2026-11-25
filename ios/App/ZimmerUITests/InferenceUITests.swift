@@ -143,6 +143,34 @@ final class InferenceUITests: XCTestCase {
         XCTAssertTrue(current.exists)
     }
 
+    // MARK: - PROOF ONLY, reverted before merge
+
+    func test_proof_old_wait_stalled_query_keyboard_down_expect_red() { proof(old: true, stall: true, up: false) }
+    func test_proof_new_wait_stalled_query_keyboard_down_1_expect_green() { proof(old: false, stall: true, up: false) }
+    func test_proof_new_wait_stalled_query_keyboard_down_2_expect_green() { proof(old: false, stall: true, up: false) }
+    func test_proof_new_wait_stalled_query_keyboard_down_3_expect_green() { proof(old: false, stall: true, up: false) }
+    func test_proof_new_wait_keyboard_up_expect_red() { proof(old: false, stall: false, up: true) }
+    func test_proof_new_wait_stalled_query_keyboard_up_expect_red() { proof(old: false, stall: true, up: true) }
+
+    private func proof(old: Bool, stall: Bool, up: Bool) {
+        let app = launch(up ? ["-ProofKeyboardUp"] : [])
+        XCTAssertTrue(element(app, "inference.account.11").waitForExistence(timeout: timeout))
+        let field = app.textFields["inference.spot.max_concurrent_sessions"]
+        reveal(app, field)
+        field.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: timeout), "the keyboard came up")
+        drag(app, towardTop: false, from: 0.5)
+        if stall { XCTAssertTrue(FileManager.default.createFile(atPath: "/tmp/zimmer-proof-stall", contents: Data())) }
+        let gone: Bool
+        if old {
+            let expectation = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.keyboards.firstMatch)
+            gone = XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
+        } else {
+            gone = waitForDisappearance(app.keyboards.firstMatch)
+        }
+        XCTAssertTrue(gone, "PROOF the keyboard is gone")
+    }
+
     // MARK: - Helpers
 
     /// More → Inference, on the Claude Code tab unless `extra` names a runtime.
