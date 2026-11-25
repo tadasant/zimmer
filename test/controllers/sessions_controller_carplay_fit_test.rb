@@ -155,7 +155,9 @@ class SessionsControllerCarplayFitTest < ActionDispatch::IntegrationTest
     ok = make_session(title: "say yes", carplay_fit: "carplay_ok", carplay_fit_source: "auto", carplay_fit_line_count: 3)
     untagged = make_session(title: "nobody judged")
 
-    get dashboard_board_path, params: { view: "board_v2", filters: "1", status: [ "needs_input" ], carplay_fit: "not_laptop_only" }
+    chosen = { view: "board_v2", filters: "1", status: [ "needs_input" ], carplay_fit: "not_laptop_only" }
+    get root_path, params: chosen
+    get dashboard_board_path, params: chosen
     assert_response :success
     assert_select "#board_v2_row_#{ok.id}"
     assert_select "#board_v2_row_#{untagged.id}"
@@ -168,7 +170,8 @@ class SessionsControllerCarplayFitTest < ActionDispatch::IntegrationTest
     assert_select "#board_v2_row_#{laptop.id}", count: 0
 
     # And the default is every row.
-    get dashboard_board_path, params: { view: "board_v2", filters: "1", status: [ "needs_input" ], carplay_fit: "" }
+    get root_path, params: chosen.merge(carplay_fit: "")
+    get dashboard_board_path, params: chosen.merge(carplay_fit: "")
     assert_select "#board_v2_row_#{laptop.id}"
     get root_path
     assert_select "input#carplay-fit-filter-all[checked]"

@@ -122,14 +122,29 @@ class SessionsControllerViewModesTest < ActionDispatch::IntegrationTest
     make_session
 
     # First, explicitly pick the flat view (sets the cookie).
-    get dashboard_board_path(view: "last_touched"), headers: { "User-Agent" => DESKTOP_UA }
-    assert_select "#flat_sessions", true
+    get root_path(view: "last_touched"), headers: { "User-Agent" => DESKTOP_UA }
+    assert_response :success
 
     # A subsequent visit with no param (still desktop) keeps the flat view.
     get dashboard_board_path, headers: { "User-Agent" => DESKTOP_UA }
     assert_response :success
     assert_select "#flat_sessions", true, "the persisted explicit choice should survive navigation"
     assert_select "#board_v2", false
+  end
+
+  # An open page fetches its board again by itself, and re-requests itself when its
+  # socket drops. Neither is somebody choosing a view.
+  test "a board fetch or a backfill does not change the remembered view" do
+    make_session
+    get root_path(view: "last_touched"), headers: { "User-Agent" => DESKTOP_UA }
+
+    get dashboard_board_path(view: "ranked"), headers: { "User-Agent" => DESKTOP_UA }
+    assert_response :success
+    assert_equal "last_touched", cookies[:sessions_view]
+
+    get root_path(view: "ranked"), headers: { "User-Agent" => DESKTOP_UA, "X-Zimmer-Backfill" => "1" }
+    assert_response :success
+    assert_equal "last_touched", cookies[:sessions_view]
   end
 
   test "an invalid view param falls back to the default" do

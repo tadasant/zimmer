@@ -228,8 +228,13 @@ export default class extends Controller {
       const response = await fetch(window.location.href, {
         // A reopen is a person coming back; a reconnect happens to a page nobody may
         // be looking at, and must not read as one (SessionsController#
-        // human_initiated_view?).
-        headers: fallback ? { Accept: "text/html" } : { Accept: "text/html", "X-Zimmer-Reconnect": "1" },
+        // human_initiated_view?). Neither is somebody choosing a view or filters
+        // (#remember_dashboard_choice?).
+        headers: {
+          Accept: "text/html",
+          "X-Zimmer-Backfill": "1",
+          ...(fallback ? {} : { "X-Zimmer-Reconnect": "1" })
+        },
         credentials: "same-origin",
         cache: "no-store",
         signal: AbortSignal.timeout(this.fetchTimeoutValue)

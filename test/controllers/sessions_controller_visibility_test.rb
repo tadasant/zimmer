@@ -281,13 +281,42 @@ class SessionsControllerVisibilityTest < ActionDispatch::IntegrationTest
   test "the choice persists across a bare visit" do
     hidden = make_session(title: "Tidied away", visibility: SessionVisibility::HIDDEN)
 
-    get dashboard_board_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "all" }
+    get root_path, params: { SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "all" }
     assert_response :success
 
     get dashboard_board_path
 
     assert_response :success
     assert_select board_row(hidden), 1
+  end
+
+  # An open page asks for its board again on its own, with the filters it was opened
+  # with. That shapes the one response. It is not a choice about the next visit.
+  test "a board fetch or a backfill does not change which visibilities the next bare visit shows" do
+    on_board = make_session(title: "Left in plain sight")
+    off_board = [
+      make_session(title: "Quetzal one", visibility: SessionVisibility::HIDDEN),
+      make_session(title: "Quetzal two", visibility: SessionVisibility::SNOOZED, snoozed_until: 2.days.from_now),
+      make_session(title: "Quetzal three", visibility: SessionVisibility::BACKLOGGED)
+    ]
+    SessionsController::VALID_VIEW_MODES.product(%w[all off_board backlogged]).each do |view, visibility|
+      filters = { view: view, SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: visibility }
+
+      get dashboard_board_path, params: filters
+      assert_response :success
+      assert_nil cookies[SessionsController::FILTERS_COOKIE].presence, "the #{view} board, showing #{visibility}"
+
+      get root_path, params: filters, headers: { "X-Zimmer-Backfill" => "1" }
+      assert_response :success
+      assert_nil cookies[SessionsController::FILTERS_COOKIE].presence, "the #{view} backfill, showing #{visibility}"
+    end
+
+    SessionsController::VALID_VIEW_MODES.each do |view|
+      get dashboard_board_path, params: { view: view }
+      assert_response :success
+      assert_match on_board.title, response.body, "on the #{view} board"
+      off_board.each { |session| assert_no_match(/#{session.title}/, response.body, "on the #{view} board") }
+    end
   end
 
   test "a filters cookie written before this control existed falls back to the default board" do

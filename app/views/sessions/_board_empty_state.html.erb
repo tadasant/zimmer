@@ -31,7 +31,7 @@
       <%# Drops the search terms but keeps the filter selection — the user is
           abandoning a query, not resetting how they filter. "Reset filters"
           in the Filters section is the control for the latter. %>
-      <%= link_to root_path(request.query_parameters.except("q", "agent_root", "genesis", "search_contents", "page")), class: "inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" do %>
+      <%= link_to root_path(request.query_parameters.except("q", "agent_root", "genesis", "search_contents", "page")), data: { turbo_prefetch: false }, class: "inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" do %>
         Clear Search
       <% end %>
     <% else %>

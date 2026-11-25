@@ -706,8 +706,9 @@
           Sits in the main content column so it lands at the top-right of the
           dashboard on every screen size. %>
       <div class="mb-6 flex items-center gap-3">
+        <%# No hover prefetch: loading one of these remembers the view it names. %>
         <div class="inline-flex items-center gap-1 rounded-lg bg-gray-100 p-1 shadow-inner max-w-full overflow-x-auto ml-auto"
-             role="group" aria-label="Dashboard view mode">
+             role="group" aria-label="Dashboard view mode" data-turbo-prefetch="false">
           <%
             view_modes = [
               [ SessionsController::VIEW_MODE_BOARD_V2, "Your board" ],
