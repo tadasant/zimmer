@@ -16,6 +16,8 @@ class LiveSettingsControllerTest < ActionDispatch::IntegrationTest
     LiveSetting::KEYS.each { |key| assert_select "[data-live-setting-field=#{key}]" }
     assert_select "select#live_setting_voice_model option[value=?]", "gpt-realtime-2.1"
     assert_select "input#live_setting_voice_speed[min='0.25'][max='1.5'][placeholder=?]", "Default (1.2)"
+    assert_select "input#live_setting_voice_standby_daily_cap_usd[placeholder=?]", "Default (0.0)"
+    assert_select "[data-live-setting-field=voice_standby_daily_cap_usd]", text: /Paid standby cap.*0, the default, is off.*bills \$0\.02 a minute/m
     assert_select "textarea#live_setting_guidance"
     assert_select "[data-controller=live-settings-saved]", count: 0
 

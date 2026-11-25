@@ -5,6 +5,10 @@ the microphone. The app holds a connection ready for each, on the voice engine t
 and for New it also holds the conversation. The tap makes the connection the call's, and Zimmer is
 told at the same time rather than first.
 
+**On GPT-Live, none is held by default.** A held GPT-Live connection bills before any call, so it is
+opted into: the Live setting *Paid standby cap per day*, 0 until somebody raises it. Realtime's costs
+nothing and is held.
+
 This began as *CarPlay pre-warm* (#1488): one Realtime connection, for Continue, in the car. The file
 keeps its name. The user-facing prose is
 [docs: Standby](https://docs.zimmer.tadasant.com/sessions/live/#standby). The rest of the car is
@@ -133,9 +137,10 @@ So a held connection is $0.02 a minute, and two are $0.04. What bounds that:
 - **Time.** Held for 20 minutes from the last sign a call may be near: the car connecting, Zimmer coming
   to the front in the car or on the phone, a call starting or ending, a settings change. Then nothing,
   until the next. That is $0.80 at most for an untouched home screen.
-- **Money.** The Live setting **Standby cap per day** ($3.00 by default; 0 turns GPT-Live standby off).
-  Zimmer refuses a hold past it, and calls start from cold. Standby's seconds are ledger rows
-  (`voice_standby`) at their own rate, and count toward the engine's daily cap.
+- **Money.** The Live setting **Paid standby cap per day**: 0, the default, is off. Off or past it, Zimmer
+  refuses the hold before it asks OpenAI for anything, the app does not ask again for that conversation
+  (`LiveWarmStart.refused`), and calls start from cold. Standby's seconds are ledger rows (`voice_standby`)
+  at their own rate, and count toward the engine's daily cap.
 - **Place.** In the car while it is connected. On the phone, only while Live is on screen and on a
   conversation with voice on. Continue's is not held during a call; New's is, because New is what
   replaces the conversation a call is on.
@@ -209,6 +214,7 @@ Rails
 | Rest | never | 20 min after the last sign of a call | It costs money |
 | After a suspend | ping | close and start again | ICE consent lapsed while iOS had the app |
 | Backoff | 5, 15, 60, 120 s | same | One per failure in a row |
+| Refused (409) | not asked again for that conversation this visit | same | An answer, not a failure |
 | Budget | 15 mints a visit | same | A car connection or Live open on the phone, and any within the hour after |
 
 Nothing is held on Low Power Mode, at a serious thermal state, on Low Data Mode or with no network. A
@@ -224,12 +230,12 @@ because its instructions are fixed. A call coming back from the gear never takes
 | Hit rate, by tap | `warm.claimed` / (`warm.claimed` + `warm.missed`) | `slot`, `reason`, `hold` |
 | Where the wait went | `call.microphone_open`, `call.connected` | `since_tap_ms`, `since_start_ms` |
 | How long Zimmer took, behind the call | `call.settled` | `request_ms`, `since_tap_ms`, `moved` |
-| Coming up | `warm.ready`, `warm.failed`, `warm.closed` | `slot`, `engine`, `since_mint_ms`, `session_life_ms`, `reason` |
+| Coming up | `warm.ready`, `warm.failed`, `warm.refused`, `warm.closed` | `slot`, `engine`, `since_mint_ms`, `session_life_ms`, `reason` |
 | Cost | `voice_standby` on `/live/costs` | seconds |
 
 The LogsQL is in [docs: observability](https://docs.zimmer.tadasant.com/operate/observability/#the-ios-apps-call-log).
 
-**How to judge the first drives.** For `tap=new` on GPT-Live: `path=warm` on most taps, and
+**How to judge the first drives**, with paid standby opted into. For `tap=new` on GPT-Live: `path=warm` on most taps, and
 `tap_to_ready_ms` at or under about 1 s for those. Before, the median of the five above was 8.9 s. A
 warm tap over 1.5 s is the audio engine, which `call.microphone_open` says. Any `path=fallback`
 or `warm.failed` is worth reading: it carries OpenAI's or Zimmer's reason. Compare the OpenAI
@@ -237,9 +243,10 @@ usage page with `voice_standby` on `/live/costs`.
 
 ## Turning it off
 
-- **GPT-Live standby**: Live settings → *Standby cap per day* → 0. No deploy. The next hold is refused.
-- **All of it, with a server deploy**: make `Actions#require_prewarm!` refuse. Every hold fails, backs
-  off and stops at the budget, and calls start from cold.
+- **GPT-Live standby**: Live settings → *Paid standby cap per day* → 0, which is the default. No deploy. The
+  next hold is refused; one already open goes on for up to 20 minutes, or until the app lets it go.
+- **All of it, with a server deploy**: make `Actions#require_prewarm!` refuse. The app is refused once
+  for each conversation, and calls start from cold.
 - **All of it, in the app**: drop the `LiveWarmKeeper` calls in `CarPlaySceneDelegate` and `LiveHomeView`.
 
 ## Later

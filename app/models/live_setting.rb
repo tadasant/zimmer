@@ -229,8 +229,8 @@ class LiveSetting < ApplicationRecord
     Field.new(key: :voice_engine_daily_cap_usd, path: :engine, type: :float, label: "Daily cap per engine (USD)",
               help: "The most each experimental engine may spend in a day (deployment time zone), across conversations, counting billed (metered) money only. Same warning and fallback as the per-conversation cap.",
               options: nil, min: 0.5, max: 500.0),
-    Field.new(key: :voice_standby_daily_cap_usd, path: :engine, type: :float, label: "Standby cap per day (USD)",
-              help: "The most GPT-Live may cost in a day while the iOS app holds a connection ready for a tap on New or Continue (OpenAI bills standby at $0.02 a minute). At the cap, calls start from cold until tomorrow. 0 turns standby off. Counts toward the daily cap too.",
+    Field.new(key: :voice_standby_daily_cap_usd, path: :engine, type: :float, label: "Paid standby cap per day (USD)",
+              help: "0, the default, is off: nothing on GPT-Live is billed before a call, and calls start from cold. Above 0, the iOS app holds up to two GPT-Live connections ready for a tap on New or Continue, and OpenAI bills $0.02 a minute for each while no call is up, from when the car connects or Live opens on the phone. This is the most that may cost in a day, by the seconds the app reports; past it, calls start from cold until tomorrow. Counts toward the daily cap too.",
               options: nil, min: 0.0, max: 50.0),
     Field.new(key: :direct_servers_enabled, path: :tools, type: :enum, label: "Attach MCP servers",
               help: "Whether the assistant can list the MCP server catalog, attach a server to the conversation and call its tools directly. Off, it has only the Zimmer tools its own catalog entry names, and hands anything else to a background session. The assistant cannot change this, and neither can an agent over MCP. Takes effect on the next call or typed turn.",
@@ -277,7 +277,8 @@ class LiveSetting < ApplicationRecord
     when :voice_claude_model then ModelCatalog::LIVE_CLAUDE_DEFAULT
     when :voice_engine_conversation_cap_usd then 2.0
     when :voice_engine_daily_cap_usd then 10.0
-    when :voice_standby_daily_cap_usd then 3.0
+    # Billed with no call up, so holding one is opted into.
+    when :voice_standby_daily_cap_usd then 0.0
     when :direct_servers_enabled then DIRECT_SERVERS_OFF
     end
   end

@@ -1294,8 +1294,8 @@ Voice — the relay a client holding the audio connection makes:
   tap ([Standby](/sessions/live/#standby)). Voice need not be on, and nothing on
   the conversation changes: no client noted, no car call, no model written. 422 from any client but the
   app, phone or car; 409 when the conversation is neither active nor the one kept ready. When the call would run on
-  `gpt_live_claude`, 409 too unless `standby=1` says the app can hold that engine ready, and 409 once the
-  standby cap is spent.
+  `gpt_live_claude`, 409 too unless `standby=1` says the app can hold that engine ready, and 409 while paid
+  standby is off (the default) or its cap is spent.
   `engines` (an array) names the [voice engines](/sessions/live/#voice-engines) the client can run
   besides the default: the app sends `["gpt_live_claude"]`. The answer always carries `engine` and
   `voice_engine: {engine, requested, fallback_reason, warning}`. On `gpt_live_claude` it is
@@ -1305,7 +1305,8 @@ Voice — the relay a client holding the audio connection makes:
   session with OpenAI and returns its SDP answer, so the OpenAI key stays on the server. 409 when the
   call was not told `gpt_live_claude`, or can no longer run on it (a cap reached, the setting changed).
   With `standby=1` the session is held ready for a tap: OpenAI starts it with inference paused, nothing on
-  the conversation changes, voice need not be on, and the standby cap applies (409).
+  the conversation changes, voice need not be on, and it is 409 while paid standby is off (the default) or its
+  cap is spent.
 - `POST /live_conversations/:id/delegations` (`delegation_id` from `session.delegation.created`,
   `pending_user_text`, the person's line still in flight) → `{text, chunks, end_call, hung_up,
   warning, rounds, cost_usd, billed_usd}`: Claude's answer. Append each chunk as

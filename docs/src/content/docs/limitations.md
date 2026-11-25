@@ -5320,16 +5320,17 @@ settle these, and the call log says each one:
   track is what OpenAI means by keeping it active. It is about 30 kbit/s for each session held;
 - the win itself: `call.startup` `tap_to_ready_ms` for `tap=new`, `path=warm`.
 
-Each failure leaves the tap starting from cold. **Standby cap per day** at 0 turns GPT-Live standby off with no deploy.
+GPT-Live standby is off by default (**Paid standby cap per day** is 0), so none of this happens until somebody
+opts in. Each failure leaves the tap starting from cold.
 
 ### A cold New still meets the stall it always did
 
 About half the taps on New measured in November 2026 waited 5 s for the one request that makes the
 conversation, and the other half 0.35 s. The cause is not established: it adds 5.0 s to some requests from
 the car and not others, and the phone logs no timings inside a request. Standby takes that request out
-of the wait, and does not make it faster. A tap with nothing held (the first seconds after the car
-connects, 20 minutes after the last sign of a call, a spent cap, no network) still waits for it, behind the
-call screen's one *Connecting…*.
+of the wait, and does not make it faster. A tap with nothing held still waits for it, behind the call screen's
+one *Connecting…*. On GPT-Live that is every tap unless paid standby is opted into, because a held
+connection bills: the conversation kept ready does not shorten a cold tap by itself.
 
 ### What is held in standby can be a few minutes behind
 

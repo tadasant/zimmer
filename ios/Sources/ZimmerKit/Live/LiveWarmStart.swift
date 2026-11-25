@@ -23,8 +23,9 @@ import Foundation
 ///
 /// **What it costs.** Realtime bills by tokens, and a session nothing is said on uses none. GPT-Live
 /// bills by the second, at a lower rate while inference is paused; so a GPT-Live connection is held
-/// only for `restAfter` from the last sign that a call may be near (the car connecting or coming to
-/// the front, Live opening, a call starting or ending), and Zimmer refuses one past a daily cap.
+/// only where the Live settings opt in (`refused`), for `restAfter` from the last sign that a call may be
+/// near (the car connecting or coming to the front, Live opening, a call starting or ending), and not
+/// past a daily cap.
 ///
 /// Bounded besides, because a phone in a car is on battery and a cellular link: one connection of
 /// each kind at most, replaced when it is old, at most `warmsPerVisit` mints, backing off after a
@@ -148,6 +149,8 @@ public struct LiveWarmStart: Sendable, Equatable {
         case resting
         case budgetSpent = "budget_spent"
         case backingOff = "backing_off"
+        /// Zimmer will not have one held: paid standby is off, or has reached its cap.
+        case refused
     }
 
     public enum Phase: String, Sendable, Equatable {
@@ -173,6 +176,7 @@ public struct LiveWarmStart: Sendable, Equatable {
         case timedOut = "warming_timed_out"
         case failed
         case held
+        case refused
     }
 
     /// What the app should do. Nothing here sends on the socket: see the type's comment.
@@ -233,6 +237,8 @@ public struct LiveWarmStart: Sendable, Equatable {
     private var lastTick: TimeInterval?
     private var failures = 0
     private var retryAt: TimeInterval?
+    /// The conversation Zimmer refused to have a connection held for.
+    private var refusedFor: Int?
 
     public init(_ slot: Slot = .open) {
         self.slot = slot
@@ -316,12 +322,22 @@ public struct LiveWarmStart: Sendable, Equatable {
         return fail(.failed, at: now)
     }
 
+    /// Zimmer answered that no connection may be held. An answer, not a failure: it is not asked again for
+    /// this conversation until the settings change on this phone or the next visit.
+    public mutating func refused() -> [Action] {
+        guard phase == .warming else { return [] }
+        refusedFor = conversation
+        hold = .refused
+        return close(.refused)
+    }
+
     /// The Live settings were changed on this phone: what is held was made from the old ones.
     public mutating func settingsChanged(at now: TimeInterval) -> [Action] {
         guard active else { return [] }
         interestAt = now
         failures = 0
         retryAt = nil
+        refusedFor = nil
         return (phase == .idle ? [] : close(.settingsChanged)) + evaluate(at: now)
     }
 
@@ -443,6 +459,10 @@ public struct LiveWarmStart: Sendable, Equatable {
                 return []
             }
         }
+        if refusedFor == target {
+            hold = .refused
+            return actions
+        }
         if let retryAt, now < retryAt {
             hold = .backingOff
             return actions
@@ -509,6 +529,11 @@ public extension LiveEvent {
 
     static func warmFailed(_ slot: LiveWarmStart.Slot, _ message: String) -> LiveEvent {
         LiveEvent(.warn, "warm.failed") { ["slot": .string(slot.rawValue), "message": .string(message)] }
+    }
+
+    /// Zimmer said no connection may be held, and why.
+    static func warmRefused(_ slot: LiveWarmStart.Slot, _ message: String) -> LiveEvent {
+        LiveEvent(.info, "warm.refused") { ["slot": .string(slot.rawValue), "message": .string(message)] }
     }
 
     /// Nothing is being held, and why. Logged when the reason changes.

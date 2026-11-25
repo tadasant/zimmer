@@ -18,9 +18,9 @@ module LiveConversations
   # next one starts on the default (VoiceEngine).
   #
   # Standby — a GPT-Live session the app holds ready for a tap, billed at a lower
-  # rate — has its own daily cap (`voice_standby_daily_cap_usd`; 0 turns it off),
-  # and at it the app's next pre-warm is refused and calls start from cold. It
-  # counts toward the daily cap, being real money, and not toward a
+  # rate — is off unless its own daily cap (`voice_standby_daily_cap_usd`) is above
+  # 0, the default. Off, or at the cap, the app's pre-warm is refused, OpenAI is
+  # asked for nothing, and calls start from cold. It counts toward the daily cap, being real money, and not toward a
   # conversation's, which nobody has spoken in yet.
   #
   # The default engine is not capped: there is nothing cheaper-and-safe to
@@ -65,7 +65,7 @@ module LiveConversations
     # Why no GPT-Live session may be held ready now, or nil when one may.
     def self.standby_refusal(setting: LiveSetting.current, now: Time.current)
       cap = setting.effective(:voice_standby_daily_cap_usd).to_f
-      return "Standby is off (its daily cap is 0)." unless cap.positive?
+      return "Paid standby is off (its daily cap is 0)." unless cap.positive?
 
       spent = LiveUsageEvent.where(operation: STANDBY, occurred_at: now.beginning_of_day..).pick(Arel.sql(LiveUsageEvent::BILLED_COST_SQL)).to_f
       return nil if spent < cap
