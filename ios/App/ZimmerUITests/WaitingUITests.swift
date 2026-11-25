@@ -83,16 +83,6 @@ final class WaitingUITests: XCTestCase {
         return app
     }
 
-    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
-        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
-        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
-    }
-
-    private func waitForLabelContaining(_ element: XCUIElement, _ text: String) -> Bool {
-        let matches = expectation(for: NSPredicate(format: "label CONTAINS %@", text), evaluatedWith: element)
-        return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
-    }
-
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name

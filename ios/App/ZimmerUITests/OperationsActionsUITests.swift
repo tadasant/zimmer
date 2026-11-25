@@ -176,19 +176,4 @@ final class OperationsActionsUITests: XCTestCase {
         print("scrollTo gave up: element \(laidOut().map { "\($0)" } ?? "not laid out"), bar \(bar.exists ? "\(bar.frame)" : "absent")")
         return false
     }
-
-    private func waitForLabel(_ element: XCUIElement, _ label: String) -> Bool {
-        let matches = expectation(for: NSPredicate(format: "label == %@", label), evaluatedWith: element)
-        return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
-    }
-
-    private func waitForLabelContaining(_ element: XCUIElement, _ text: String) -> Bool {
-        let matches = expectation(for: NSPredicate(format: "label CONTAINS %@", text), evaluatedWith: element)
-        return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
-    }
-
-    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
-        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
-        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
-    }
 }

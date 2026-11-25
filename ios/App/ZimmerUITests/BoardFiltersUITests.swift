@@ -97,9 +97,4 @@ final class BoardFiltersUITests: XCTestCase {
     private func row(_ app: XCUIApplication, _ id: Int) -> XCUIElement {
         app.descendants(matching: .any)["session.row.\(id)"]
     }
-
-    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
-        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
-        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
-    }
 }

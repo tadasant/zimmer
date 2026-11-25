@@ -100,8 +100,7 @@ final class QuickRouterKeyboardUITests: XCTestCase {
     }
 
     private func waitForNoKeyboard(_ app: XCUIApplication) -> Bool {
-        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == 0"), object: app.keyboards)
-        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+        waitUntil(NSPredicate(format: "count == 0"), on: app.keyboards)
     }
 
     /// Gone, and still gone a moment later: a keyboard UIKit hands back to the bar arrives
@@ -111,13 +110,7 @@ final class QuickRouterKeyboardUITests: XCTestCase {
     }
 
     private func waitForKeyboardFocus(_ element: XCUIElement) -> Bool {
-        let focused = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasKeyboardFocus == true"), object: element)
-        return XCTWaiter().wait(for: [focused], timeout: timeout) == .completed
-    }
-
-    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
-        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
-        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+        waitUntil(NSPredicate(format: "hasKeyboardFocus == true"), on: element)
     }
 
     private func launch() -> XCUIApplication {

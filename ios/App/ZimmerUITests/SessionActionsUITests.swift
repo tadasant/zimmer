@@ -65,11 +65,6 @@ final class SessionActionsUITests: XCTestCase {
         XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["session.row.1042"]), "trashed anyway, it left the board")
     }
 
-    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
-        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
-        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
-    }
-
     /// The bar at the foot of the board: the web UI's "What do you want to do?" box.
     func test_the_quick_router_bar_starts_a_session_from_a_sentence_and_opens_it() throws {
         let app = launch()
@@ -132,25 +127,15 @@ final class SessionActionsUITests: XCTestCase {
         XCTAssertTrue(waitForValue(bar, "Draft the release notes"), "a Cancel gives the bar the sheet's words")
     }
 
-    private func waitForValue(_ element: XCUIElement, _ value: String) -> Bool {
-        let match = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: element)
-        return XCTWaiter().wait(for: [match], timeout: timeout) == .completed
-    }
-
     /// An empty text field reads back as nothing or as its placeholder, by iOS version.
     private func waitForEmpty(_ field: XCUIElement) -> Bool {
-        let empty = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "value == nil OR value == '' OR value == %@", "What do you want to do?"),
-            object: field
-        )
-        return XCTWaiter().wait(for: [empty], timeout: timeout) == .completed
+        waitUntil(NSPredicate(format: "value == nil OR value == '' OR value == %@", "What do you want to do?"), on: field)
     }
 
     /// The sheet focuses its field as it appears; typing waits for that rather than tapping,
     /// which would put the cursor wherever the tap landed.
     private func waitForKeyboardFocus(_ element: XCUIElement) -> Bool {
-        let focused = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasKeyboardFocus == true"), object: element)
-        return XCTWaiter().wait(for: [focused], timeout: timeout) == .completed
+        waitUntil(NSPredicate(format: "hasKeyboardFocus == true"), on: element)
     }
 
     /// The button in the corner of every other screen: the web UI's bubble. From the Inbox

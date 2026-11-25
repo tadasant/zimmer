@@ -62,8 +62,7 @@ final class SessionDetailPanelsUITests: XCTestCase {
         let paste = pasteCommand(app)
         XCTAssertTrue(paste.waitForExistence(timeout: timeout), "the edit menu offers Paste")
         paste.tap()
-        let pasted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Unmerged PR is open and CI is green."), object: field)
-        XCTAssertEqual(XCTWaiter().wait(for: [pasted], timeout: timeout), .completed, "the pasteboard holds the goal's words")
+        XCTAssertTrue(waitForValue(field, "Unmerged PR is open and CI is green."), "the pasteboard holds the goal's words")
     }
 
     func test_the_goal_check_opens_the_session_whose_prs_it_judged() throws {
@@ -239,21 +238,6 @@ final class SessionDetailPanelsUITests: XCTestCase {
         let item = app.menuItems["Paste"].firstMatch
         if item.waitForExistence(timeout: 3) { return item }
         return app.buttons["Paste"].firstMatch
-    }
-
-    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
-        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
-        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
-    }
-
-    private func waitForLabel(_ element: XCUIElement, _ label: String) -> Bool {
-        let matches = expectation(for: NSPredicate(format: "label == %@", label), evaluatedWith: element)
-        return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
-    }
-
-    private func waitForLabelContaining(_ element: XCUIElement, _ text: String) -> Bool {
-        let matches = expectation(for: NSPredicate(format: "label CONTAINS %@", text), evaluatedWith: element)
-        return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
     }
 
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {

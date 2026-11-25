@@ -96,11 +96,6 @@ final class QuickRouterAttachmentsUITests: XCTestCase {
         return app
     }
 
-    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
-        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
-        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
-    }
-
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {
         let shot = app.screenshot()
         let attachment = XCTAttachment(screenshot: shot)

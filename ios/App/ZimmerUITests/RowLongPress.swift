@@ -43,8 +43,7 @@ extension XCTestCase {
             if presses > 0 || timedOut, back.exists {
                 back.tap()
                 // The page has gone, not merely started to: a press during the pop lands on nothing.
-                let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: back)
-                XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: timeout), .completed, "back on the board after a press that opened the session")
+                XCTAssertTrue(waitForDisappearance(back, timeout: timeout), "back on the board after a press that opened the session")
                 XCTAssertTrue(row.waitForExistence(timeout: timeout))
             }
             prepare()

@@ -258,14 +258,4 @@ final class AccountUITests: XCTestCase {
         let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: towardTop ? 0.75 : 0.45))
         from.press(forDuration: 0.1, thenDragTo: to, withVelocity: .default, thenHoldForDuration: 0.3)
     }
-
-    private func waitForLabelContaining(_ element: XCUIElement, _ text: String) -> Bool {
-        let matches = expectation(for: NSPredicate(format: "label CONTAINS %@", text), evaluatedWith: element)
-        return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
-    }
-
-    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
-        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
-        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
-    }
 }

@@ -28,14 +28,12 @@ final class LiveUpdatesUITests: XCTestCase {
         // Swiping only once the chip's scroll has landed on the newest message, or the two fight.
         let messages = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'detail.message.'"))
         let newest = messages.element(boundBy: messages.count - 1)
-        let landed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isHittable == true"), object: newest)
-        XCTAssertEqual(XCTWaiter().wait(for: [landed], timeout: timeout), .completed, "the chip lands on the newest message")
+        XCTAssertTrue(waitUntil(NSPredicate(format: "isHittable == true"), on: newest), "the chip lands on the newest message")
         for _ in 0..<30 where !first.isHittable { readBack(app) }
         XCTAssertTrue(first.isHittable, "scrolled back to the start")
         let readingAt = first.frame.minY
         // Two polls' worth of new lines arrive while reading back.
-        let twoMore = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count >= %d", messages.count + 2), object: messages)
-        XCTAssertEqual(XCTWaiter().wait(for: [twoMore], timeout: timeout * 2), .completed, "new lines arrive")
+        XCTAssertTrue(waitUntil(NSPredicate(format: "count >= %d", messages.count + 2), on: messages, timeout: timeout * 2), "new lines arrive")
         XCTAssertTrue(first.isHittable, "still where the reader left it")
         XCTAssertEqual(first.frame.minY, readingAt, accuracy: 1, "not moved at all")
     }
@@ -74,8 +72,7 @@ final class LiveUpdatesUITests: XCTestCase {
         row.tap()
         let reopened = app.descendants(matching: .any)["followup.field"]
         XCTAssertTrue(reopened.waitForExistence(timeout: timeout))
-        let kept = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", "Try 17 on a copy first"), object: reopened)
-        XCTAssertEqual(XCTWaiter().wait(for: [kept], timeout: timeout), .completed, "the words are still there")
+        XCTAssertTrue(waitUntil(NSPredicate(format: "value CONTAINS %@", "Try 17 on a copy first"), on: reopened), "the words are still there")
     }
 
     // MARK: - Helpers

@@ -36,8 +36,7 @@ final class TranscriptParityUITests: XCTestCase {
         let paste = pasteCommand(app)
         XCTAssertTrue(paste.waitForExistence(timeout: timeout), "the edit menu offers Paste")
         paste.tap()
-        let pasted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "bin/rails db:upgrade -- --target 16"), object: field)
-        XCTAssertEqual(XCTWaiter().wait(for: [pasted], timeout: timeout), .completed, "the pasteboard holds the block's code, without its fences")
+        XCTAssertTrue(waitForValue(field, "bin/rails db:upgrade -- --target 16"), "the pasteboard holds the block's code, without its fences")
     }
 
     /// The fresh-eyes review (1048) is every kind of block. Its heading, list, table and quote
@@ -84,8 +83,7 @@ final class TranscriptParityUITests: XCTestCase {
         let paste = pasteCommand(other)
         XCTAssertTrue(paste.waitForExistence(timeout: timeout), "the edit menu offers Paste")
         paste.tap()
-        let pasted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", url), object: field)
-        XCTAssertEqual(XCTWaiter().wait(for: [pasted], timeout: timeout), .completed, "the pasteboard holds the whole URL")
+        XCTAssertTrue(waitForValue(field, url), "the pasteboard holds the whole URL")
     }
 
     /// The status summary is markdown the generator writes full of links. 1038's is drawn
@@ -131,8 +129,7 @@ final class TranscriptParityUITests: XCTestCase {
         XCTAssertTrue(waitForCI.exists)
         waitForCI.tap()
 
-        let inserted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "/wait-for-ci "), object: field)
-        XCTAssertEqual(XCTWaiter().wait(for: [inserted], timeout: timeout), .completed, "the command replaces what was typed after the slash")
+        XCTAssertTrue(waitForValue(field, "/wait-for-ci "), "the command replaces what was typed after the slash")
         XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["slash.list"]), "a space after the command closes the list")
     }
 
@@ -236,16 +233,6 @@ final class TranscriptParityUITests: XCTestCase {
         }
         _ = button.waitForExistence(timeout: 2)
         return button
-    }
-
-    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
-        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
-        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
-    }
-
-    private func waitForLabelContaining(_ element: XCUIElement, _ text: String) -> Bool {
-        let matches = expectation(for: NSPredicate(format: "label CONTAINS %@", text), evaluatedWith: element)
-        return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
     }
 
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {

@@ -224,11 +224,6 @@ final class TriggerEditorUITests: XCTestCase {
         field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count) + text)
     }
 
-    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
-        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
-        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
-    }
-
     /// A trigger row is an accessibility container, so its own label is empty: what it says is
     /// in the texts inside it.
     private func rowSays(_ row: XCUIElement, _ text: String) -> Bool {

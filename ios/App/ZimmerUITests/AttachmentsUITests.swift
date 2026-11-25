@@ -51,9 +51,4 @@ final class AttachmentsUITests: XCTestCase {
         app.launch()
         return app
     }
-
-    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
-        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
-        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
-    }
 }

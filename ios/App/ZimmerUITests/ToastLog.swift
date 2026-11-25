@@ -15,8 +15,7 @@ extension XCTestCase {
                       timeout: TimeInterval = 20) -> Bool {
         let wanted = identifier.isEmpty && !words.isEmpty ? words : "\(identifier): \(words)"
         let log = app.staticTexts["toast.log"]
-        let said = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", wanted), object: log)
-        guard XCTWaiter().wait(for: [said], timeout: timeout) == .completed else {
+        guard waitUntil(NSPredicate(format: "value CONTAINS %@", wanted), on: log, timeout: timeout) else {
             // What was said instead, for the run that goes red.
             if log.exists { add(XCTAttachment(string: log.value as? String ?? "")) }
             return false

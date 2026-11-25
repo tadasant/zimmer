@@ -638,7 +638,8 @@ jobs:
     # run, most of them before the first UI test on a hosted runner. The headroom is for a pull
     # request that touches several UI test files, whose classes the smoke run adds whole: six of
     # them did not fit in 45 minutes, twice, with no test failed. So this is the budget of
-    # `ios-ui-tests.yml`, which runs the same classes. A job cut off here fails `all-checks-pass`,
+    # `ios-ui-tests.yml`, which runs the same classes, and a change to more than eight of the
+    # files adds none of them. A job cut off here fails `all-checks-pass`,
     # but the run concludes `cancelled`, so on `main` it pages nobody (see Known limitations).
     timeout-minutes: 75
 
@@ -702,6 +703,10 @@ jobs:
         # reserved-by-RFC-2606 name that can never resolve — the fixture makes no request —
         # because this repository names no deployment, not even in a workflow file.
         #
+        # MORE THAN EIGHT FILES and none of them are added: eight classes is about what the
+        # budget holds, and a job cut off at its budget is red with no test failed. Such a
+        # change is proven by that dispatched run instead, which shards the whole suite.
+        #
         # The file list arrives through `env:`, never pasted into the shell line, and the
         # script only reads class names out of files under ios/App/ZimmerUITests.
         env:
@@ -710,6 +715,11 @@ jobs:
           set -euo pipefail
           also=()
           for f in $UI_TEST_FILES; do also+=(--also "$f"); done
+          # Two array entries a file. See MORE THAN EIGHT FILES above.
+          if [ "${#also[@]}" -gt 16 ]; then
+            echo "::warning::This change touches $(( ${#also[@]} / 2 )) UI test files, more than this job's budget fits, so it ran only the smoke subset. Before merging: gh workflow run ios-ui-tests.yml --ref <branch>"
+            also=()
+          fi
           ios/bin/ui-test --smoke \
             --configuration Staging \
             --api-base-url https://ui-test.invalid \
