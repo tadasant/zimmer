@@ -39,10 +39,13 @@ extension LiveAPI {
     /// the driver asked to continue and nothing is open: an ended conversation cannot take a
     /// call, and starting a new one in its place would be a different thread than the one asked
     /// for, with nothing to say so.
-    public func conversation(for choice: CarLiveChoice) async throws -> Int? {
+    ///
+    /// `unanswered`: a conversation kept ready that an earlier try at this New asked for, and Zimmer
+    /// may or may not have given it. Asked for again rather than a second one made.
+    public func conversation(for choice: CarLiveChoice, unanswered: Int? = nil) async throws -> Int? {
         switch choice {
         case .continueOpen: return try await liveConversations().current
-        case .startNew: return try await startLiveConversation(.voice).id
+        case .startNew: return try await startLiveConversation(.voice, standby: unanswered, again: unanswered != nil).id
         }
     }
 }

@@ -512,7 +512,7 @@
       <% end %>
       <span class="text-gray-400">
         <% if agent_session.spot? %>
-          higher is worked first — see the <%= link_to "Ranked view", root_path(view: SessionsController::VIEW_MODE_RANKED), data: { turbo_frame: "_top" }, class: "text-indigo-600 hover:text-indigo-500" %>
+          higher is worked first — see the <%= link_to "Ranked view", root_path(view: SessionsController::VIEW_MODE_RANKED), data: { turbo_frame: "_top", turbo_prefetch: false }, class: "text-indigo-600 hover:text-indigo-500" %>
         <% else %>
           unused while this session is priority; it applies if it is demoted to spot
         <% end %>

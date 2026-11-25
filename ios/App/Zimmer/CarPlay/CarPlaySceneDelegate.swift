@@ -19,9 +19,9 @@ import os
 /// have to start one to look (`CarPlayVoiceSettings`).
 ///
 /// Silent until asked. The car opens on its tiles and says nothing; the call starts only when
-/// the driver taps one. CarPlay pre-warm holds a connection ready from
-/// the moment the scene connects (`LiveWarmKeeper`), but it sends nothing, opens no microphone and
-/// shows nothing: the tap is still where the call begins.
+/// the driver taps one. Standby holds a connection ready for each of them from the moment the scene
+/// connects (`LiveWarmKeeper`), but it opens no microphone, sends nothing anybody said and shows
+/// nothing: the tap is still where the call begins.
 ///
 /// CarPlay connects the scene declared in Info.plist only in a build that signs in the
 /// entitlement: `App/Zimmer/CarPlay.entitlements`, which `ios/bin/testflight` signs into every
@@ -45,7 +45,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         LiveCall.shared.carCameBack()
         log.notice("carplay scene connected")
         LiveTelemetry.shared.track(.carPlay("scene_connected"))
-        // CarPlay pre-warm: holds a connection ready for Continue.
+        // Standby: holds a connection ready for Continue and one for New.
         LiveWarmKeeper.shared.carConnected()
 
         interfaceController.delegate = self
@@ -66,7 +66,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         home.showsSettings = live.offersSettings
 
         // Another deployment came to the front on the phone (the call on the old one was hung up
-        // there): the car's warm connection and its tiles were the old deployment's, so both
+        // there): what the car holds in standby and its tiles were the old deployment's, so both
         // are read again from the new one.
         deploymentObserver = NotificationCenter.default.addObserver(forName: .zimmerDeploymentChanged, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -90,6 +90,11 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             live.showIfActive()
             live.readWhatIsOpen()
         }
+    }
+
+    /// Zimmer came to the front on the car's screen: a tap may be near.
+    func sceneWillEnterForeground(_ scene: UIScene) {
+        LiveWarmKeeper.shared.cameToTheFront()
     }
 
     func templateApplicationScene(

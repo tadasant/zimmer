@@ -34,10 +34,9 @@ final class CarPlayDrillUITests: XCTestCase {
     /// so, in which it answers neither the app nor XCUITest, on top of the time to draw. See
     /// limitations.md, "CarPlay's host can stop answering in the drill".
     private static let hostStall: TimeInterval = 45
-    /// How long a Live tile may stay up after its tap before the drill counts the tap as lost.
-    /// The app redraws the tiles within a fraction of a second of a tap it takes, though the host
-    /// can stall longer before it draws them (`hostStall`). Shorter than the 20 seconds or more
-    /// before a New the app took comes back, once its retries are spent.
+    /// How long a tap has to change the screen before the drill asks whether Zimmer heard it. The
+    /// app answers a tap it takes within a fraction of a second, though the host can stall longer
+    /// before it draws the answer (`hostStall`).
     private static let lostTap: TimeInterval = 15
     /// How long the phone may take to land on the call, counted from when the drill asks for the
     /// first unplug. The host can stall the disconnect itself for over a minute: in
@@ -83,8 +82,13 @@ final class CarPlayDrillUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(XCUIScreen.screens.count, 2, "the CarPlay window is a second screen, and there is none")
         zimmer = XCUIApplication()
         zimmer.launchArguments = ["-ZimmerFixture", "-ZimmerFixtureVoiceTurnedUp", "-ZimmerFixtureMicrophoneUnanswered"]
+        try? FileManager.default.removeItem(at: zimmerRecord)
+        zimmer.launchEnvironment["ZIMMER_CARPLAY_DRILL_RECORD"] = zimmerRecord.path
         zimmer.launch()
         openInTheCar()
+        // Each kind of line is checked once, here and below: one that was never written would make
+        // a tap Zimmer heard read as one it did not.
+        XCTAssertTrue(whatZimmerDid().contains("drew the tiles"), "Zimmer records drawing the tiles: \(whatZimmerDid())")
 
         // Open: the two choices and the settings, and nothing else.
         XCTAssertTrue(waitFor(anyOf: Self.continueTitles, seconds: Int(timeout)), "Continue is offered: the fixture has a conversation open")
@@ -101,8 +105,9 @@ final class CarPlayDrillUITests: XCTestCase {
         // Voice settings, before any call: the same panel as the call screen's gear, showing what
         // voice left behind, with Done as its way out because there is no call to go back to.
         // Only read here: the gear's visit below changes and resets them.
-        tapTile(Self.settingsTitles[0], or: Self.settingsTitles[1])
-        XCTAssertTrue(row("Done").waitForExistence(timeout: Self.hostStall), "the tile opens the voice settings; \(whatTheCarShowed)")
+        tapTile(Self.settingsTitles[0], or: Self.settingsTitles[1], until: row("Done"))
+        XCTAssertTrue(whatZimmerDid().contains("heard tile.settings"), "Zimmer records a tile's tap: \(whatZimmerDid())")
+        XCTAssertTrue(whatZimmerDid().contains("drew the voice settings"), "and drawing the voice settings: \(whatZimmerDid())")
         XCTAssertFalse(row("Back to the call").exists, "no call to go back to")
         XCTAssertTrue(row("Reply length cap").waitForExistence(timeout: timeout), "the settings load; \(whatTheCarShowed)")
         XCTAssertTrue(anything(containing: "180").exists, "the cap a voice call set is the cap shown; \(whatTheCarShowed)")
@@ -110,18 +115,15 @@ final class CarPlayDrillUITests: XCTestCase {
         photograph("carplay-voice-settings-from-home")
         record("the voice settings from the home", car.debugDescription)
         assertAlive("with the voice settings up from the home")
-        let done = row("Done")
-        done.tap()
-        // The tiles sit under the pushed panel the whole time, so the panel leaving is the proof.
-        let panelGone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: row("Reply length cap"))
-        XCTAssertEqual(XCTWaiter().wait(for: [panelGone], timeout: Self.hostStall), .completed, "Done takes the panel down; \(whatTheCarShowed)")
+        tap(row("Done"), "Done", until: row("Reply length cap"), exists: false)
+        XCTAssertTrue(whatZimmerDid().contains("heard row"), "Zimmer records a row's tap: \(whatZimmerDid())")
         XCTAssertTrue(waitFor(anyOf: Self.continueTitles, seconds: Int(timeout)), "and the tiles are back; \(whatTheCarShowed)")
         assertNoCallScreen("after the voice settings from the home: closing them calls nobody")
         photograph("carplay-home-after-settings")
         assertAlive("after the voice settings from the home")
 
         // Continue: one tap to the call screen, where the gear is, on a call held on Connecting….
-        tapTile(Self.continueTitles[0], or: Self.continueTitles[1], untilGone: true)
+        tapTile(Self.continueTitles[0], or: Self.continueTitles[1])
         // The gear says the call screen is up, and the words cannot: the tile says Connecting…
         // while the tap finds its conversation, and on a stalled run that outlasts one look.
         // The screen also comes up wearing CarPlay's own Cancel, so the gear takes a wait of its
@@ -226,11 +228,17 @@ final class CarPlayDrillUITests: XCTestCase {
         photograph("carplay-unavailable")
         assertAlive("after three retries")
 
-        // New: one tap to a call on a conversation of its own, which in this fixture cannot
-        // connect either, so it retries that conversation and gives up the same way.
+        // New: one tap to the call screen, on a conversation Zimmer has not answered yet (the fixture
+        // holds the first for far longer than the look for the screen). One Connecting…, the call's, from the tap: there is no tile
+        // saying it first while the conversation is made. In this fixture the call cannot connect
+        // either. The hold outlasts `LiveRetry.budget`, so the car may give up without a retry.
         assertNoMicrophonePrompt("before New")
-        tapTile(Self.newTitles[0], or: Self.newTitles[1], untilGone: true)
-        XCTAssertTrue(waitFor(anyOf: Self.retryingTitles, seconds: 30), "New tries a call")
+        tapTile(Self.newTitles[0], or: Self.newTitles[1])
+        let newIsUp = car.buttons["gearshape.fill"].waitForExistence(timeout: timeout)
+        photograph("carplay-new-connecting")
+        record("New, before Zimmer has answered it", car.debugDescription)
+        XCTAssertTrue(newIsUp, "New goes straight to the call screen; \(whatTheCarShowed)")
+        XCTAssertTrue(waitFor(anyOf: Self.retryingTitles + Self.retryTitles, seconds: 90), "New tries a call")
         XCTAssertTrue(waitFor(anyOf: Self.retryTitles, seconds: 90), "and gives up on its own conversation")
         assertNoCallScreen("once New has given up")
         assertAlive("after New")
@@ -239,7 +247,7 @@ final class CarPlayDrillUITests: XCTestCase {
         // Retry finds nothing open. The car starts nothing in its place: one Live tile, New, and
         // the settings beside it.
         endTheConversationOnThePhone()
-        tapTile(Self.retryTitles[1], or: Self.retryTitles[0], untilGone: true)
+        tapTile(Self.retryTitles[1], or: Self.retryTitles[0])
         waitForTwoTiles()
         XCTAssertTrue(waitFor(anyOf: Self.newTitles, seconds: Int(timeout)), "with nothing open, New is what is left")
         XCTAssertFalse(Self.continueTitles.contains { text($0).exists }, "nothing to continue; \(whatTheCarShowed)")
@@ -249,7 +257,7 @@ final class CarPlayDrillUITests: XCTestCase {
 
         // And New from there is one tap too, and retries like the rest.
         assertNoMicrophonePrompt("before New from the one tile")
-        tapTile(Self.newTitles[0], or: Self.newTitles[1], untilGone: true)
+        tapTile(Self.newTitles[0], or: Self.newTitles[1])
         XCTAssertTrue(waitFor(anyOf: Self.retryingTitles, seconds: 30), "New from the one tile tries a call")
         assertAlive("at the end of the drill")
     }
@@ -336,8 +344,7 @@ final class CarPlayDrillUITests: XCTestCase {
     private func press(_ words: String, until shown: XCUIElement) {
         let target = row(words)
         XCTAssertTrue(target.waitForExistence(timeout: timeout), "no \(words) row; \(whatTheCarShowed)")
-        target.tap()
-        XCTAssertTrue(shown.waitForExistence(timeout: timeout), "\(words) did nothing; \(whatTheCarShowed)")
+        tap(target, words, until: shown)
     }
 
     private func anything(containing words: String) -> XCUIElement {
@@ -352,39 +359,81 @@ final class CarPlayDrillUITests: XCTestCase {
         add(attachment)
     }
 
-    /// Taps the tile with either of its titles: CarPlay draws one or the other, by the width it
-    /// has.
-    ///
-    /// `untilGone`: the tap counts once the tile has left the screen, and a tile still up after
-    /// `lostTap` is tapped again, up to three taps. CarPlay's host can drop a synthesized tap:
-    /// in [run 44225446120](https://github.com/tadasant/zimmer/actions/runs/44225446120) its
-    /// window got the touch down and up on New, but the host never logged its
-    /// `button selected`, so Zimmer's handler never ran. Continue, New and Retry can be counted
-    /// this way, because a tap the app takes redraws the tiles at once without the one tapped
-    /// (`CarPlayLive.start`). Voice settings cannot: its panel is pushed over the tiles, and the
-    /// tiles stay in the tree under it.
-    private func tapTile(_ label: String, or other: String, untilGone: Bool = false) {
+    /// Taps the tile with either of its titles (CarPlay draws one or the other, by the width it
+    /// has) until `shown` is up, or with no `shown`, until the tile has left the screen: Continue,
+    /// New and Retry each leave it as soon as Zimmer takes the tap (`CarPlayLive.start`).
+    private func tapTile(_ label: String, or other: String, until shown: XCUIElement? = nil) {
         // A grid tile is a button named for its symbol with the tile's words as a text inside.
         let tile = car.buttons.containing(NSPredicate(format: "label IN %@", [label, other])).firstMatch
         guard tile.waitForExistence(timeout: timeout) else {
             XCTFail("no \(label) tile; \(whatTheCarShowed)")
             return
         }
-        tile.tap()
-        guard untilGone else { return }
-        let gone = NSPredicate(format: "exists == false")
-        for tap in 1...3 {
-            if tap > 1 {
-                // The last tap can be taken just as the wait runs out: a tile gone by now was. On a
-                // host that has stalled, this look waits the stall out, as every query there does.
-                guard tile.exists else { return }
-                record("the \(label) tile still up \(Int(Self.lostTap)) seconds after tap \(tap - 1)", car.debugDescription)
-                tile.tap()
-            }
-            let left = XCTNSPredicateExpectation(predicate: gone, object: tile)
-            if XCTWaiter().wait(for: [left], timeout: Self.lostTap) == .completed { return }
+        tap(tile, "the \(label) tile", until: shown ?? tile, exists: shown != nil)
+    }
+
+    /// Taps `target` until `sign` is up (or gone, with `exists` false), at most three times.
+    ///
+    /// CarPlay's host can drop a synthesized tap: in
+    /// [run 44225446120](https://github.com/tadasant/zimmer/actions/runs/44225446120) on New and
+    /// [run 45551203903, attempt 1](https://github.com/tadasant/zimmer/actions/runs/45551203903/attempts/1)
+    /// on Voice settings, its window got the touch down and up and it never logged its
+    /// `button selected`, so Zimmer's handler never ran. Only a tap like that is made again:
+    /// `CarPlayDrillRecord` must say Zimmer has run no handler and drawn nothing since the first
+    /// one. A tap Zimmer heard, or one on a screen Zimmer redrew under it, is Zimmer's to answer,
+    /// and the drill fails when it does not within `hostStall`.
+    private func tap(_ target: XCUIElement, _ name: String, until sign: XCUIElement, exists: Bool = true) {
+        func answered(within seconds: TimeInterval) -> Bool {
+            if exists { return sign.waitForExistence(timeout: seconds) }
+            let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: sign)
+            return XCTWaiter().wait(for: [gone], timeout: seconds) == .completed
         }
-        XCTFail("CarPlay took none of three taps on \(label); \(whatTheCarShowed)")
+        // Counted from the first tap: a line that comes late is still an answer to one of them.
+        let before = whatZimmerDid().count
+        for number in 1...3 {
+            target.tap()
+            if answered(within: Self.lostTap) { return }
+            assertAlive("after a tap on \(name)")
+            // A host or an app that has stalled may not have heard the tap yet, and a second one
+            // would land on whatever the first brings up (run 45543521487, attempt 1). Each of
+            // these waits out a stall on its side.
+            _ = car.windows.firstMatch.exists
+            _ = zimmer.windows.firstMatch.exists
+            record("tap \(number) on \(name): no answer in \(Int(Self.lostTap)) seconds", car.debugDescription)
+            if sign.exists == exists { return }
+            // Last, so that as little as possible comes between this look and the next tap.
+            let did = whatZimmerDid(since: before, within: 5)
+            record("tap \(number) on \(name): what Zimmer did", did.isEmpty ? "nothing" : did.joined(separator: "\n"))
+            guard did.isEmpty else {
+                XCTAssertTrue(answered(within: Self.hostStall), "tapping \(name) did nothing, and Zimmer had its chance (\(did.joined(separator: ", "))); \(whatTheCarShowed)")
+                return
+            }
+        }
+        XCTFail("three taps on \(name) never reached Zimmer; \(whatTheCarShowed)")
+    }
+
+    /// The file Zimmer keeps `CarPlayDrillRecord` in, which the run keeps too.
+    private let zimmerRecord = URL(fileURLWithPath: ProcessInfo.processInfo.environment["ZIMMER_UI_TEST_ARTIFACTS"] ?? "")
+        .appendingPathComponent("carplay-drill-record.txt")
+
+    /// What Zimmer has done in the car so far, oldest first. A record that cannot be read fails the
+    /// drill, because it would read as a Zimmer that heard nothing.
+    private func whatZimmerDid() -> [String] {
+        guard let text = try? String(contentsOf: zimmerRecord, encoding: .utf8) else {
+            XCTFail("Zimmer keeps no record for the drill at \(zimmerRecord.path)")
+            return []
+        }
+        return text.split(separator: "\n").map(String.init)
+    }
+
+    /// What Zimmer has done since it had done `count` things, waiting for the first of it.
+    private func whatZimmerDid(since count: Int, within seconds: Int) -> [String] {
+        for _ in 0..<seconds {
+            let did = Array(whatZimmerDid().dropFirst(count))
+            if !did.isEmpty { return did }
+            Thread.sleep(forTimeInterval: 1)
+        }
+        return Array(whatZimmerDid().dropFirst(count))
     }
 
     /// The home comes down to New and Voice settings, checking Zimmer is alive each second.

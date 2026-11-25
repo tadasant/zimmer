@@ -14,15 +14,40 @@ module LiveConversations
   # server's tools, and one on a machine that is offline takes its whole
   # connect timeout to say so. With no earlier conversation to start from, it
   # is `preparing` until the job has read the root's AGENTS.md.
+  #
+  # With `standby_id`, the conversation started is the one kept ready for this
+  # (Standby), so a call the app already has open on it is a call on the
+  # conversation that is current. Asking again (`again`) for one already taken
+  # answers with it, so a request whose answer was lost can be sent twice, and for one
+  # taken and left since is refused (Left), so a late repeat ends nothing. Without
+  # `again`, one that is gone is not missed, and the conversation started is a new one like any other.
   class Start
     class Unavailable < StandardError; end
+    class Left < StandardError; end
 
     # @param client_surface [String, nil] the TurnSource surface of the client
     #   starting it (web, ios, carplay, mcp), so a delegation the live model makes
     #   can say where the person was.
-    def self.call(mode_key = "text", client_surface: nil) = new(mode_key, client_surface:).call
+    # @param standby_id [Integer, nil] the standby conversation to start from.
+    # @param again [Boolean] the client says this tap may have been answered already.
+    def self.call(mode_key = "text", client_surface: nil, standby_id: nil, again: false) = new(mode_key, client_surface:, standby_id:, again:).call
 
-    def initialize(mode_key, client_surface: nil)
+    # What a new conversation on `root` would start from, or nil when nothing on
+    # it has been prepared yet.
+    def self.seed(root) = Seed.from(prepared_before(root), defaults(root))
+
+    # The newest conversation on this root whose instructions were read.
+    def self.prepared_before(root)
+      LiveConversation.where(agent_root: root.name, status: [ LiveConversation::ACTIVE, LiveConversation::ENDED ])
+                      .where.not(instructions: [ nil, "" ]).order(id: :desc).first
+    end
+
+    def self.defaults(root) = Array(root.default_mcp_servers).map(&:to_s).select { |name| ServersConfig.find(name) }.uniq
+    private_class_method :prepared_before
+
+    def initialize(mode_key, client_surface: nil, standby_id: nil, again: false)
+      @again = again
+      @standby_id = standby_id.presence && Integer(standby_id, exception: false)
       @mode = LiveConversations.mode(mode_key)
       @client_surface = LiveConversation.normalize_client_surface(client_surface)
       @availability = Availability.current
@@ -30,27 +55,47 @@ module LiveConversations
 
     # @return [LiveConversation]
     # @raise [Unavailable] with a message naming what is missing
+    # @raise [Left] for a repeat of a New that was answered, and its conversation ended
     # @raise [KeyError] for a mode that is neither text nor voice
     def call
       raise Unavailable, @availability.reasons.join(" ") unless @availability.available?
 
       root = @availability.root
-      defaults = Array(root.default_mcp_servers).map(&:to_s).select { |name| ServersConfig.find(name) }.uniq
       seeded = nil
+      taken = false
       conversation = LiveConversation.transaction do
+        standby = LiveConversation.lock.find_by(id: @standby_id) if @standby_id
+        # Taken already. The same tap asking again: it says so, or nobody has said
+        # anything in it yet. One somebody is talking in was another device's New.
+        if standby&.open? && (@again || standby.turns.none?)
+          taken = true
+          next standby
+        end
+
+        # Answered before and left since: a late repeat of an old tap must not end
+        # whatever the person went on to.
+        raise Left, "That conversation was started and has ended. Start a new one." if @again && standby && !standby.standby?
+
         LiveConversation.unfinished.lock.each(&:end!)
-        seeded = Seed.from(prepared_before(root), defaults)
-        LiveConversation.create!(
+        seeded = self.class.seed(root)
+        attributes = {
           mode: @mode.key,
           agent_root: root.name,
           model: @mode.model,
           status: LiveConversation::PREPARING,
-          mcp_servers: defaults,
-          last_activity_at: Time.current,
+          mcp_servers: self.class.defaults(root),
           client_surface: @client_surface,
           **(seeded&.attributes || {})
-        )
+        }
+        if standby&.standby? && seeded
+          standby.start_from_standby!(attributes)
+          standby
+        else
+          LiveConversation.create!(**attributes, last_activity_at: Time.current)
+        end
       end
+      return conversation if taken
+
       if seeded&.missing&.any?
         LiveConversationPrepareJob.perform_later(conversation.id, refresh: true, adding: seeded.missing)
       elsif seeded
@@ -63,14 +108,6 @@ module LiveConversations
       # Another start won the race for the one open slot; that one is the
       # current conversation now.
       LiveConversation.current || raise
-    end
-
-    private
-
-    # The newest conversation on this root whose instructions were read.
-    def prepared_before(root)
-      LiveConversation.where(agent_root: root.name, status: [ LiveConversation::ACTIVE, LiveConversation::ENDED ])
-                      .where.not(instructions: [ nil, "" ]).order(id: :desc).first
     end
 
     # What a new conversation takes from a prepared one: its instructions, and

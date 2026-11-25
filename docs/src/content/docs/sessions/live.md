@@ -48,7 +48,8 @@ to manage. What it shares with sessions is what it delegates to them.
 
 Its lifecycle is short: `preparing` while Zimmer reads its agent root's AGENTS.md, then `active`,
 then `ended`. It goes to `failed` when the instructions cannot be read, and the reason is shown on
-the page. `ended` is not final: going back reopens the same row, so its id, its thread and the
+the page. One more, `standby`, is kept ready for the next New and is nobody's until then
+([Standby](#standby)). `ended` is not final: going back reopens the same row, so its id, its thread and the
 sessions it touched are all still there. `failed` is final.
 
 A new conversation skips `preparing` when an earlier one on the same root was prepared. It starts
@@ -576,6 +577,7 @@ phone and in the browser until somebody picks Always.
 | Claude model | engine | `claude-sonnet-5-5` | `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5` | next delegation |
 | Per-conversation cap (USD) | engine | 2.00 | 0.10–100 (a person's to change, not the live model's) | next call or delegation |
 | Daily cap per engine (USD) | engine | 10.00 | 0.50–500 (likewise) | next call or delegation |
+| Paid standby cap per day (USD) | engine | 0.00 (off) | 0–50; above 0, GPT-Live [standby](#standby) is held, and billed with no call up (a person's to change, not the live model's) | the app's next hold |
 | Attach MCP servers | tools | `off` | `off`, `on` ([Self-enabling](#self-enabling-a-catalog-server); a person's to change, not the live model's) | next call or typed turn |
 
 The list is what each path can actually use. The typed path calls Chat Completions with function
@@ -762,39 +764,63 @@ the gear on the session board, without entering Live Mode: the waveform button l
 call, so that is the way to look first. A save there sends an open phone call a
 fresh `session.update`.
 
-### CarPlay pre-warm
+### Standby
 
-The car keeps one Realtime connection ready while it is connected and no call is up. **Continue** then starts on it, which skips the client
-secret, the TLS and WebSocket handshakes and OpenAI's session setup. Those are most of the two to
-three seconds a cold call takes before the *connected* notes. The design and its numbers are in
+With standby, a tap on **New** or **Continue** starts a call with almost nothing left to wait for. While the
+car is connected, or Live is open on the phone on a conversation with voice on, the iOS app holds a
+connection ready for each of them. The tap makes the connection the call's and opens the microphone, and
+Zimmer is told at the same time. For New a conversation is kept ready too.
+
+**No connection that bills is held unless somebody opts in.** On Realtime an idle connection costs nothing,
+so the bounds below are all that stop it. On GPT-Live it bills, so by default none is, and a call is first billed for at the tap
+that starts it. GPT-Live taps then start from cold: 4 to 11 s in the five taps on New measured in November
+2026, on the call screen from the tap. The design, the measurements behind it and every number are in
 [`ios/CARPLAY_PREWARM_DESIGN.md`](https://github.com/tadasant/zimmer/blob/main/ios/CARPLAY_PREWARM_DESIGN.md).
 
-- **Nothing goes up a warm connection before the tap.** The app opens the socket and pings it,
-  and has no way to send it an event. No microphone, no audio, no message, no `response.create`.
-  OpenAI bills Realtime by tokens, and an idle session makes none.
-- **The prewarm mint changes nothing** (`POST …/client_secret` with `prewarm=1`). No client is
-  noted, the conversation is not flagged as a car call, no model is written, and voice need not
-  be on. The tap turns voice on and sends a fresh `session.update`, both before any audio goes
-  up. The warm-up's instructions are as old as the warm-up, and this brings them to the
-  conversation as it is now.
-- **Bounded.** One connection at most. It is pinged every 20 s and replaced after 5 minutes.
-  After a failure it waits 5 s, then 15, 60 and 120. It stops after 15 mints per car connection.
-  Nothing is warmed on Low Power Mode, a serious thermal state, Low Data Mode or no network.
-- **Everything else is the cold path, unchanged.** New (which skips `preparing`, see
-  [One conversation](#one-conversation)), a tap while a connection is still
-  warming, and a connection not heard from for 45 s all start cold. So does the call that comes
-  back from the gear, which must be minted from the row the panel wrote. A warm start whose
-  voice-on or `session.update` fails falls back to a cold mint on the same microphone, with no
-  second tap.
-- **There is no switch to turn it off.** It is always on in the car. What stops it is one of the
-  holds above, a call being up, or the per-drive budget. Turning it off takes a code change. A
-  server deploy that refuses prewarm mints stops the warm connections, and the car falls back to
-  the cold path. A new app build stops the keeper entirely.
+- **The conversation kept ready** has the status `standby`. It is not open, so it is never the current
+  conversation, takes no message or turn and ends nothing, and it is on no list. A unique index keeps it to one:
+  asking again (`POST /live_conversations/standby`) answers with the same row, brought up to the
+  instructions and tool lists a new conversation would start on. The tap takes it
+  (`POST /live_conversations` with `standby_id`): the open conversation ends and this one becomes
+  current, dated from the tap. If it is gone, a new one is started instead and the answer says which.
+- **Nothing anybody said goes up before the tap.** No microphone is opened and no audio session
+  touched. A Realtime connection is pinged and has no way to be sent an event. A GPT-Live one is a WebRTC
+  session, so it carries ICE checks and silence the app makes itself on a track that is muted until
+  the call's microphone is open; no event is sent on it.
+- **Holding one changes nothing** (`client_secret` with `prewarm=1`, `gpt_live_session` with
+  `standby=1`). No client is noted, the conversation is not flagged as a car call, no model or engine is
+  written, and voice need not be on. The tap's own requests write those.
+- **On GPT-Live it costs money, so it is off until the Live setting Paid standby cap per day is above 0.**
+  OpenAI bills a session whose inference is paused at $0.02 a minute, against $0.05 for a call, from when it
+  is created. Opted in, one is held for 20 minutes after the last sign a call may be near (the car
+  connecting, Zimmer coming to the front, a call starting or ending), not past the cap by the seconds the app
+  has reported, and closed if it wakes before the tap. On Realtime, which bills by tokens, an idle connection
+  makes none.
+- **A refusal is asked once.** With it off, or at its cap, Zimmer refuses the hold (409) before anything is
+  asked of OpenAI. The app takes that as the answer for that conversation until the car next connects, Zimmer next
+  comes to the front, the settings change on the phone, or another conversation has been asked about. A build that does not know a refusal from a failure
+  (`warm.failed` rather than `warm.refused` in the call log) tries up to 15 times for each tap over about 25
+  minutes, and then stops. No try costs anything.
+- **Bounded.** One connection for each tap at most. A Realtime one is replaced after 5 minutes and a
+  GPT-Live one after 20. After a failure the app waits 5 s, then 15, 60 and 120, and stops after 15
+  tries in about an hour. Nothing is held on Low Power Mode, a serious thermal state, Low Data Mode or no network. A
+  settings change made on the phone or the car's panel starts them again.
+- **Everything else starts from cold**, on the same call screen and with no second tap: a tap with nothing
+  held, or with one not heard from for 45 s or held through a suspend, and one whose connection fails
+  before the call is up. So does the call that comes back from the gear, which must be minted from the row
+  the panel wrote.
 
-Every call logs `call.startup` with `path` (`warm`, `cold` or `fallback`) and `tap_to_ready_ms`,
-from the tap to the *connected* notes. It also logs `call.first_audio` with `since_tap_ms`. The
-warm connection logs `warm.*`: `claimed` and `missed` (with a reason) on each tap, plus `ready`,
-`closed`, `failed`, `held` and `fallback`. See [the iOS app's call log](/operate/observability/#the-ios-apps-call-log).
+The call exists from the tap in every case, cold ones included, so the screen is the call's from the
+start, with one *Connecting…*. On a call from standby, what it would write (its lines, its
+delegations, its ledger rows) waits for Zimmer to answer the tap, and it follows no other conversation until
+then. If Zimmer never answers, the call ends and says so.
+
+Every call logs `call.startup` with `tap` (`new` or `continue`), `path` (`warm`; `warming`, taken on its way
+up; `cold`; or `fallback`), `engine` and `tap_to_ready_ms`, from the tap to the *connected* notes. A call
+from standby also logs `call.microphone_open` and `call.settled`, which is Zimmer's answer behind it. The
+held connections log `warm.*` with their `slot` (`new` or `open`): `claimed` and `missed` (with a reason) on
+each tap, plus `ready`, `closed`, `failed`, `refused`, `held` and `fallback`. See
+[the iOS app's call log](/operate/observability/#the-ios-apps-call-log).
 
 ### Call telemetry
 
@@ -859,9 +885,8 @@ the phone's call as on Realtime: the cues (read off GPT-Live's transcripts and d
 since it reports no speech boundaries), hang-up by voice, the hand-over between phone and car, and
 following Live Mode to another conversation. A GPT-Live call that cannot start (OpenAI refusing the session, WebRTC
 failing before `session.started`) starts again on Realtime once, saying why, so the engine never
-leaves the phone or the car without a voice. The car does not [pre-warm](#carplay-pre-warm) a
-GPT-Live call: Zimmer refuses a pre-warm while the settings pick it, because the session starts from
-the tap's own offer. The engine is a row on the phone's Live settings and on the car's voice
+leaves the phone or the car without a voice. The app holds a GPT-Live session ready for a tap with
+[standby](#standby). The engine is a row on the phone's Live settings and on the car's voice
 settings panel, where Reset to defaults leaves it as it is.
 
 **Claude runs on Zimmer's Claude Code subscription, through Claude Code.** Nobody supplies an
@@ -960,6 +985,7 @@ Every billable or measured step of a voice call is a row in the voice-engine led
 | `voice_tokens` | `openai_realtime` | the dock, from each `response.done`: text and audio tokens, cached separately |
 | `transcription` | `openai_realtime` | the dock, from each transcription's usage |
 | `voice_session` | `gpt_live_claude` | the dock or the iOS app, every minute and when the call ends (or the tab closes): GPT-Live's billed seconds, totalled from `session.closed` when it comes, else the seconds the client saw. Client-reported, and accepted only for a conversation whose call runs on GPT-Live |
+| `voice_standby` | `gpt_live_claude` | the iOS app, every minute and when it ends: the seconds a session was held ready for a tap ([Standby](#standby)), at OpenAI's standby rate. A session that became a call is priced from the tap by the call's own seconds. Counts toward the daily cap and the standby cap, not a conversation's |
 | `delegation` | `gpt_live_claude` | Zimmer, for each Claude call: model, input, output, cache read and cache write tokens, round-trip time |
 | `tool_call` | `gpt_live_claude` | Zimmer, for each tool Claude runs: its time and whether it failed (no cost) |
 | `turn_latency` | any | the dock (no cost). On Realtime, from `speech_stopped` to the first audio of the answer; on GPT-Live, which reports no speech boundaries, from the last fragment of the person's transcript to the first fragment of the answer's. Close, not identical |

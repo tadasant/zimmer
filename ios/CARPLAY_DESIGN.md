@@ -71,8 +71,9 @@ and nothing runs in parallel. The home is still the one grid, so no template was
   A stale New tile never ends a call: End does that.
 - **Given up keeps New.** A conversation that will not connect is when a fresh one is most useful,
   and Retry alone would hold the driver on it.
-- **A second tap is not a second start.** The lookup is marked before the first `await`, so one
-  arriving during it changes nothing.
+- **A second tap is not a second start.** The call begins at the tap, before its conversation is found
+  or made, so a second tap finds a call up and goes back to it. A New that Zimmer has not answered is still
+  New to a retry.
 - **The comeback is unchanged.** Closing the voice settings calls the same conversation again,
   whatever the tiles say. A tile tapped after that gives up makes the driver's own choice. Retry
   keeps a mute the comeback was holding. New lets go of it, because a driver who chooses a fresh
@@ -326,9 +327,9 @@ GPT-Live it still reads as a drop and is retried.
 **A call that will not connect gives up in 15 seconds.** The driver's answer comes quickly or it is
 no use, and calls that work come up in 2 to 3 seconds. A call is up when its microphone is open and
 OpenAI has said `session.created`, so *Listening* and the connected notes mean somebody can hear
-you; the socket merely having been asked to open proves nothing. A tap answers at once (the tile
-says *Connecting…*, and *pressed* sounds), a second tap is not a second attempt, and finding the conversation has the same
-deadline. Two calls that each hang to the deadline come to about half a minute, then *Tap to retry*
+you; the socket merely having been asked to open proves nothing. A tap answers at once (the call
+screen goes up on *Connecting…*, and *pressed* sounds), a second tap is not a second attempt, and finding or making the
+conversation is part of the call, inside the one deadline. Two calls that each hang to the deadline come to about half a minute, then *Tap to retry*
 (`LiveCallHealth`).
 
 **Nothing that can block runs on the main thread.** One call sat on Connecting… for 770 seconds with
@@ -513,6 +514,11 @@ then drives the real templates, which the system's `CarPlayTemplateUIHost` draws
   Retry: no call, one tile, New, and a tap on it tries a call. The car's calls can leave the system's
   microphone prompt over the phone, so the drill answers it first if it is up, with Don't Allow.
 
+A tap on a tile or a row that changes nothing is made again only when Zimmer's record of the car
+(`CarPlayDrillRecord`) shows no Zimmer handler ran for it, because CarPlay's host can drop one. A tap Zimmer
+heard and did nothing about fails the drill. See `limitations.md`, "CarPlay's host can stop answering
+in the drill".
+
 The tiles come back to rest only when a call ends, and no call in the drill connects or can be ended,
 so the order is what reaches each state: Continue gets one tap at rest, and nothing to continue comes
 last. Which conversation each tile called is `CarPlayTests`', because the drill can see only the
@@ -594,11 +600,13 @@ running after every step, and any crash report fails the job.
   the panel to a voice: CI has no call that connects, so the drill proves it is called again and the
   rest is driving.
 
-## Startup latency: CarPlay pre-warm
+## Startup latency: standby
 
-While it is connected, the car holds one idle Realtime
-connection ready for Continue. The tap starts the call on it. It sends
-nothing before the tap and opens no microphone. The design and the numbers are in
+While it is connected, the car holds a connection ready for Continue and one for New, with a conversation
+kept ready for New. The tap starts the call on it, and the call exists from the tap whether or not there
+was one, so there is one *Connecting…*: the call screen's. Nothing anybody said goes up before the tap and
+no microphone is opened. On GPT-Live a held connection bills, so none is held unless the Live settings opt
+in, and the tap starts from cold. The design, the measurements and the numbers are in
 [`CARPLAY_PREWARM_DESIGN.md`](CARPLAY_PREWARM_DESIGN.md).
 
 ## Follow-ups

@@ -92,18 +92,24 @@ events, and `error` drops those too.
 {service.name="zimmer"} deployment.environment:=production scope.name:="ios.live" event:="call.ended" _time:7d | stats by (reason) count() calls
 ```
 
-How long calls take to start, from the tap to the *connected* notes, by how they started (`warm`,
-`cold` or `fallback` — see [CarPlay pre-warm](/sessions/live/#carplay-pre-warm)). This is the number
-the pre-warm is judged on:
+How long calls take to start, from the tap to the *connected* notes, by the tap (`new` or `continue`) and
+how they started (`warm`, `warming`, `cold` or `fallback` — see [Standby](/sessions/live/#standby)). This is the number
+standby is judged on, and it says whether New took it:
 
 ```logsql
-{service.name="zimmer"} deployment.environment:=production scope.name:="ios.live" event:="call.startup" surface:="carplay" _time:7d | stats by (path) quantile(0.5, tap_to_ready_ms) p50, quantile(0.95, tap_to_ready_ms) p95, count() calls
+{service.name="zimmer"} deployment.environment:=production scope.name:="ios.live" event:="call.startup" surface:="carplay" _time:7d | stats by (tap, engine, path) quantile(0.5, tap_to_ready_ms) p50, quantile(0.95, tap_to_ready_ms) p95, count() calls
 ```
 
-What each tap found, and why the misses missed. The warm-hit rate is `warm.claimed` over all of these:
+What each tap found, and why the misses missed. The hit rate for a tap (`slot`) is `warm.claimed` over its rows:
 
 ```logsql
-{service.name="zimmer"} deployment.environment:=production scope.name:="ios.live" event:in("warm.claimed","warm.missed") _time:7d | stats by (event, reason) count() taps
+{service.name="zimmer"} deployment.environment:=production scope.name:="ios.live" event:in("warm.claimed","warm.missed") _time:7d | stats by (slot, event, reason, hold) count() taps
+```
+
+Where a tap's wait went, and how long Zimmer took behind a call that did not wait for it:
+
+```logsql
+{service.name="zimmer"} deployment.environment:=production scope.name:="ios.live" event:in("call.microphone_open","call.settled","call.startup") _time:7d | fields _time, call_id, event, tap, path, since_tap_ms, request_ms, tap_to_ready_ms | sort by (_time)
 ```
 
 Every problem in the last week, which is the question a check-in on whether to turn the logging down asks:

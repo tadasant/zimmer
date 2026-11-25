@@ -109,15 +109,15 @@ class SessionsControllerRankedViewTest < ActionDispatch::IntegrationTest
   end
 
   test "a quick filter is persisted the way an Apply is" do
-    get dashboard_board_url(filters: "1", status: SessionsController::UNARCHIVED_STATUSES)
+    get root_url(filters: "1")
     assert_response :success
 
-    # A bare visit afterwards keeps the choice rather than snapping back to the
-    # needs_input default.
-    live = spot(10, title: "live spot")
+    # A visit without filters afterwards keeps the choice rather than snapping back
+    # to the Ranked view's own default, which leaves the trash out.
+    trashed = spot(10, title: "trashed spot", status: :archived)
     get dashboard_board_url(view: SessionsController::VIEW_MODE_RANKED)
 
-    assert_includes spot_row_ids, live.id
+    assert_includes spot_row_ids, trashed.id
   end
 
   # --- staying live -----------------------------------------------------------

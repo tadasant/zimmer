@@ -406,7 +406,7 @@ That run could not say whether the touch was lost in CarPlay's host, whether the
 
 The failed run did stand out in one way. XCTest's steps stalled for 14.5 seconds just before the tap, and those loops never recreated that. Twelve `yes` processes did not slow the simulator, so nothing here was measured under real load.
 
-So the cause is not known, and the drill does not retry a settings row tap, because the fault could be the app's. A home tile tap is a different case, with evidence that the host dropped it: see "CarPlay's host can stop answering in the drill" below. The drill's job log prints the app's and CarPlay's logs in time order, and `carplay-host-log.txt` is kept with the run, so the next failure says how far its tap got. The comment above them in `ios/bin/ui-test` lists the lines to read. Nothing here was measured on a real device.
+So the cause is not known. The drill taps a row again only when Zimmer's own record says it ran no handler and redrew nothing after the tap, the same rule as a home tile: see "CarPlay's host can stop answering in the drill" below. A row tap Zimmer heard and did nothing about still fails the drill. The drill's job log prints the app's and CarPlay's logs in time order, and `carplay-host-log.txt` is kept with the run, so the next failure says how far its tap got. The comment above them in `ios/bin/ui-test` lists the lines to read. Nothing here was measured on a real device.
 
 ### CarPlay's host can stop answering in the drill
 
@@ -415,13 +415,15 @@ On GitHub's macOS runners, CarPlay's host process (`CarPlayTemplateUIHost`) some
 - **Right after the car is plugged back in**, the drill asks only the car's dashboard for the home button and Zimmer's icon, and asks the host nothing until the icon is tapped. Twice a look at the host there ([run 43321204934](https://github.com/tadasant/zimmer/actions/runs/43321204934), [run 43355109091](https://github.com/tadasant/zimmer/actions/runs/43355109091)) hung XCUITest's query for 90 seconds and failed the drill with `Failed to get matching snapshots`. That look never found anything: in all 12 green drills sampled, the scene came back only from the icon. Whether the host still stalls when it is left alone in those seconds is not known. If it does, the next step's query fails the same way.
 - **The gear's panel.** The fixture runs the gear's closure 25 seconds after the call screen goes up, on its own clock, so the drill's wait for the panel runs to 45 seconds past that press. In [run 43346062519](https://github.com/tadasant/zimmer/actions/runs/43346062519) the closure ran on time, the host answered nothing for 30 seconds, and the panel came up 33 seconds after the press, about 26 seconds after a 20-second wait would have run out.
 
-The host can also drop a tap without stalling. In [run 44225446120](https://github.com/tadasant/zimmer/actions/runs/44225446120) its window got the touch down and up on New, but the host never logged its `button selected`, so Zimmer's handler never ran and the drill failed on `New tries a call`. The drill counts a tap on Continue, New or Retry only once the tile has left the screen, and taps it again, up to three taps, if it is still up 15 seconds later. A tap the app takes redraws the tiles at once without that tile, and New does not come back for at least 20 seconds, while the retries run. A host stall longer than 15 seconds can make a tap the app took look lost. The drill then checks the tile is still there before tapping again, and that check waits out the stall with the rest of XCUITest's queries. The Voice settings tile gets no second tap, because its panel opens over the tiles and they stay in the tree.
+The host can also drop a tap without stalling. In [run 44225446120](https://github.com/tadasant/zimmer/actions/runs/44225446120) on New, and in [run 45551203903, attempt 1](https://github.com/tadasant/zimmer/actions/runs/45551203903/attempts/1) on Voice settings, its window got the touch down and up, but the host never logged its `button selected`, so Zimmer's handler never ran. In the second the touch down took 450 ms to reach the window and the up came 7 ms after it, where a tap that works takes about 2 ms and 70 ms. So the drill's build of Zimmer writes a line to `carplay-drill-record.txt` for each handler CarPlay runs and each redraw of the tiles or the voice settings (`CarPlayDrillRecord`, compiled under `DEBUG`, as the drill's Staging build is). A tap on a tile or a row that has changed nothing after 15 seconds is made again, up to three taps, if that record shows Zimmer did nothing since the first. Any line there means the tap is Zimmer's to answer: it gets 45 seconds more, for a stalled host, and then the drill fails. The record cannot see a tap the host selected and CarPlay's code in the app then lost before any handler ran; `button selected` in the host's log is what tells that apart, and `carplay-host-log.txt` keeps it. Each tap that went unanswered is kept in the result bundle with what Zimmer did.
+
+A stall can also make a tap Zimmer took look lost. In [run 45543521487, attempt 1](https://github.com/tadasant/zimmer/actions/runs/45543521487/attempts/1) the host selected Continue, the app's next redraw reached it 17 seconds later, and the drill's second tap found the tile gone and failed. Why that took 17 seconds is not known. The drill waits for both the host and the app to answer XCUITest, and then up to 5 seconds for a line in the record, before it taps again. A tap held up for longer than that between the two, while both still answer XCUITest, can still fail the drill. A host that drops the same tap three times still fails the drill, and so does a drop of a tap the drill makes on the car's dashboard or the phone, which have no such record.
 
 The car can also stay connected after the drill unplugs it. In [run 44560053511, attempt 1](https://github.com/tadasant/zimmer/actions/runs/44560053511/attempts/1) the External Displays menu was clicked to Disabled with the call up, but the app logged no `carplay scene disconnected` and the phone stayed on the session list, so `the phone goes to the call` failed. The host had logged nothing since 16 seconds before the click, and logged nothing again until after the test ended, so whether the Simulator ignored the click or the host stalled through it is not known. A phone not on the call 20 seconds after the unplug gets the menu clicked again. The host can also hold up a disconnect the click did make: in [run 44939231478](https://github.com/tadasant/zimmer/actions/runs/44939231478) the host logged nothing after the drill asked for the first unplug, the app logged `carplay scene disconnected` about 65 seconds after that click went in, and the phone landed on the call `LiveHandover.settle` (3 seconds) and one half-second look later, about a second after the drill had stopped waiting. So the drill gives the phone 90 seconds from asking for the first unplug to land, whichever click took. A stall longer than that still fails the drill.
 
 The fixture holds the drill's first call on Connecting… for 600 seconds, the drill's whole time allowance, and the gear is what ends it. With a hold of 120 seconds a slow unplug and replug outlasted it: in [run 45103157432](https://github.com/tadasant/zimmer/actions/runs/45103157432) the call failed at 03:31:49, some 10 seconds before the gear was due. The drill then failed on the gear's panel with an empty car, because Zimmer had aborted playing the cue for that failure ("A stalled audio server can end the app during a call", below). A failure message that shows the car says when Zimmer is not running.
 
-The other steps wait 20 seconds or less, apart from the retries' 30 and 90. A stall longer than that at another step fails the drill, and is the drill's timing, not the app: the job log's app and host lines say which. Before the gear, a stall of about 12 seconds fails it with `Send now's state goes up` or `a Send now with nothing to send leaves the screen as it is`, and the voice settings in the dump.
+Apart from a tap's wait for its answer, above, and the retries' 30 and 90, the other steps wait 20 seconds or less. A stall longer than that at another step fails the drill, and is the drill's timing, not the app: the job log's app and host lines say which. Before the gear, a stall of about 12 seconds fails it with `Send now's state goes up` or `a Send now with nothing to send leaves the screen as it is`, and the voice settings in the dump.
 
 ### Send now in the car has never ended a real turn
 
@@ -585,13 +587,7 @@ Heard note itself waits a further 1.5 s (`LiveCue.settle`) and is dropped if you
 resumes, so a pause mid-sentence sounds nothing unless it outlasts both. The phone logs each run of the person's
 transcript as `gpt_live.input_transcript`: how long they spoke by GPT-Live's intervals, over how
 long the fragments arrived, and `streamed` when the second is at least half the first. The first
-real call answers this. A CarPlay
-call taken from a [pre-warmed](/sessions/live/#carplay-pre-warm) Realtime connection runs on
-Realtime whatever the engine. Zimmer refuses to pre-warm while the settings pick GPT-Live, so this
-happens only with a connection warmed before the engine was switched, for at most its five minutes.
-While the engine is GPT-Live the car keeps asking to pre-warm, backing off to once every two minutes,
-and each refusal spends one of the drive's 15 pre-warms. Switching back to Realtime late in a long
-drive can find the budget spent, so the next call starts cold.
+real call answers this. 
 
 ### A sheet presented from inside a `List` row can reset itself
 
@@ -5369,25 +5365,50 @@ signal that it has fallen behind, and it is an accurate one.
 
 ---
 
-### CarPlay pre-warm has not run against OpenAI or in a car
+### GPT-Live standby has not run against OpenAI, on a device or in a car
 
-[CarPlay pre-warm](/sessions/live/#carplay-pre-warm) is on in every car, with no setting to turn it
-off. A server deploy that refuses prewarm mints stops it; so does a new app build. Its rules are tested
-on Linux (`LiveWarmStart`, `LiveWarmStartTests`) and Zimmer's prewarm mint is tested. CI compiles
-the app, but the app's half (`LiveWarmKeeper`, `LiveWarmLink`, `LiveCall.startWarm`) has never
-run: CI holds no Realtime key and drives no car. Four things are unproven until the first
-drives: that OpenAI keeps an idle Realtime WebSocket open for 5 minutes on 20 s pings;
-that the idle session bills nothing (check the usage page against `warm.ready` counts); that
-iOS keeps the socket while the CarPlay scene is behind another app (a tap after a suspension
-longer than 45 s starts cold); and the win itself, `call.startup` `tap_to_ready_ms` by `path`.
+[Standby](/sessions/live/#standby)'s rules are tested on Linux (`LiveWarmStart`, `GptLiveConductor`),
+Zimmer's half is tested, and CI compiles the app and drives the car's screens. But CI holds no OpenAI key and
+no microphone, so the app's half has never held a real connection or started a real call. The first drives
+settle these, and the call log says each one:
 
-The warm session's model, voice and reasoning effort are fixed when it is minted, as for any
-call. A change to them reaches a warm connection only when it is replaced, within 5 minutes.
-The call coming back from the car's gear never takes a warm connection, for that reason.
-Only **Continue** is warmed. **New** starts a fresh conversation, which cannot exist before the tap.
-New does not wait on `preparing` (it starts on the last prepared conversation's instructions and
-tool lists), but the create, the mint and the connect all run after the tap. GPT-Live, the
-engine the car ran on when this was measured, has no pre-warm at all.
+- that a session created with `wake_policy` sends `session.started` while it is still paused. If it
+  waits for speech instead, nothing is ever ready: every `warm.failed` would be a 15 s time-out, and taps would
+  start from cold or on a session still `warming`;
+- that OpenAI keeps a session in standby for 20 minutes on ICE and silence, and what its `expires_at` is
+  (`warm.ready` logs it as `session_life_ms`). No longest life is published;
+- that `gpt-live-1` on this account accepts `wake_policy`. A refusal is `warm.failed` with OpenAI's reason;
+- that a person's first words wake it and are heard whole. OpenAI says it wakes *while* they speak and
+  that the first answer to a short utterance may take longer;
+- what it bills: the OpenAI usage page against `voice_standby` on `/live/costs`. Zimmer counts a call from standby at the
+  active rate from the tap, though OpenAI's starts at the first word, so the ledger runs slightly high.
+  Whether the 15 s charge for starting a WebRTC session applies to one that starts in standby is not stated,
+  and the ledger has no row for it. So the standby cap cannot see it: if it applies, it is up to $0.0125 for each
+  session started, and what bounds those is the 15 starts for each tap in about an hour;
+- that libwebrtc holds two sessions at once on the one audio device, and that the silence on a muted
+  track is what OpenAI means by keeping it active. It is about 30 kbit/s for each session held;
+- the win itself: `call.startup` `tap_to_ready_ms` for `tap=new`, `path=warm`.
+
+GPT-Live standby is off by default (**Paid standby cap per day** is 0), so none of this happens until somebody
+opts in. Each failure leaves the tap starting from cold.
+
+### A cold New still meets the stall it always did
+
+About half the taps on New measured in November 2026 waited 5 s for the one request that makes the
+conversation, and the other half 0.35 s. The cause is not established: it adds 5.0 s to some requests from
+the car and not others, and the phone logs no timings inside a request. Standby takes that request out
+of the wait, and does not make it faster. A tap with nothing held still waits for it, behind the call screen's
+one *Connecting…*. On GPT-Live that is every tap unless paid standby is opted into, because a held
+connection bills: the conversation kept ready does not shorten a cold tap by itself.
+
+### What is held in standby can be a few minutes behind
+
+A connection's instructions, voice and model are fixed when it is opened. A change to the Live settings
+made on the same phone, or on the car's panel, starts it again. One made anywhere else reaches a GPT-Live
+connection within 20 minutes and a Realtime one within 5, or on the call after. Paid standby turned on anywhere
+else is found the next time Zimmer comes to the front, or the car connects. On Realtime the tap's
+`session.update` brings the instructions up to date; on GPT-Live nothing can. Continue's GPT-Live
+connection is made again when the open conversation is added to, as of the last read, up to 30 s ago.
 
 ### A new conversation starts on the last one's tool lists
 

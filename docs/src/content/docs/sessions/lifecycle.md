@@ -2927,7 +2927,10 @@ Two behaviours are worth knowing:
 - **A selection persists.** Applying the form writes the statuses and the scheduling class to a
   `sessions_filters` cookie, so the choice survives a reload and a bare visit to `/` — the same
   shape of preference as the view-mode cookie. **Reset filters** deletes it and returns you to
-  `needs_input` only.
+  `needs_input` only. Loading the dashboard writes both cookies. What an open page fetches
+  to keep itself current does not: the board (`GET /board`), and the copy of the page the backfill
+  asks for, which carries `X-Zimmer-Backfill`. So a tab left open on `All` does not undo a reset made
+  in another. Reloading that tab still does, because its address names the filters.
 - **The ticked boxes describe the result set in every view, search included.** Searching does not
   quietly widen the status filter. That means a search from the default view returns `needs_input`
   matches only — to search the trash, tick `Archived`; to search everything, tick nothing. The

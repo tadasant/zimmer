@@ -42,9 +42,8 @@ class SessionsControllerFiltersTest < ActionDispatch::IntegrationTest
   end
 
   test "a selection survives a plain reload of the bare dashboard" do
-    get dashboard_board_url(filters: "1", status: %w[running])
+    get root_url(filters: "1", status: %w[running])
     assert_response :success
-    assert_cards [ @running ]
 
     # No params at all — the persisted choice, not the default, is what applies.
     get dashboard_board_url
@@ -53,7 +52,7 @@ class SessionsControllerFiltersTest < ActionDispatch::IntegrationTest
   end
 
   test "an explicit show-everything selection also persists" do
-    get dashboard_board_url(filters: "1")
+    get root_url(filters: "1")
     assert_response :success
 
     get dashboard_board_url
@@ -62,8 +61,10 @@ class SessionsControllerFiltersTest < ActionDispatch::IntegrationTest
   end
 
   test "reset filters clears the persisted selection and returns to the default" do
-    get dashboard_board_url(filters: "1", status: %w[archived])
+    get root_url(filters: "1", status: %w[archived])
     assert_response :success
+
+    get dashboard_board_url
     assert_cards [ @archived ]
 
     get root_url(reset_filters: "1")
@@ -126,7 +127,7 @@ class SessionsControllerFiltersTest < ActionDispatch::IntegrationTest
   end
 
   test "a persisted selection still applies while searching" do
-    get dashboard_board_url(filters: "1", status: %w[archived])
+    get root_url(filters: "1", status: %w[archived])
     assert_response :success
 
     get dashboard_board_url(q: "Filterable")
@@ -137,6 +138,7 @@ class SessionsControllerFiltersTest < ActionDispatch::IntegrationTest
   test "the scheduling class filter narrows the view you are in rather than replacing it" do
     # It is a filter, not a search. Persisting it must not silently swap the view the
     # operator chose for a different presentation on every later visit.
+    get root_url(filters: "1", priority_class: SessionGenesis::PRIORITY)
     get dashboard_board_url(filters: "1", priority_class: SessionGenesis::PRIORITY)
     assert_response :success
     assert_select "#board_v2", count: 1

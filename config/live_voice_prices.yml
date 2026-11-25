@@ -10,10 +10,10 @@
 # unpriced — a wrong rate is worse than a visibly missing one. /live/costs shows
 # unpriced rows as their own count.
 #
-# Sources, checked 2026-11-14:
+# Sources, checked 2026-11-14 (GPT-Live again, with standby, 2026-11-24):
 #   OpenAI   https://developers.openai.com/api/docs/pricing
 #   Anthropic  the claude-api skill's model table (cached 2026-11-03)
-version: "2026-11-14"
+version: "2026-11-24"
 
 # Per 1M tokens. `cached_input` is what a cached prompt token costs.
 openai_realtime:
@@ -35,6 +35,11 @@ openai_transcription:
 # Per minute of session, billed per second.
 openai_live:
   gpt-live-1: { per_minute: 0.05 }
+
+# Per minute of a WebRTC session in standby (`wake_policy`, inference paused until
+# somebody speaks), billed per second. Published 2026-11-19.
+openai_live_standby:
+  gpt-live-1: { per_minute: 0.02 }
 
 # Per 1M tokens. `cache_write` is the 5-minute write rate (1.25x input).
 anthropic:

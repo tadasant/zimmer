@@ -17,6 +17,13 @@ module LiveConversations
   # `openai_realtime`, and a call in progress is told to end, after which the
   # next one starts on the default (VoiceEngine).
   #
+  # Standby — a GPT-Live session the app holds ready for a tap, billed at a lower
+  # rate — is off by default: its own daily cap (`voice_standby_daily_cap_usd`) is
+  # 0 until somebody raises it. Off, or at the cap, the app's pre-warm is refused,
+  # OpenAI is asked for nothing, and calls start from cold. It counts toward the
+  # daily cap, being real money, and not toward a conversation's, which nobody has
+  # spoken in yet.
+  #
   # The default engine is not capped: there is nothing cheaper-and-safe to
   # fall back to, and capping it would leave Live Mode with no voice at all.
   class SpendGuard
@@ -54,6 +61,19 @@ module LiveConversations
       def money(value) = format("$%.2f", value)
     end
 
+    STANDBY = "voice_standby"
+
+    # Why no GPT-Live session may be held ready now, or nil when one may.
+    def self.standby_refusal(setting: LiveSetting.current, now: Time.current)
+      cap = setting.effective(:voice_standby_daily_cap_usd).to_f
+      return "Paid standby is off (its daily cap is 0)." unless cap.positive?
+
+      spent = LiveUsageEvent.where(operation: STANDBY, occurred_at: now.beginning_of_day..).pick(Arel.sql(LiveUsageEvent::BILLED_COST_SQL)).to_f
+      return nil if spent < cap
+
+      format("Standby reached its daily cap ($%.2f of $%.2f today).", spent, cap)
+    end
+
     def self.check(engine:, conversation:, setting: LiveSetting.current, now: Time.current)
       new(engine: engine, conversation: conversation, setting: setting, now: now).check
     end
@@ -70,7 +90,7 @@ module LiveConversations
       scope = LiveUsageEvent.for_engine(@engine)
       Check.new(
         engine: @engine,
-        conversation_spend: @conversation&.id ? billed(scope.where(live_conversation_id: @conversation.id)) : 0.0,
+        conversation_spend: @conversation&.id ? billed(scope.where(live_conversation_id: @conversation.id).where.not(operation: STANDBY)) : 0.0,
         daily_spend: billed(scope.where(occurred_at: @now.beginning_of_day..)),
         conversation_cap: @setting.effective(:voice_engine_conversation_cap_usd).to_f,
         daily_cap: @setting.effective(:voice_engine_daily_cap_usd).to_f

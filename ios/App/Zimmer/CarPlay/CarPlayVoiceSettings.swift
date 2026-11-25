@@ -52,6 +52,9 @@ final class CarPlayVoiceSettings {
 
     private func draw() {
         log.notice("voice settings drawn: \(String(describing: self.model.page), privacy: .public), loaded \(self.model.settings != nil, privacy: .public)")
+        #if DEBUG
+        CarPlayDrillRecord.note("drew the voice settings")
+        #endif
         var top: [CPListItem] = []
         if let problem = model.problem {
             top.append(item(problem, detail: model.settings == nil ? "Tap to try again" : nil) { [weak self] in

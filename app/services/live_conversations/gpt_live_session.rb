@@ -13,17 +13,25 @@ module LiveConversations
   # Client delegation means GPT-Live answers what it can and, for anything
   # else, emits `session.delegation.created`; the browser asks Rails to run it
   # (ClaudeDelegate) and appends the answer as commentary.
+  #
+  # `standby` is the iOS app holding the session ready ahead of a tap
+  # (Standby, ios/CARPLAY_PREWARM_DESIGN.md). OpenAI starts it with inference paused
+  # (`wake_policy: speech`), billed at the standby rate, and it answers the first
+  # speech it hears. With no `idle_timeout_s`, once woken it stays awake until it
+  # ends, like any other call. It is built as the call it may become — spoken, from
+  # the client asking — and nothing about it is written to the conversation.
   class GptLiveSession
     MODEL = "gpt-live-1"
     SDP_MAX_BYTES = 64.kilobytes
 
     class Invalid < StandardError; end
 
-    def self.start(conversation, sdp:, setting: LiveSetting.current, client: OpenaiClient.new)
-      new(conversation, setting: setting, client: client).start(sdp)
+    def self.start(conversation, sdp:, standby: false, setting: LiveSetting.current, client: OpenaiClient.new)
+      new(conversation, setting: setting, client: client, standby: standby).start(sdp)
     end
 
-    def initialize(conversation, setting:, client:)
+    def initialize(conversation, setting:, client:, standby: false)
+      @standby = standby
       @conversation = conversation
       @setting = setting
       @client = client
@@ -48,7 +56,7 @@ module LiveConversations
       answer = response.dig("transport", "sdp")
       raise OpenaiClient::Error, "OpenAI returned no SDP answer" if answer.blank?
 
-      @conversation.update_columns(model: MODEL) if @conversation.model != MODEL
+      @conversation.update_columns(model: MODEL) if !@standby && @conversation.model != MODEL
       { session_id: response.dig("session", "id"), sdp: answer, model: MODEL }
     end
 
@@ -60,6 +68,7 @@ module LiveConversations
         instructions: SystemPrompt.build_front_end(@conversation, setting: @setting),
         delegation: { type: "client" }
       }
+      session[:wake_policy] = { type: "speech" } if @standby
       session[:audio] = { output: { voice: @setting.effective(:voice_name) } } if voice
       { session: session, transport: { type: "webrtc", sdp: sdp } }
     end

@@ -382,6 +382,27 @@ class PwaReopenRecoveryTest < ApplicationSystemTestCase
     assert_empty recorded_events
   end
 
+  # The backfill asks for the page at its own address, and a dashboard's address
+  # carries the filters it was opened with. Asking again is not choosing them again.
+  test "reopening a filtered dashboard does not bring its filters back" do
+    cookie = SessionsController::FILTERS_COOKIE.to_s
+    names = -> { page.driver.browser.execute_cdp("Network.getAllCookies")["cookies"].map { |c| c["name"] } }
+
+    visit root_path(view: SessionsController::VIEW_MODE_BOARD_V2,
+                    SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "all")
+    assert_includes names.call, cookie, "loading the dashboard remembers its filters"
+    page.driver.browser.execute_cdp("Network.deleteCookies", name: cookie, url: page.current_url)
+    assert_not_includes names.call, cookie
+
+    tune_recovery(stale_after: 0)
+    instrument_page
+    kill_cable_socket
+    reopen_from_bfcache
+    assert wait_for_recovery, "the reopen never finished recovering"
+
+    assert_not_includes names.call, cookie
+  end
+
   # Elicitation banners are added AND removed by broadcasts, so the region syncs
   # rather than appends: an approval answered while the app was away has to come
   # off the page, not sit there as a dead prompt.

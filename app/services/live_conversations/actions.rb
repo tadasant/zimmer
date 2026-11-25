@@ -95,29 +95,36 @@ module LiveConversations
     # The client asking is the one about to drive the call, so it is noted
     # first and the instructions minted with the secret name it.
     #
-    # `prewarm`: the CarPlay app asking ahead of a tap, for a connection it
-    # holds idle until the driver chooses Continue (ios/CARPLAY_PREWARM_DESIGN.md).
-    # Nobody is driving a call yet, so nothing on the conversation changes: no
-    # client noted, no `car_call`, no model written, and voice need not be on.
-    # The tap turns voice on and sends a fresh `session_update` before any
-    # audio goes up, which brings the warm session's instructions to the
-    # conversation as it is then. Only the car pre-warms.
+    # `prewarm`: the iOS app, in the car or on the phone's Live screen, asking
+    # ahead of a tap for a connection it holds ready until the person chooses
+    # Continue (the open conversation) or New (the one kept in Standby). See
+    # ios/CARPLAY_PREWARM_DESIGN.md. Nobody is driving a call yet, so nothing on
+    # the conversation changes: no client noted, no `car_call`, no model
+    # written, and voice need not be on. On Realtime the answer is a secret, and
+    # the tap sends a fresh `session_update` before any audio goes up. On GPT-Live
+    # it is the engine alone, for an app that says it can hold one (`standby`):
+    # it starts the session with #gpt_live_session, `standby` too. Either way the
+    # tap then asks for its own `client_secret`, which is what writes the engine,
+    # the mode and the client on the conversation.
     #
     # Which engine runs the call is decided here (VoiceEngine): the default
     # answers with the Realtime secret as always; `gpt_live_claude` answers
     # with no secret — the client starts that call with #gpt_live_session —
     # and an engine that cannot run falls back to the default, saying why in
     # `engine.fallback_reason`. Either way the answer names the engine.
-    def client_secret(prewarm: false)
-      return prewarm_secret if prewarm
+    def client_secret(prewarm: false, standby: false)
+      return prewarm_secret(standby: standby) if prewarm
 
       require_voice!
       note_client!(new_call: true)
       resolution = VoiceEngine.resolve(@conversation, client_engines: @engines)
       record_engine!(resolution)
       if resolution.engine == VoiceEngine::GPT_LIVE
-        return { engine: resolution.engine, voice_engine: resolution.as_api_json, model: GptLiveSession::MODEL,
-                 telemetry: LiveSetting.current.effective(:voice_telemetry) }
+        # Written here as well as by #gpt_live_session: a call on a session held
+        # in standby never asks for another.
+        record_mode!(VoiceEngine.mode_for(VoiceEngine::GPT_LIVE))
+        record_model!(GptLiveSession::MODEL)
+        return gpt_live_grant(resolution)
       end
 
       minted = RealtimeSession.mint(@conversation, listening_modes: listening_modes?)
@@ -133,7 +140,13 @@ module LiveConversations
     # WebRTC offer and return OpenAI's answer. Only for a conversation whose
     # call this client was just told runs on GPT-Live (#client_secret), so a
     # client cannot reach an engine the settings, the keys or the caps refused.
-    def gpt_live_session(sdp:)
+    #
+    # `standby`: the session is held ready for a tap rather than starting a call
+    # (#client_secret, `prewarm`): nothing is written to the conversation, and
+    # the standby cap applies.
+    def gpt_live_session(sdp:, standby: false)
+      return standby_session(sdp) if standby
+
       require_voice!
       require_engine!(VoiceEngine::GPT_LIVE)
       # Decided again here, not trusted from the column: the settings, a key or
@@ -258,26 +271,71 @@ module LiveConversations
     end
 
     def finish
+      raise Refused.new("This conversation has not started.", status: :conflict) if @conversation.standby?
+
       @conversation.end!
       @conversation
     end
 
     private
 
-    def prewarm_secret
-      raise Refused, "Only the CarPlay app pre-warms a connection." unless @client_surface == "carplay"
+    def prewarm_secret(standby: false)
+      require_prewarm!
+      resolution = VoiceEngine.resolve(@conversation, client_engines: @engines)
+      if resolution.engine == VoiceEngine::GPT_LIVE
+        # An app from before standby would hold a Realtime connection this call
+        # would never use.
+        unless standby
+          raise Refused.new("The next call runs on #{VoiceEngine::GPT_LIVE}, which this app cannot hold ready.", status: :conflict)
+        end
 
-      require_active!
-      # A GPT-Live call starts its own session from the tap (#gpt_live_session):
-      # a warm Realtime connection is one it would never use.
-      if VoiceEngine.resolve(@conversation, client_engines: @engines).engine == VoiceEngine::GPT_LIVE
-        raise Refused.new("The next call runs on #{VoiceEngine::GPT_LIVE}, which has no connection to pre-warm.", status: :conflict)
+        require_standby_budget!
+        return gpt_live_grant(resolution)
       end
       RealtimeSession.mint(@conversation, listening_modes: listening_modes?, record_model: false).except(:reasoning_effort)
     rescue OpenaiClient::NotConfiguredError => e
       raise Refused.new(e.message, status: :service_unavailable)
     rescue OpenaiClient::Error => e
       raise Refused.new("OpenAI: #{e.message}", status: :bad_gateway)
+    end
+
+    # The session the app holds ready on GPT-Live. In memory only, the
+    # conversation is the call it may become: spoken, from the client asking.
+    def standby_session(sdp)
+      require_prewarm!
+      unless VoiceEngine.resolve(@conversation, client_engines: [ VoiceEngine::GPT_LIVE ]).engine == VoiceEngine::GPT_LIVE
+        raise Refused.new("The next call no longer runs on #{VoiceEngine::GPT_LIVE}.", status: :conflict)
+      end
+
+      require_standby_budget!
+      @conversation.assign_attributes(mode: "voice", client_surface: @client_surface)
+      GptLiveSession.start(@conversation, sdp: sdp, standby: true)
+    rescue GptLiveSession::Invalid => e
+      raise Refused, e.message
+    rescue OpenaiClient::NotConfiguredError => e
+      raise Refused.new(e.message, status: :service_unavailable)
+    rescue OpenaiClient::Error => e
+      raise Refused.new("OpenAI: #{e.message}", status: :bad_gateway)
+    end
+
+    PREWARM_SURFACES = %w[carplay ios].freeze
+
+    # The app's own surfaces, and a conversation a call could be on at once: the
+    # open one, or the one kept for the next New.
+    def require_prewarm!
+      raise Refused, "Only the iOS app pre-warms a connection." unless PREWARM_SURFACES.include?(@client_surface)
+
+      require_active! unless @conversation.standby?
+    end
+
+    def require_standby_budget!
+      refusal = SpendGuard.standby_refusal
+      raise Refused.new(refusal, status: :conflict) if refusal
+    end
+
+    def gpt_live_grant(resolution)
+      { engine: resolution.engine, voice_engine: resolution.as_api_json, model: GptLiveSession::MODEL,
+        telemetry: LiveSetting.current.effective(:voice_telemetry) }
     end
 
     # `surface` is the client this line came from, kept on the line itself so a

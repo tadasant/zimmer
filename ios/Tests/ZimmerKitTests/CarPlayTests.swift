@@ -596,6 +596,39 @@ final class CarPlayTests: XCTestCase {
         XCTAssertEqual(wish.choice, .startNew)
     }
 
+    /// A New on the conversation kept ready, whose answer never came: the retry asks for the same one,
+    /// whether or not Zimmer had given it, and not for a second that would end it.
+    func testARetryOfANewThatWasNeverAnsweredAsksForTheSameConversation() async throws {
+        for landed in [false, true] {
+            let api = FakeZimmerAPI()
+            let kept = try await api.liveStandby()
+            if landed {
+                _ = try await api.startLiveConversation(.voice, standby: kept.id, again: false)
+                _ = try await api.recordLiveTurn(kept.id, role: .user, content: "Hello", gated: false)
+            }
+            let found = try await api.conversation(for: .startNew, unanswered: kept.id)
+            XCTAssertEqual(found, kept.id, "landed: \(landed)")
+            let current = try await api.liveConversations().current
+            XCTAssertEqual(current, kept.id)
+        }
+    }
+
+    /// An old tap's repeat, getting through after the driver has gone on to another conversation.
+    func testALateRepeatOfANewThatWasLeftEndsNothing() async throws {
+        let api = FakeZimmerAPI()
+        let kept = try await api.liveStandby()
+        _ = try await api.startLiveConversation(.voice, standby: kept.id, again: false)
+        let later = try await api.startLiveConversation(.voice)
+        do {
+            _ = try await api.conversation(for: .startNew, unanswered: kept.id)
+            XCTFail("left since")
+        } catch let ZimmerError.http(status, _) {
+            XCTAssertEqual(status, 409)
+        }
+        let current = try await api.liveConversations().current
+        XCTAssertEqual(current, later.id)
+    }
+
     func testContinueWithNothingOpenFindsNothingAndStartsNothing() async throws {
         let api = FakeZimmerAPI()
         _ = try await api.finishLiveConversation(21)
