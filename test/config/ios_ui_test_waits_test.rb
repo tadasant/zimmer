@@ -4,7 +4,8 @@ require "test_helper"
 
 # The iOS UI tests wait on a predicate through `Waits.swift`, which looks once more after the
 # clock runs out. A bare `XCTWaiter` does not: XCTest cancels the query it is part-way through,
-# and one slow query on a loaded runner fails a wait that saw nothing (actions/runs/45603621053).
+# and one slow query on a loaded runner fails a wait that saw nothing (actions/runs/45603621053), or
+# passes one whose element never went (actions/runs/45623496827).
 # A new test that writes its own brings that flake back, and nothing but a red `main` would say so.
 class IosUiTestWaitsTest < ActiveSupport::TestCase
   SOURCES = Rails.root.join("ios/App/ZimmerUITests")

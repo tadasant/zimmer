@@ -5,12 +5,14 @@ import XCTest
 /// ones there are and fails on a new one.
 ///
 /// A waiter's clock covers the looking as well as the app. When it runs out XCTest cancels a query
-/// that is still being answered, and the wait fails having seen nothing. On main's run 45603621053 the keyboard was gone three seconds
+/// that is still being answered, and reads the cancelled query as an element that is not there. So
+/// a wait for something to go can fail having seen nothing, or pass having seen nothing. On main's run 45603621053 the keyboard was gone three seconds
 /// before the wait for that began, the one query the wait made was still walking the accessibility
 /// tree nineteen seconds later, XCTest logged `Interrupted by waiter`, and the test said the
-/// keyboard was up.
+/// keyboard was up. With the keyboard held up and the query stalled, the same wait completed, 20.3
+/// seconds into its 20 (actions/runs/45623496827).
 ///
-/// So when the clock runs out each of these looks once more, outside the waiter, where the query
+/// So a wait is believed only when it ends inside its clock. When the clock runs out each of these looks once more, outside the waiter, where the query
 /// has XCTest's own limit instead: three tries of 30 seconds, and then the test fails. That look
 /// begins after the clock ended, so it can only pass on what is on screen then: what is still wrong
 /// after the timeout still fails. `waitForExistence` takes the same last look by itself, outside its
@@ -52,9 +54,13 @@ import XCTest
         waitUntil(NSPredicate(format: "value == %@", value), on: element, timeout: timeout)
     }
 
+    /// Whether the wait ended, met, before its clock did. A query is only cancelled once the clock
+    /// has run out, so one that ends sooner was answered.
     @MainActor
     private func completes(_ predicate: NSPredicate, on object: Any, timeout: TimeInterval) -> Bool {
         let met = XCTNSPredicateExpectation(predicate: predicate, object: object)
-        return XCTWaiter().wait(for: [met], timeout: timeout) == .completed
+        let began = ProcessInfo.processInfo.systemUptime
+        let result = XCTWaiter().wait(for: [met], timeout: timeout)
+        return result == .completed && ProcessInfo.processInfo.systemUptime - began < timeout
     }
 }

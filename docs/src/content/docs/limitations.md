@@ -370,15 +370,16 @@ because it was being asked.
 
 ### Some waits in the iOS UI tests run out on a slow query
 
-When a wait's clock runs out, XCTest cancels an accessibility query that is still being answered,
-so one slow query can fail a wait that saw nothing: on
+When a wait's clock runs out, XCTest cancels an accessibility query that is still being answered, and
+reads it as an element that is not there. One slow query can then fail a wait for something to go,
+or pass it, with nothing seen either way. On
 [run 45603621053](https://github.com/tadasant/zimmer/actions/runs/45603621053) the keyboard had been
 gone for three seconds when the wait began, and its one query was cancelled 19 seconds in. The waits
 in `ios/App/ZimmerUITests/Waits.swift` look once more after the clock ends, outside the waiter, where
 the query has XCTest's own limit of three 30-second tries. Every helper the test classes share uses
 them. A query that outlasts those tries still fails its test.
 
-Nineteen of the UI test files still have waits of their own without that last look, and can fail the
+Nineteen of the UI test files still have waits of their own without that last look, and can fail, or pass, the
 same way. They are listed in `test/config/ios_ui_test_waits_test.rb`, which fails on a new one. They
 move a few at a time because a pull request runs every UI test class it touches, and all of them do
 not fit in the `ios` job's budget.
