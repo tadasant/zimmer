@@ -216,14 +216,16 @@ sequenceDiagram
     U->>Z: POST /mcp_oauth/initiate (server_name, session_id?)
     Note over U,Z: session_id is present from a session's OAuth banner and absent<br/>from the Connectors page Authorize button — that is the only difference
     alt a PreregisteredOauthConfig exists
-        Note over Z: Rails credentials: mcp_oauth_clients.{name}<br/>client_id, endpoints, scopes — wins outright<br/>client_secret optional (public client); a non-hosted redirect_uri (or manual: true) means paste-back
+        Note over Z: Rails credentials: mcp_oauth_clients.{name}<br/>client_id, endpoints, scopes — wins outright<br/>client_secret optional (public client); a non-hosted redirect_uri (or manual: true) means paste-back<br/>client_identity: cimd swaps in Zimmer's own CIMD client (where configured)
     else discovery
         Z->>AS: GET /.well-known/oauth-protected-resource (RFC 9728)
         AS-->>Z: { resource, authorization_servers }
         Z->>AS: GET /.well-known/oauth-authorization-server (RFC 8414)
         Note over Z,AS: falls back to /.well-known/openid-configuration,<br/>then to a bare GET looking for<br/>401 + WWW-Authenticate: Bearer resource_metadata=…
         AS-->>Z: { authorization_endpoint, token_endpoint,<br/>registration_endpoint?, scopes_supported }
-        alt catalog oauth.clientId configured
+        alt catalog oauth.clientIdentity "cimd", and the identity is configured
+            Note over Z: client_id = Zimmer's own CIMD URL — DCR skipped<br/>no secret; the token exchange signs a private_key_jwt assertion
+        else catalog oauth.clientId configured
             Note over Z: use the server's configured client_id<br/>(catalog oauth block) — DCR skipped<br/>oauth.redirectUri, when set, wins over the hosted callback
         else registration_endpoint advertised
             Z->>AS: POST (RFC 7591 Dynamic Client Registration)<br/>client_name: "Claude Code (Zimmer)"
@@ -238,7 +240,7 @@ sequenceDiagram
     U->>AS: authorize
     AS-->>Z: GET /mcp_oauth/callback?code=…&state=…
     Z->>Z: look up flow by state (THIS IS THE CSRF CHECK)
-    Z->>AS: POST token endpoint (code + code_verifier + redirect_uri)
+    Z->>AS: POST token endpoint (code + code_verifier + redirect_uri,<br/>plus client_secret, or a signed client_assertion for the hosted identity)
     AS-->>Z: { access_token, refresh_token?, expires_in }
     Z->>Z: upsert McpOauthCredential by credential_key
     Z->>S: McpOauthResumeService — all servers satisfied?<br/>(skipped entirely when the flow has no session;<br/>Zimmer redirects back to /connectors instead)
@@ -388,6 +390,108 @@ Code Slack plugin — they are public identifiers, not secrets. Writing the entr
 `config/credentials/production.yml.enc` still requires the prod master key, so it is a one-time human
 step. The code path and its tests do not depend on live Slack.
 :::
+
+## Zimmer's own client identity (CIMD and `private_key_jwt`)
+
+By default Zimmer identifies itself to an MCP server's authorization server with whatever the
+server gives it: a client id from the catalog or from Rails credentials, a registration made on the
+spot (DCR), or the literal `zimmer`. With the **hosted client identity** it can also present an
+identity of its own, one that every authorization server can check without a registration step:
+
+- a **Client ID Metadata Document** (CIMD) at a fixed public URL. That URL *is* the `client_id`, as
+  the MCP authorization spec's client-registration rules (revision 2026-07-28) and
+  draft-ietf-oauth-client-id-metadata-document describe;
+- a **JWK Set** with the public keys;
+- **`private_key_jwt`** at the token endpoint (RFC 7523): no client secret, but a signed assertion,
+  fresh for every request. In production the signing key is a GCP KMS key, which cannot be exported.
+  Zimmer's backend can ask KMS for a signature, and nothing in Zimmer holds the key itself.
+
+It is **off unless configured, and opt-in per server**. With nothing configured, or for any server
+that does not opt in, the flow is exactly the one above.
+
+| Path (no auth) | Serves |
+| --- | --- |
+| `GET /oauth-client/metadata.json` | the CIMD: `client_id` (its own URL), `client_name`, `client_uri`, `redirect_uris`, `grant_types`, `response_types`, `token_endpoint_auth_method: "private_key_jwt"`, `jwks_uri` |
+| `GET /oauth-client/jwks.json` | `{keys: [JWK]}`, the active key first. Each key has `kid` (its RFC 7638 thumbprint), `alg` and `use: "sig"`. Public parameters only |
+
+Both answer `404` until the identity is configured. They sit outside `/oauth/*` on purpose: that
+prefix is Zimmer's own [authorization server](/auth/mcp-authorization-server/), consent page
+included, so an edge rule that opens these two paths cannot open anything else by accident. Behind
+Cloudflare Access they are blocked like any other path, so an authorization server cannot fetch them
+until the edge opens both. That is a Terraform change in the edge configuration, not in this repo.
+
+### Turning it on
+
+| Variable | Value |
+| --- | --- |
+| `ZIMMER_OAUTH_CLIENT_BASE_URL` | The public origin, e.g. `https://zimmer.tadasant.com`. The `client_id`, `jwks_uri` and the redirect URI are built from it, **never from the request's `Host`**. It must be `https` (`http` only for `localhost`) and must not have a path. Set it to the origin `APP_HOST` names: the document lists `<base>/mcp_oauth/callback` as its only redirect, and if that is not the callback `APP_HOST` produces, the flow falls back to paste-back. |
+| `ZIMMER_OAUTH_CLIENT_KMS_KEY_VERSIONS` | Production. Comma-separated KMS `cryptoKeyVersion` resource names (`projects/P/locations/L/keyRings/R/cryptoKeys/K/cryptoKeyVersions/N`). The first one signs; all of them are published. Zimmer calls KMS as the [Parameter Store resolver's service account](/operate/secrets-parameter-store/) (`ZIMMER_PARAMS_RESOLVER_SERVICE_ACCOUNT_KEY_JSON`), which therefore needs `roles/cloudkms.signer` and `roles/cloudkms.publicKeyViewer` on that one key. |
+| `ZIMMER_OAUTH_CLIENT_SIGNING_KEYS` | Development, tests and the open-source build. Comma-separated private keys, each a PEM or base64 of a PEM: RSA of 2048 bits or more, or EC P-256. `openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \| base64 -w0`. If both are set, KMS wins. Agent sessions never inherit this variable (`CliSpawnEnv`). |
+| `ZIMMER_OAUTH_CLIENT_NAME` | Optional `client_name`; defaults to `Zimmer`. |
+
+Supported KMS algorithms are `RSA_SIGN_PKCS1_{2048,3072,4096}_SHA256` (RS256) and
+`EC_SIGN_P256_SHA256` (ES256). Zimmer reads the public key once per process and asks KMS for one
+`asymmetricSign` per token request.
+
+Then opt a server in. In its catalog `oauth` block:
+
+```json
+"oauth": { "clientIdentity": "cimd" }
+```
+
+or in its Rails-credentials entry, where `client_id` may then be left out:
+
+```yaml
+mcp_oauth_clients:
+  strad:
+    client_identity: cimd
+    authorization_endpoint: "https://strad.example.com/oauth/authorize"
+    token_endpoint: "https://strad.example.com/oauth/token"
+```
+
+A server that opts in on a deployment where the identity is not configured gets the ordinary flow and
+a warning in the log, because the catalog is shared between deployments and an open-source build has
+no key. A Rails-credentials entry without a `client_id` is skipped there.
+
+### What changes for a server that opts in
+
+- **The client is the document's URL.** It replaces any `clientId`/`clientSecret` in the same block,
+  DCR is never attempted, and the redirect is the one the document lists.
+- **The code exchange** sends `client_id`, `client_assertion_type` =
+  `urn:ietf:params:oauth:client-assertion-type:jwt-bearer` and `client_assertion`, and never a
+  `client_secret`. The assertion is a JWT with `iss` = `sub` = the client id, `aud` = the token
+  endpoint (with any userinfo removed), `iat`, `exp` 60 seconds later, a random `jti`, and a `kid`
+  header naming the key that signed it.
+- **Every refresh** does the same, with a new assertion. The signature is made before anything goes
+  out, so a signer that fails never spends the code or the refresh token.
+- **The refresh token stays in Zimmer.** The runtime gets the access token only, because the agent
+  CLI cannot sign an assertion. If it tried to refresh on its own, the authorization server would
+  turn it away. Zimmer refreshes the credential itself at spawn and from `RefreshMcpOauthTokensJob`.
+- **Switching the identity off does not destroy anything.** A credential issued to a hosted identity
+  this deployment no longer presents (the variables are gone, or the base URL changed) is not
+  refreshed at all. Sending the refresh without an assertion would get `invalid_client` back, and
+  that answer discards the refresh token. So the credential lapses into "needs authorizing" when its
+  access token runs out, and turning the identity back on makes it refreshable again.
+
+### Rotating the key
+
+1. Create the new key version and add it **after** the current one in
+   `ZIMMER_OAUTH_CLIENT_KMS_KEY_VERSIONS`. Both are published, and the old one still signs.
+2. Once the authorization servers have re-read the JWKS (it is served with `max-age=300`), move the
+   new one first. It signs from then on.
+3. Remove the old one. An assertion is valid for a minute, so nothing signed by the old key is still
+   in flight a few minutes later.
+
+### For whatever builds on it
+
+`OauthClientIdentity` is the interface: `enabled?`, `client_id`, `client_assertion(audience:)` (a
+fresh signed JWT), `assertion_params(audience:)` (the two form fields), `owns_client_id?(id)`, and
+`hosted_client_id?(id)`. A signer is any `OauthClientIdentity::Signer` with `alg`, `public_key` and
+`sign(signing_input)`. `LocalKeySigner` and `GcpKmsSigner` are the two there are.
+
+The [session token broker](/auth/token-broker/) is built on it. It holds one parent grant per
+authorization server as this identity, and exchanges it for a short-lived child token per session
+turn.
 
 ## The credential key is a copy of Claude Code's private algorithm
 
@@ -866,7 +970,10 @@ instead of resurfacing as "the agent randomly needs me to authorize this server 
 :::
 
 :::note[client_id resolution order]
-`McpOauthService` resolves `client_id` in this order: (1) a **statically-configured** client id from
+`McpOauthService` resolves `client_id` in this order: (0) Zimmer's **own hosted identity**, when the
+server opts in with `oauth.clientIdentity: "cimd"` and the identity is configured on this deployment
+(see [Zimmer's own client identity](#zimmers-own-client-identity-cimd-and-private_key_jwt));
+(1) a **statically-configured** client id from
 the server's catalog `oauth` block (`oauth.clientId`, camelCase; `client_secret` optional) — used
 verbatim and, when present, DCR is skipped entirely; (2) **Dynamic Client Registration** (RFC 7591)
 when the auth server advertises a `registration_endpoint`; (3) the literal `"zimmer"`

@@ -18,8 +18,8 @@ This is a production invariant: **no agent session gets access to the store's se
 for Zimmer's backend. A session reaches what a store credential unlocks in one of two ways only:
 
 - **A short-lived token minted from it.** Zimmer's backend holds the long-lived grant and pushes each
-  session turn a short-lived, scoped token. This is the session token broker, which is not on `main`
-  yet ([#1610](https://github.com/tadasant/zimmer/pull/1610)).
+  session turn a short-lived, scoped token. This is the [session token broker](/auth/token-broker/), which is
+  [off by default](/auth/token-broker/#the-switch).
 - **Going through strad**, which holds the credential and never hands it over.
 
 So the store is not a source for anything an agent can read:
@@ -502,6 +502,42 @@ the failure surfaces in production as a `${VAR}` that resolves to nothing.
 
 `--condition=None` only suppresses gcloud's interactive condition prompt; it adds
 no binding condition.
+
+#### Optional: a signing key for Zimmer's OAuth client identity
+
+[Zimmer's own OAuth client identity](/auth/mcp-oauth/#zimmers-own-client-identity-cimd-and-private_key_jwt)
+signs its `private_key_jwt` assertions with a Cloud KMS key, and it calls KMS as **this** service
+account. It is the one GCP identity a deployed Zimmer already holds. A second account would be one
+more key in the same container's environment, guarded by the same boundary, so it would add a
+credential without adding any isolation. The grant is two roles **on one key**, not on the
+project, so the project-level audit below still sees exactly three roles:
+
+```bash
+PROJECT=zimmer-secrets-prod
+gcloud services enable cloudkms.googleapis.com --project "$PROJECT"
+gcloud kms keyrings create zimmer-oauth-client --location global --project "$PROJECT"
+gcloud kms keys create client-assertion --keyring zimmer-oauth-client --location global \
+  --purpose asymmetric-signing --default-algorithm ec-sign-p256-sha256 \
+  --protection-level software --project "$PROJECT"
+
+for ROLE in roles/cloudkms.signer roles/cloudkms.publicKeyViewer; do
+  gcloud kms keys add-iam-policy-binding client-assertion --keyring zimmer-oauth-client \
+    --location global --project "$PROJECT" \
+    --member "serviceAccount:zimmer-secrets-resolver@${PROJECT}.iam.gserviceaccount.com" --role "$ROLE"
+done
+```
+
+| Role (on the key) | Why |
+| --- | --- |
+| `roles/cloudkms.signer` | `cryptoKeyVersions.useToSign`: one `asymmetricSign` per token request. |
+| `roles/cloudkms.publicKeyViewer` | `cryptoKeyVersions.viewPublicKey`: the public key for the JWKS, read once per process. |
+
+Not `roles/cloudkms.signerVerifier` (verifying is the authorization server's job), and nothing
+that can create, destroy or import key versions. A KMS private key cannot be exported at any
+protection level. `--protection-level hsm` puts it in an HSM as well, at a higher monthly price.
+Then set `ZIMMER_OAUTH_CLIENT_KMS_KEY_VERSIONS` to
+`projects/zimmer-secrets-prod/locations/global/keyRings/zimmer-oauth-client/cryptoKeys/client-assertion/cryptoKeyVersions/1`.
+The resource name is an address, not a secret.
 
 ### 3. Mint the key
 

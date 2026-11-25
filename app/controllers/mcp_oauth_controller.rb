@@ -128,13 +128,19 @@ class McpOauthController < ApplicationController
 
       # A configured redirect_uri (e.g. the localhost redirect the third-party client
       # permits) wins over Zimmer's hosted callback.
-      redirect_uri = oauth_service.resolve_redirect_uri(preregistered_oauth.redirect_uri)
+      # `client_identity: cimd` swaps the client for Zimmer's own hosted one (when
+      # configured here): its URL as the client_id, no secret, and its document's
+      # redirect.
+      hosted_identity = OauthClientIdentity.use_for?(preregistered_oauth.client_identity, server_name: server_name)
+      redirect_uri = oauth_service.resolve_redirect_uri(
+        hosted_identity ? OauthClientIdentity.redirect_uri : preregistered_oauth.redirect_uri
+      )
 
       oauth_metadata = {
         authorization_endpoint: preregistered_oauth.authorization_endpoint,
         token_endpoint: preregistered_oauth.token_endpoint,
-        client_id: preregistered_oauth.client_id,
-        client_secret: preregistered_oauth.client_secret,
+        client_id: hosted_identity ? OauthClientIdentity.client_id : preregistered_oauth.client_id,
+        client_secret: hosted_identity ? nil : preregistered_oauth.client_secret,
         scopes: preregistered_oauth.scopes,
         resource: resource,
         manual: preregistered_oauth.manual? || oauth_service.manual_completion_required?(redirect_uri)
@@ -145,13 +151,13 @@ class McpOauthController < ApplicationController
       # Pass through any statically-configured client id from the catalog `oauth`
       # block so servers that require a pre-registered client (e.g. Slack) use it
       # instead of the `zimmer` placeholder.
+      #
+      # With `"clientIdentity": "cimd"` in that block (and the identity configured
+      # here), the client is Zimmer's own hosted one instead — see
+      # ServersConfig::Server#oauth_client_options.
       catalog_server = ServersConfig.find(server_name)
-      requirement = oauth_service.check_oauth_requirement(
-        server_url,
-        configured_client_id: catalog_server&.oauth_client_id,
-        configured_client_secret: catalog_server&.oauth_client_secret,
-        configured_redirect_uri: catalog_server&.oauth_redirect_uri
-      )
+      client_options = catalog_server&.oauth_client_options || {}
+      requirement = oauth_service.check_oauth_requirement(server_url, **client_options)
 
       unless requirement.required && requirement.metadata
         flash[:error] = "Could not determine OAuth requirements for #{server_name}"
@@ -163,7 +169,7 @@ class McpOauthController < ApplicationController
       # the client id above: a pre-registered client accepts only the redirects
       # registered against it at the provider, whether its endpoints came from the
       # catalog or from discovery. Servers without one keep the hosted callback.
-      redirect_uri = oauth_service.resolve_redirect_uri(catalog_server&.oauth_redirect_uri)
+      redirect_uri = oauth_service.resolve_redirect_uri(client_options[:configured_redirect_uri])
 
       oauth_metadata = {
         authorization_endpoint: requirement.metadata.authorization_endpoint,
@@ -286,6 +292,8 @@ class McpOauthController < ApplicationController
       return
     end
 
+    return complete_broker_consent(pending_flow, params[:code]) if pending_flow.broker_flow?
+
     session = pending_flow.session
     credential = store_tokens_and_resume(pending_flow, params[:code])
 
@@ -334,6 +342,8 @@ class McpOauthController < ApplicationController
       render :manual, status: :bad_request
       return
     end
+
+    return complete_broker_consent(pending_flow, code) if pending_flow.broker_flow?
 
     session = pending_flow.session
     credential = store_tokens_and_resume(pending_flow, code)
@@ -418,7 +428,14 @@ class McpOauthController < ApplicationController
     # Both the column and the flag below are derived from this one value, so they
     # cannot disagree: the credential is one-shot exactly when no refresh token
     # survives this exchange.
-    refresh_token = tokens["refresh_token"].presence || credential.refresh_token
+    #
+    # Only a refresh token issued to the SAME client carries over. A refresh token
+    # belongs to the client it was issued to, so after a client change (a new DCR
+    # registration, or a server moving onto Zimmer's hosted client identity) the
+    # old one would be sent as the new client and refused, and that refusal
+    # discards it anyway.
+    carried_over = credential.client_id == pending_flow.client_id ? credential.refresh_token : nil
+    refresh_token = tokens["refresh_token"].presence || carried_over
 
     credential.update!(
       server_name: pending_flow.server_name,
@@ -458,6 +475,34 @@ class McpOauthController < ApplicationController
     McpOauthResumeService.new(session, authorized_server: credential.server_name).call if session
 
     credential
+  end
+
+  # Finish the token broker's one-time consent (TokenBrokerController#connect):
+  # exchange the code as Zimmer's hosted client and store the parent grant for
+  # the authorization server. It never becomes an McpOauthCredential, so no
+  # runtime credentials writer can ever see it.
+  def complete_broker_consent(pending_flow, code)
+    origin = pending_flow.broker_authorization_server
+    oauth_service = McpOauthService.new
+    tokens = oauth_service.extract_tokens(oauth_service.exchange_code_for_tokens(pending_flow, code))
+
+    unless tokens && tokens["refresh_token"].present?
+      pending_flow.destroy
+      reason = tokens ? "it returned no refresh token, so the grant could not be renewed" : "the code exchange failed"
+      render_error("Could not connect the token broker to #{origin}: #{reason}. Try again from the Token broker page.")
+      return
+    end
+
+    McpBrokerGrant.store_consent!(pending_flow, tokens)
+    pending_flow.destroy
+
+    Rails.logger.info "[McpOauthController] Token broker grant stored for #{origin}"
+    flash[:notice] = if TokenBroker.enabled?
+      "Connected the token broker to #{origin}. Sessions with brokered entries there get their own short-lived token from their next turn."
+    else
+      "Connected the token broker to #{origin}. The broker is off on this deployment (#{TokenBroker::ENABLED_ENV}), so nothing changes for sessions until it is turned on."
+    end
+    redirect_to token_broker_path
   end
 
   def render_error(message)

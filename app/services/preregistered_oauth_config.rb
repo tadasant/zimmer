@@ -29,8 +29,21 @@
 #       redirect_uri: "http://localhost:3118/callback"
 #       manual: true
 #
-# Required fields: client_id, authorization_endpoint, token_endpoint
-# Optional fields: client_secret (omit for public/PKCE clients), scopes, redirect_uri, manual, resource
+# Zimmer's own hosted client identity (OauthClientIdentity) can stand in for a
+# provider-issued client: `client_identity: cimd` makes the flow present the Client ID
+# Metadata Document URL as the client_id and authenticate with private_key_jwt. It takes
+# effect only where the identity is configured; elsewhere the entry's own client_id is
+# used, so an entry that sets `client_identity` may omit `client_id` only on deployments
+# that have the identity:
+#   mcp_oauth_clients:
+#     strad:
+#       client_identity: cimd
+#       authorization_endpoint: "https://strad.example.com/oauth/authorize"
+#       token_endpoint: "https://strad.example.com/oauth/token"
+#
+# Required fields: client_id (unless client_identity: cimd), authorization_endpoint, token_endpoint
+# Optional fields: client_secret (omit for public/PKCE clients), scopes, redirect_uri, manual, resource,
+#   client_identity
 #
 # The key under mcp_oauth_clients must exactly match the server name (e.g., "bigquery-example").
 # Google OAuth automatically adds access_type=offline and prompt=consent for refresh tokens
@@ -41,12 +54,12 @@ class PreregisteredOauthConfig
     include RedactedInspect
 
     attr_reader :key, :client_id, :client_secret, :authorization_endpoint,
-      :token_endpoint, :scopes, :redirect_uri, :resource
+      :token_endpoint, :scopes, :redirect_uri, :resource, :client_identity
 
     def redacted_inspect_fields = { key: key, client_id: client_id, token_endpoint: token_endpoint }
 
     def initialize(key:, client_id:, authorization_endpoint:, token_endpoint:,
-      client_secret: nil, scopes: nil, redirect_uri: nil, manual: false, resource: nil)
+      client_secret: nil, scopes: nil, redirect_uri: nil, manual: false, resource: nil, client_identity: nil)
       @key = key
       @client_id = client_id
       @client_secret = client_secret
@@ -56,6 +69,7 @@ class PreregisteredOauthConfig
       @redirect_uri = redirect_uri
       @manual = manual
       @resource = resource
+      @client_identity = client_identity
     end
 
     # Whether this client completes out-of-band ("paste-back"): the user consents in
@@ -76,7 +90,8 @@ class PreregisteredOauthConfig
         scopes: scopes,
         redirect_uri: redirect_uri,
         manual: manual?,
-        resource: resource
+        resource: resource,
+        client_identity: client_identity
       }
     end
 
@@ -90,7 +105,8 @@ class PreregisteredOauthConfig
         scopes: scopes,
         redirect_uri: redirect_uri,
         manual: manual?,
-        resource: resource
+        resource: resource,
+        client_identity: client_identity
       }
     end
   end
@@ -138,7 +154,11 @@ class PreregisteredOauthConfig
     # no secret is a public client (RFC 6749 §2.1) that authenticates with PKCE alone.
     def load_client(key)
       config = oauth_clients_config&.dig(key.to_sym)
-      return nil unless config&.dig(:client_id).present?
+      return nil unless config.respond_to?(:dig)
+      # An entry with no client_id is usable only as a hosted-identity entry, and
+      # only where that identity is configured.
+      return nil unless config[:client_id].present? ||
+        (OauthClientIdentity.opted_in?(config[:client_identity]) && OauthClientIdentity.enabled?)
 
       authorization_endpoint = config[:authorization_endpoint]
       token_endpoint = config[:token_endpoint]
@@ -156,7 +176,8 @@ class PreregisteredOauthConfig
         scopes: config[:scopes],
         redirect_uri: config[:redirect_uri],
         manual: config[:manual] || false,
-        resource: config[:resource]
+        resource: config[:resource],
+        client_identity: config[:client_identity]
       )
     end
 

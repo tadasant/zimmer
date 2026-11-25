@@ -73,12 +73,19 @@ class PiMcpConfigPostProcessor < RuntimeConfigPostProcessor
   # rather than raised on: the catalog evolves independently of the sessions that
   # reference it, and a removed server id must degrade one tool, not brick the
   # session's whole startup. This mirrors AirPrepareService#reconciled_catalog_selection.
+  #
+  # "Already in the table" excludes an entry the token broker wrote on an earlier
+  # prepare. It holds that turn's revoked token, so it is seeded again from the
+  # catalog, for the broker step to handle or, with the broker off, to keep.
   def seed_catalog_servers!(servers)
+    stale = brokered_entries_on_record
+
     session.user_selected_mcp_servers.each do |name|
-      next if servers.key?(name)
+      next if servers.key?(name) && !stale.include?(name)
 
       server = ServersConfig.find(name)
       if server.nil?
+        servers.delete(name) if stale.include?(name)
         Rails.logger.warn(
           "[PiMcpConfigPostProcessor] Skipping unknown MCP server #{name.inspect} for session #{session.id}"
         )
@@ -86,9 +93,12 @@ class PiMcpConfigPostProcessor < RuntimeConfigPostProcessor
       end
 
       entry = catalog_entry_for(server)
-      servers[name] = entry if entry
+      entry ? servers[name] = entry : servers.delete(name)
     end
   end
+
+  # Pi's entries are seeded under the canonical token, not the short id.
+  def config_key_for(name) = name
 
   # Translate a catalog Server into an `.mcp.json` entry.
   #

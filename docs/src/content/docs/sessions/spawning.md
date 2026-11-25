@@ -471,6 +471,31 @@ If images are attached, or the prompt exceeds `LARGE_PROMPT_THRESHOLD` (100 KB),
 adapter switches to stream-json mode and feeds the payload through an `IO.pipe` written on a
 background thread. A regular file doesn't work here — the CLI reads nothing from it.
 
+## Brokered MCP entries get a per-turn token
+
+On a deployment where the broker is [turned on](/auth/token-broker/#the-switch), a catalog entry that
+declares `brokered_auth` is authenticated by the [token broker](/auth/token-broker/) rather than by
+its own header. During `AirPrepareService#prepare!`,
+`RuntimeConfigPostProcessor#inject_brokered_credentials!` runs just before `${VAR}` resolution. It
+mints one child token per authorization server for the session and writes it as the entry's
+`Authorization: Bearer` header:
+
+- **Claude Code** and **Pi**: in the entry's `headers` in `.mcp.json`, replacing the catalog's header
+  under any casing.
+- **Codex**: as a literal `http_headers` value in `.codex/config.toml`, with the
+  `bearer_token_env_var` and `env_http_headers` forwarding that AIR wrote for the static key
+  removed.
+
+An entry that gets no token is left out of the config, and the cause is logged and recorded as a
+degraded server. Only `AgentSessionJob` mints (`mint_brokered_tokens: true`), on the fresh-clone and
+follow-up prepares and on a reused-clone retry. The reused-clone path re-prepares only for a session
+that has a brokered entry. Every other caller of `AirPrepareService` writes the entry absent. A
+brokered entry's static `Authorization` variable is also left out of the clone's `.env` scope
+(`ServersConfig::Server#session_variables`).
+
+With the broker off, the step does nothing. With it on and no entry declaring `brokered_auth`, it is
+one pass over the catalog that finds nothing.
+
 ## The warm clone pool
 
 A Quick Router request spends most of its cold start on one step: the `git clone` of the router

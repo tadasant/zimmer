@@ -31,6 +31,8 @@ class ServersConfig
       @url = config["url"]
       @headers = config["headers"] || {}
       @oauth = config["oauth"] || {}
+      @brokered_auth = config[TokenBroker::Declaration::CATALOG_KEY]
+      @declares_brokered_auth = config.key?(TokenBroker::Declaration::CATALOG_KEY)
       @unavailable = config["unavailable"]
       @startup_timeout_sec = config[McpStartupTimeout::CATALOG_KEY]
     end
@@ -78,6 +80,43 @@ class ServersConfig
 
     def declared_unavailable? = !unavailable_reason.nil?
 
+    # The entry's raw `brokered_auth` declaration. nil when it does not opt into
+    # the session token broker, and also for a declaration written as `null`, which
+    # is malformed rather than absent (#declares_brokered_auth?). Parsed and validated by
+    # TokenBroker::Declaration, which is what every caller should go through.
+    attr_reader :brokered_auth
+
+    # Whether the catalog entry asks to be brokered. Says nothing about this
+    # deployment: a catalog is shared, and a declaration is inert where the
+    # broker is off. For the pages that show a declaration; anything that decides
+    # how the entry is authenticated asks #brokered?.
+    def declares_brokered_auth? = @declares_brokered_auth
+
+    # Whether the token broker authenticates this entry HERE: it declares
+    # `brokered_auth` and this deployment turned the broker on
+    # (TokenBroker.enabled?). The one predicate every consumer decides through,
+    # so they all flip together. Deliberately not "and a token can be minted":
+    # with the broker on, an entry that cannot get a token is left out, never
+    # handed its static header.
+    def brokered? = declares_brokered_auth? && TokenBroker.enabled?
+
+    # The `${VAR}`s a session's clone needs for this entry (SessionSecretScope).
+    #
+    # For most entries that is every variable the entry names. A brokered entry's
+    # `Authorization` header is replaced by a child token when the session is
+    # prepared, so the static credential it names — `${STRAD_API_KEY}`, while
+    # the catalog still carries it — is not the session's to hold, and is left
+    # out here.
+    #
+    # @return [Array<String>]
+    def session_variables
+      return required_variables + optional_variables unless brokered?
+
+      # A valid declaration names no variable outside Authorization, which the
+      # broker replaces, and a malformed one leaves the entry out of every session.
+      []
+    end
+
     # How long a runtime should wait for THIS server to start and answer
     # `initialize`, in seconds, when the catalog entry says so — nil when it does
     # not, which is when McpStartupTimeout's flat default applies.
@@ -124,6 +163,36 @@ class ServersConfig
     # and the flow completes by paste-back instead of the hosted callback.
     def oauth_redirect_uri
       @oauth["redirectUri"] || @oauth["redirect_uri"]
+    end
+
+    # Which client identity this server's OAuth flow presents, from the catalog
+    # `oauth` block: `"clientIdentity": "cimd"` opts into Zimmer's own hosted
+    # identity (OauthClientIdentity — a Client ID Metadata Document URL as the
+    # client_id, and private_key_jwt at the token endpoint). Absent means the
+    # identity Zimmer has always used for the server.
+    def oauth_client_identity
+      @oauth["clientIdentity"] || @oauth["client_identity"]
+    end
+
+    # The client the OAuth flow for this server should present, as the keyword
+    # arguments McpOauthService#check_oauth_requirement takes. With the hosted
+    # identity opted into AND configured on this deployment, it is that identity:
+    # its URL as the client id, no secret, and the redirect its document lists.
+    # Otherwise it is exactly the static `oauth` block (each value nil when unset).
+    def oauth_client_options
+      if OauthClientIdentity.use_for?(oauth_client_identity, server_name: name)
+        return {
+          configured_client_id: OauthClientIdentity.client_id,
+          configured_client_secret: nil,
+          configured_redirect_uri: OauthClientIdentity.redirect_uri
+        }
+      end
+
+      {
+        configured_client_id: oauth_client_id,
+        configured_client_secret: oauth_client_secret,
+        configured_redirect_uri: oauth_redirect_uri
+      }
     end
 
     def stdio?
@@ -264,6 +333,15 @@ class ServersConfig
 
     # Accepts a canonical token, a fully-qualified `@scope/id`, or a bare short
     # id that exactly one catalog contributes. See ArtifactIdentity.find.
+    # #all, without its degrade-to-empty. For a caller to whom "the catalog could
+    # not be read" and "nothing is in it" must not look the same: the token broker
+    # reading an empty list would conclude that nothing is brokered.
+    #
+    # @raise [AirCatalogService::CatalogError]
+    def all!
+      AirCatalogService.entries_for(:mcp).map { |name, entry| Server.new(name, entry) }
+    end
+
     def find(name)
       ArtifactIdentity.find(all, name)
     end

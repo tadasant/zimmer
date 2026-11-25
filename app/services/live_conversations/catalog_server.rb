@@ -55,6 +55,8 @@ module LiveConversations
     # Why this server cannot be bridged at all, or nil when it can.
     def unavailable_reason
       return "the catalog marks it unavailable: #{server.unavailable_reason}" if server.declared_unavailable?
+      # Only a remote entry goes through McpServerEndpoint, which asks the broker.
+      return "its brokered_auth declaration cannot be served: the entry is not a remote server" if server.brokered? && !server.remote?
       return nil if server.remote? || server.stdio?
 
       "#{server.type.inspect} servers are not supported"

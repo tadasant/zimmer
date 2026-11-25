@@ -9,6 +9,7 @@ class Session < ApplicationRecord
   include SessionCarplayFit
   include RunningTurns
   include CatalogArtifactReferences
+  include BrokeredTokenRevocation
   # `transcript` is not a column any more: it is assembled from, and appended to,
   # `session_transcript_chunks`. The accessor's shape is unchanged. See #110.
   include ChunkedTranscript
@@ -676,6 +677,7 @@ class Session < ApplicationRecord
     working_directory
     process_pid
     runtime_started
+    brokered_config_entries
   ].freeze
 
   # The four reset policies, in one place.

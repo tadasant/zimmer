@@ -40,6 +40,10 @@ class SessionDestroyCascadeTest < ActiveSupport::TestCase
     # read-only guard deliberately allows the association-driven destroy.
     [ "human_messages", "session_id", :cascade ],
     [ "logs", "session_id", :cascade ],
+    # Nullify, not cascade: a brokered child token (TokenBroker) outlives its
+    # session's row until it is revoked or has expired, because revoking it
+    # needs the token, and the sweep revokes a session-less child too.
+    [ "mcp_brokered_tokens", "session_id", :nullify ],
     [ "mcp_oauth_pending_flows", "session_id", :cascade ],
     # A signed merge approval outlives the session it was recorded on: it is
     # the record that a person approved a merge (MergeAttestation).

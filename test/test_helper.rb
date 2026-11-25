@@ -346,6 +346,7 @@ module ActiveSupport
     include LogCaptureHelpers
     include ErrorReporterHelpers
     include McpOauthTestHelpers
+    include OauthClientIdentityHelpers
     include McpAvailabilityHelpers
     include SessionMemoryCgroupHelpers
     include CodexRolloutFixtures

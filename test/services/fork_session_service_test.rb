@@ -316,6 +316,20 @@ class ForkSessionServiceTest < ActiveSupport::TestCase
     assert_equal({ "catalog_hooks" => [ "removed-hook" ] }, result.forked_session.dropped_unknown_catalog_ids)
   end
 
+  # The fork's clone is a copy, config file included. Without the record, a later
+  # prepare would keep the source's revoked token on Pi.
+  test "a fork carries the record of what the token broker wrote into the copied config" do
+    key = RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY
+    @source_session.merge_metadata!(key => [ "image-diff" ])
+    result = ForkSessionService.call(source_session: @source_session.reload, message_index: 1, file_system: @mock_fs)
+    assert result.success?, result.error
+    assert_equal [ "image-diff" ], result.forked_session.metadata[key]
+
+    @source_session.remove_metadata!(key)
+    result = ForkSessionService.call(source_session: @source_session.reload, message_index: 1, file_system: @mock_fs)
+    refute result.forked_session.metadata.key?(key), "a session the broker never touched gains nothing"
+  end
+
   test "a fork whose every MCP server was dropped as drift stays empty" do
     @source_session.update_column(:mcp_servers, [ "gmail-pool-readonly" ])
 

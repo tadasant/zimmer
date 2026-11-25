@@ -14,6 +14,10 @@
 
     <p class="mt-2 text-sm text-gray-600"><%= status.summary %></p>
 
+    <% if status.broker_off_note %>
+      <p class="mt-2 text-sm text-amber-700 break-words" data-broker-off><%= status.broker_off_note %></p>
+    <% end %>
+
     <%# A permanent limitation of the server, stated once and up front. Without
         it the credential looks healthy right until it lapses, and the periodic
         re-authorization reads as Zimmer randomly losing access. %>

@@ -269,6 +269,27 @@ session is never the victim. The REST API's `POST /sessions/:id/force_start` is 
 for the iOS app, which reads the victim off `GET /sessions/:id`'s `waiting.banners` — see the
 [REST API](/extend/rest-api/).
 
+## A turn's brokered token is revoked when the turn ends
+
+A session with an MCP entry on the [token broker](/auth/token-broker/) holds a child token for the
+length of one turn. `BrokeredTokenRevocation`, an `after_commit` on the status column, enqueues
+`TokenBrokerRevokeJob` whenever a turn comes to rest. That is any move to `needs_input`, `failed` or
+`archived`, and a move to `waiting` from `running` (a spot hold returning a turn to the queue, or a
+queued message handed straight to the next turn). Two moves are excluded:
+
+- `block_on_elicitation` (`running → needs_input`). The agent process is alive, waiting on a
+  human's approval, and `unblock_from_elicitation` hands it back. Revoking there would cut the turn's
+  servers mid-turn.
+- `waiting` reached from anywhere but `running`. A turn mints its token while the session is still
+  `waiting` and becomes `running` only after its process spawns, and a recovery may resume a session
+  to `waiting` in between.
+
+For revocation, unlike for the notifications above, every turn boundary counts as a rest: the
+process has exited whether or not the session is about to go somewhere else. The job runs 15
+seconds after the transition, re-checks that the session is not running again, and revokes only
+children minted at or before the rest. A session that holds no live child enqueues nothing.
+`TokenBrokerSweepJob` is the backstop for a callback that never ran.
+
 ## The full machine
 
 ```mermaid

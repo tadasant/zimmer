@@ -295,6 +295,12 @@ module CronSchedule
       description: "Proactively refresh MCP OAuth tokens before they expire",
       environments: %i[production staging development]
     },
+    token_broker_sweep: {
+      cron: "*/5 * * * *", # Every 5 minutes
+      class: "TokenBrokerSweepJob",
+      description: "Revoke brokered session tokens left live at rest, retry failed revocations, expire the rest",
+      environments: %i[production staging development]
+    },
     refresh_x_oauth_tokens: {
       cron: "*/15 * * * *", # Every 15 minutes (X access tokens live ~2h)
       class: "RefreshXOauthTokensJob",

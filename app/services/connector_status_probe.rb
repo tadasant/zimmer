@@ -46,6 +46,7 @@ class ConnectorStatusProbe
     needs_reauth
     missing_configuration
     declared_unavailable
+    broker_not_ready
     store_unavailable
     probe_failed
   ].freeze
@@ -64,7 +65,11 @@ class ConnectorStatusProbe
   # transient and both hit every server at once — a store blip would empty the
   # whole option list and send an agent off to register servers that already
   # exist. Reporting an indeterminate server as usable is the cheaper mistake.
-  BLOCKING_STATES = %i[missing_configuration needs_authorization needs_reauth declared_unavailable].freeze
+  #
+  # :broker_not_ready is blocking: an entry that opts into the token broker is
+  # left out of every session until the broker can mint its token, so offering
+  # it would hand an agent a server that will not be there.
+  BLOCKING_STATES = %i[missing_configuration needs_authorization needs_reauth declared_unavailable broker_not_ready].freeze
 
   # One required `${VAR}` and the provider that ACTUALLY resolved it.
   #
@@ -147,12 +152,14 @@ class ConnectorStatusProbe
         "OAuth token expired and cannot be refreshed"
       when :declared_unavailable
         server.unavailable_reason
+      when :broker_not_ready
+        "token broker not ready: #{error_message}"
       end
     end
 
     def actionable?
       %i[needs_authorization token_expired needs_reauth missing_configuration store_unavailable
-         probe_failed].include?(state)
+         probe_failed broker_not_ready].include?(state)
     end
 
     # True when starting an OAuth flow from the Connectors page is the thing
@@ -175,9 +182,24 @@ class ConnectorStatusProbe
       when :needs_reauth then "Needs re-auth"
       when :missing_configuration then "Missing configuration"
       when :declared_unavailable then "Unavailable"
+      when :broker_not_ready then "Broker not ready"
       when :store_unavailable then "Secret store unreachable"
       when :probe_failed then "Probe failed"
       end
+    end
+
+    # Said beside the row when its entry declares `brokered_auth` on a deployment
+    # whose token broker is off, so the declaration is doing nothing. It is how an operator notices a deploy
+    # that lost ZIMMER_TOKEN_BROKER_ENABLED. An addition to the row and nothing
+    # else: the state, label, summary and availability are exactly what they would
+    # be without the declaration.
+    #
+    # @return [String, nil]
+    def broker_off_note
+      return nil unless server.declares_brokered_auth? && !TokenBroker.enabled?
+
+      "The catalog asks for this entry to be authenticated by the token broker, but the broker is off on this " \
+        "deployment (#{TokenBroker::ENABLED_ENV}), so that does nothing and the entry is authenticated as if it did not ask."
     end
 
     # One sentence saying what the state means for this specific server.
@@ -198,6 +220,9 @@ class ConnectorStatusProbe
       when :declared_unavailable
         "The catalog declares this server unavailable, so nothing on this page will fix it — " \
         "the catalog entry has to change. Reason given: #{server.unavailable_reason}"
+      when :broker_not_ready
+        "This entry is authenticated by Zimmer's token broker, which cannot mint its token yet: #{error_message}. " \
+        "Until it can, sessions run without this server — never on a broader credential."
       when :store_unavailable
         "#{missing_variables.to_sentence} could not be checked: #{error_message}. " \
         "This is not the same as the variable being unset — the store did not answer."
@@ -257,6 +282,10 @@ class ConnectorStatusProbe
     # whose static credential variables are all set. Saying which one is what
     # tells the user whether there is a token they could revoke.
     def ready_summary
+      if server.brokered?
+        return "Authenticated by Zimmer's token broker: every session turn gets its own short-lived token, " \
+          "scoped to the servers that session has and revoked when the turn ends."
+      end
       return static_ready_summary if credential.nil?
 
       if credential.expires_at.nil?
@@ -325,6 +354,7 @@ class ConnectorStatusProbe
   # @return [Status]
   def call
     return status(:declared_unavailable) if server.declared_unavailable?
+    return broker_status if server.brokered?
 
     absent, unreachable, reason, sources = classify_variables
     @variable_sources = sources
@@ -344,6 +374,15 @@ class ConnectorStatusProbe
   private
 
   attr_reader :server, :interpolator
+
+  # A brokered entry's credential is the token broker's to mint, so what decides
+  # its status is whether the broker could mint one — not whether the static
+  # `${VAR}` the catalog may still name resolves. Reads configuration and the
+  # database only; it never contacts the authorization server.
+  def broker_status
+    reason = TokenBroker.readiness_problem(server)
+    reason ? status(:broker_not_ready, error_message: reason) : status(:ready)
+  end
 
   # Sort the server's required `${VAR}`s into those the providers answered
   # "not here" for and those they could not be asked about at all. Optional ones

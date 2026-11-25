@@ -53,7 +53,7 @@ module SecretProviders
   # This is a production invariant, not a preference: agents never get access
   # to the store's secrets. A long-lived store credential reaches a session only
   # as a short-lived token Zimmer's backend mints from it (the session token
-  # broker, tadasant/zimmer#1610), or not at all — the session goes through
+  # broker, TokenBroker), or not at all — the session goes through
   # strad, which holds it.
   #
   # Built per call: neither link caches anything worth sharing.

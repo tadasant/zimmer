@@ -490,8 +490,15 @@ class AirPrepareService
   # @param file_system [FileSystemAdapter] injectable file system (default: RealFileSystemAdapter)
   # @param sleeper [#call] injectable sleeper for retry backoff (default: Kernel.sleep);
   #   tests pass a no-op to exercise the retry loop without real delays.
-  def initialize(session:, working_directory:, file_system: nil, sleeper: nil)
+  # @param mint_brokered_tokens [Boolean] mint this turn's brokered child tokens
+  #   (TokenBroker) and write them into the config. Only AgentSessionJob, about
+  #   to start a turn, passes true. Every other caller — unarchive, fork, the
+  #   warm process pool, a clone-only job — writes a config in which a brokered
+  #   entry is absent: no token is minted for a turn that is not starting, and
+  #   the entry's static header is never a fallback.
+  def initialize(session:, working_directory:, file_system: nil, sleeper: nil, mint_brokered_tokens: false)
     @session = session
+    @mint_brokered_tokens = mint_brokered_tokens
     @working_directory = working_directory
     @file_system = file_system || RealFileSystemAdapter.new
     @sleeper = sleeper || ->(seconds) { Kernel.sleep(seconds) }
@@ -535,6 +542,13 @@ class AirPrepareService
   # ensure_baseline_mcp_config! (e.g. zimmer for subagent roots).
   def injected_mcp_servers
     post_processor.injected_mcp_servers
+  end
+
+  # What the token broker did for this prepare: the brokered entries that got a
+  # child token, and the cause for each that did not and was left out. Empty
+  # when the session has no brokered entry. See TokenBroker::MintResult.
+  def brokered_token_result
+    post_processor.brokered_token_result
   end
 
   private
@@ -610,7 +624,7 @@ class AirPrepareService
       session: session,
       working_directory: working_directory,
       file_system: file_system
-    )
+    ).tap { |processor| processor.mint_brokered_tokens = @mint_brokered_tokens }
   end
 
   # The runtime's artifact bridge — what writes the session's AIR hooks and
@@ -677,6 +691,11 @@ class AirPrepareService
     # Plugin-contributed servers ride along exactly as Session#user_selected_mcp_servers
     # adds them; only the directly-selected column is reconciled here.
     effective_mcp_servers = (selection[:mcp_servers] + session.plugin_mcp_servers).uniq
+    # A brokered entry is written by the post-processor, with a token. AIR would
+    # write its static header, which would then sit on disk while a token is minted.
+    # A server a plugin bundles still reaches AIR through --plugin; the
+    # post-processor removes that entry before it writes its own.
+    effective_mcp_servers -= TokenBroker.brokered_among(effective_mcp_servers)
     if effective_mcp_servers.present?
       cmd += effective_mcp_servers.flat_map { |id| [ "--mcp-server", air_reference(:mcp, id) ] }
     end

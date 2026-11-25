@@ -704,6 +704,12 @@ class ForkSessionService
         # the two apart without reading this service.
         new_metadata["clone_scaffolded"] = true if @clone_scaffolded
 
+        # The fork's clone is a copy of the source's, config file included, so the
+        # record of what the token broker wrote into that file goes with it.
+        # Without it a later prepare keeps the source's revoked token on Pi.
+        brokered = source_session.metadata&.dig(RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY)
+        new_metadata[RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY] = brokered if brokered.present?
+
         # The fork copies the source's server list verbatim, so it has to copy
         # the reason that list is empty too. This metadata is built from scratch
         # rather than inherited, so without carrying the marker across,

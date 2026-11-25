@@ -1478,8 +1478,9 @@ Three of those carry the most blast radius:
 
 - The **`/supervisor` Administrate panel** renders `mcp_oauth_credentials`,
   `mcp_oauth_pending_flows` and `x_oauth_credentials` as *editable* resources, and
-  `mcp_oauth_credentials.access_token` / `.refresh_token` / `.client_secret` are among the fields it
-  puts in an edit form. Some credential columns are held back from the panel entirely, each listed
+  `x_oauth_credentials.access_token` / `.refresh_token` are among the fields it puts in an edit
+  form. The MCP credential secrets are masked: the panel says whether each is set and takes a
+  replacement, but never renders the stored value. Some credential columns are held back from the panel entirely, each listed
   in its dashboard's `DELIBERATELY_OMITTED` with the reason written next to it, among them
   `claude_accounts.oauth_config` (the plaintext Anthropic and OpenAI tokens the whole fleet runs on),
   `runtime_login_attempts.pasted_code` and `api_keys.token_digest`.
@@ -1852,16 +1853,36 @@ the appended bytes rather than the whole file — 8.5 s down to 34 ms on a real 
 
 ### Nothing is encrypted at rest
 
-🔴 Uniform trust means Zimmer leans on the perimeter rather than field-level encryption. No model declares
-`encrypts`, no `active_record.encryption` config exists, and every OAuth token, client secret, and PKCE
-verifier is a plaintext column. `XOauthCredential`'s own header says the quiet part: *"Security relies on
-database access controls."* The admin panel renders the MCP and X token columns in edit forms and asks
+🔴 Uniform trust means Zimmer leans on the perimeter rather than field-level encryption. Every OAuth
+token, client secret, and PKCE verifier is a plaintext column. `McpOauthCredential` has started to move:
+its three secrets also have encrypted twins, but the plaintext columns are still written until a later
+contract deploy stops writing them ([Almost nothing is encrypted at
+rest](/auth/overview/#almost-nothing-is-encrypted-at-rest)). `XOauthCredential`'s own header says the
+quiet part: *"Security relies on database access controls."* The admin panel renders the X token
+columns in edit forms and asks
 for no credential beyond [web sign-in](/auth/web-sign-in/), and that is off by default. Without it, a
 broken perimeter exposes them in one click, and so does any agent session. The columns are plaintext,
 and anything with database access reads them too. That includes `web_identities.totp_secret`, the
 web sign-in authenticator secret.
 
 Tracked in [#43](https://github.com/tadasant/zimmer/issues/43).
+
+### Zimmer's own OAuth client identity needs an edge change before anyone can use it
+
+🟡 The [hosted client identity](/auth/mcp-oauth/#zimmers-own-client-identity-cimd-and-private_key_jwt)
+publishes `/oauth-client/metadata.json` and `/oauth-client/jwks.json`, and an authorization server
+fetches both without credentials. Behind Cloudflare Access, as production is, both are blocked until
+the edge configuration (Terraform outside this repo) admits them, so an authorization server cannot
+resolve the client id. Until then, a server that opts in fails at the authorization server, not in
+Zimmer.
+
+A credential issued to the identity also keeps its refresh token in Zimmer: the agent CLI cannot
+sign an assertion, so it gets the access token only. A session that outlives its access token waits
+for Zimmer's refresh, from the next spawn or the 30-minute cron. It does not refresh in place.
+
+The `/supervisor` panel masks MCP credential secrets, and a blank field there means "keep the stored
+value". So a refresh token or client secret cannot be *cleared* from the panel. Revoke the
+credential from the Connectors page instead.
 
 ### An elicitation URL is a session credential that sits on disk
 
@@ -3442,6 +3463,52 @@ answer.
 ---
 
 ## MCP
+
+### The session token broker has not run against real strad
+
+The [token broker](/auth/token-broker/) is tested against an in-process stand-in for strad's
+authorization server. It answers the discovery, refresh, token-exchange and revocation requests in
+the shapes tadasant/strad#537 pins, and verifies each `private_key_jwt` assertion the way strad does.
+Nothing has yet run against a real strad, a real KMS key, or a running Zimmer with an entry opted in:
+strad staging's OAuth is not configured, Zimmer's KMS key does not exist yet, and nothing in the
+production catalog declares `brokered_auth`. The broker is also
+[off by default](/auth/token-broker/#the-switch) on every deployment, and while it is off a
+declaration does nothing. A deploy that loses `ZIMMER_TOKEN_BROKER_ENABLED` turns it off, and
+declaring entries go back to their static header until the catalog stops carrying one. While catalog
+resolution is degraded to its last good snapshot, an entry declared *since* that snapshot is not yet
+known to be brokered, and `air prepare`, which reads the disk, writes its static header.
+
+Rotating `SECRET_KEY_BASE` without first disconnecting every server on `/token-broker` leaves grants that
+nothing in the UI can repair ([Rotating](/auth/token-broker/#rotating-secret_key_base)). To be fixed before
+a deployment turns the broker on.
+
+The broker governs the entries it knows. A config entry under any **other** name that uses
+`${STRAD_API_KEY}`, written by the repository or the agent, is resolved like any entry, to whatever URL
+it names, with the switch on or off. Only retiring the static key closes that.
+
+Four known edges:
+
+- **A turn that outlives its token loses the brokered servers until its next turn.** Children last
+  at most six hours, and nothing gives a running process a fresh one. Claude Code's `headersHelper`
+  and the Pi adapter's `!command` headers could. Codex has no equivalent. See
+  [Long turns](/auth/token-broker/#long-turns).
+- **A process re-attached after a rest keeps a revoked token.** Every spawn mints, but
+  `resume_monitoring` re-attaches to a process that is still alive and runs no prepare. If the
+  session was moved to rest under that live process for more than the revoke job's 15-second delay,
+  its token was revoked and the process runs the rest of its turn without the brokered servers. The
+  next turn mints again.
+- **A rest that is not the last save in its transaction is caught only by the sweep.** The
+  revocation hook reads `saved_change_to_status?`, which reflects a transaction's last save. A rest
+  followed by another save of the same session in one transaction is revoked by
+  `TokenBrokerSweepJob` up to 20 minutes later, not 15 seconds later.
+- **A failed mint is visible to the agent only from its next prompt.** The degraded-server record
+  is written during the prepare. The prompt for the turn being prepared may already have been
+  built, so the first turn's agent learns the server is gone by not finding its tools.
+- **Brokering an entry does not take `STRAD_API_KEY` out of a session's process environment** if the
+  deployment sets it there. The broker removes the variable from the clone's scoped `.env` and from
+  the entry itself, but an agent CLI inherits most of the Rails process's environment
+  (`CliSpawnEnv`). The static key leaves sessions only once no catalog entry, skill or deployment
+  environment hands it to them.
 
 ### An outage of Zimmer's own `/mcp` now fails every in-flight session at once
 

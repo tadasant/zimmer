@@ -5,6 +5,8 @@ require "mocha/minitest"
 require "support/fake_parameter_store"
 
 class ConnectorStatusProbeTest < ActiveSupport::TestCase
+  include TokenBrokerTestHelpers
+
   # A catalog entry shaped like the strad-hosted MCP servers Zimmer connects to:
   # a remote server whose only credential is a static bearer header sourced from
   # a ${VAR}. This is the motivating "missing configuration" case.
@@ -626,10 +628,12 @@ class ConnectorStatusProbeTest < ActiveSupport::TestCase
   # degrade past silently, so the only surface that would notice is a REST client
   # reading a contract that promises the two move together.
   test "every blocking state says why" do
+    turn_token_broker_on
     reasons = {
       missing_configuration: probe("secrets-service-account", SECRETS_SERVICE_ACCOUNT),
       needs_authorization: probe("notion", OAUTH_SERVER),
       declared_unavailable: probe("dead", OAUTH_SERVER.merge("unavailable" => "Gone.")),
+      broker_not_ready: probe("brokered", OAUTH_SERVER.merge("brokered_auth" => { "scopes" => [ "slug:x" ] })),
       needs_reauth: nil
     }
     with_catalog("notion", OAUTH_SERVER) do
@@ -643,6 +647,26 @@ class ConnectorStatusProbeTest < ActiveSupport::TestCase
       assert_equal state, status.state
       assert status.unavailable_reason.present?, "#{state} must say why"
       assert status.unavailable_reason(markdown: false).present?, "#{state} must say why in plain text too"
+    end
+  end
+
+  test "a brokered entry's status is the broker's readiness, not its static variable" do
+    turn_token_broker_on
+    brokered = SECRETS_SERVICE_ACCOUNT.merge("brokered_auth" => { "scopes" => [ "slug:secrets" ] })
+
+    status = probe("secrets-service-account", brokered, resolvable: [ "STRAD_API_KEY" ])
+    assert_equal :broker_not_ready, status.state, "a resolvable static key must not make a brokered entry look ready"
+    refute status.available?
+    assert_match(/client identity is not configured/, status.unavailable_reason)
+    assert_match(/never on a broader credential/, status.summary)
+
+    with_oauth_client_identity do
+      McpBrokerGrant.create!(authorization_server: TokenBroker.normalize_origin(brokered["url"]),
+        token_endpoint: "https://strad.example.com/oauth/token", resource: TokenBroker.normalize_resource(brokered["url"]),
+        client_id: OauthClientIdentity.client_id, access_token: "strad_oat_x", refresh_token: "strad_ort_x")
+      status = probe("secrets-service-account", brokered)
+      assert_equal :ready, status.state
+      assert_match(/token broker/, status.summary)
     end
   end
 

@@ -682,6 +682,49 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_24_180000) do
     t.index ["variable", "created_at"], name: "index_managed_secret_writes_on_variable_and_created_at"
   end
 
+  create_table "mcp_broker_grants", force: :cascade do |t|
+    t.text "access_token"
+    t.datetime "access_token_expires_at"
+    t.string "authorization_server", null: false
+    t.string "client_id", null: false
+    t.datetime "consented_at"
+    t.datetime "created_at", null: false
+    t.string "issuer"
+    t.text "last_error"
+    t.datetime "last_refreshed_at"
+    t.text "refresh_token"
+    t.string "resource", null: false
+    t.string "revocation_endpoint"
+    t.string "scope"
+    t.string "status", default: "active", null: false
+    t.string "token_endpoint", null: false
+    t.datetime "updated_at", null: false
+    t.index ["authorization_server"], name: "index_mcp_broker_grants_on_authorization_server", unique: true
+  end
+
+  create_table "mcp_brokered_tokens", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.datetime "expires_at", null: false
+    t.string "label", null: false
+    t.text "last_revoke_error"
+    t.bigint "mcp_broker_grant_id", null: false
+    t.datetime "next_revoke_attempt_at"
+    t.string "purpose", null: false
+    t.integer "revoke_attempts", default: 0, null: false
+    t.datetime "revoke_requested_at"
+    t.datetime "revoked_at"
+    t.string "scope", null: false
+    t.bigint "session_id"
+    t.string "state", default: "live", null: false
+    t.text "token", null: false
+    t.datetime "updated_at", null: false
+    t.index ["mcp_broker_grant_id", "purpose", "scope", "state"], name: "index_mcp_brokered_tokens_on_grant_purpose_scope_state"
+    t.index ["mcp_broker_grant_id"], name: "index_mcp_brokered_tokens_on_mcp_broker_grant_id"
+    t.index ["session_id", "state"], name: "index_mcp_brokered_tokens_on_session_id_and_state"
+    t.index ["session_id"], name: "index_mcp_brokered_tokens_on_session_id"
+    t.index ["state", "next_revoke_attempt_at"], name: "index_mcp_brokered_tokens_on_state_and_next_revoke_attempt_at"
+  end
+
   create_table "mcp_event_webhook_subscriptions", force: :cascade do |t|
     t.jsonb "arguments", default: {}, null: false
     t.string "callback_url", null: false
@@ -708,13 +751,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_24_180000) do
   end
 
   create_table "mcp_oauth_credentials", force: :cascade do |t|
-    t.text "access_token", null: false
+    t.text "access_token"
+    t.text "access_token_ciphertext"
     t.string "client_id", null: false
     t.string "client_secret"
+    t.text "client_secret_ciphertext"
     t.datetime "created_at", null: false
     t.string "credential_key", null: false
     t.datetime "expires_at"
     t.text "refresh_token"
+    t.text "refresh_token_ciphertext"
     t.boolean "refresh_token_unsupported", default: false, null: false
     t.string "resource"
     t.string "scopes"
@@ -728,6 +774,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_24_180000) do
 
   create_table "mcp_oauth_pending_flows", force: :cascade do |t|
     t.string "authorization_endpoint", null: false
+    t.string "broker_authorization_server"
     t.string "client_id", null: false
     t.string "client_secret"
     t.string "code_verifier", null: false
@@ -1736,6 +1783,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_24_180000) do
   add_foreign_key "live_setting_changes", "live_conversations", on_delete: :nullify
   add_foreign_key "live_usage_events", "live_conversations", on_delete: :nullify
   add_foreign_key "logs", "sessions", on_delete: :cascade
+  add_foreign_key "mcp_brokered_tokens", "mcp_broker_grants", on_delete: :cascade
+  add_foreign_key "mcp_brokered_tokens", "sessions", on_delete: :nullify
   add_foreign_key "mcp_event_webhook_subscriptions", "trigger_conditions", on_delete: :nullify
   add_foreign_key "mcp_oauth_pending_flows", "sessions", on_delete: :cascade
   add_foreign_key "merge_attestations", "human_messages", on_delete: :nullify

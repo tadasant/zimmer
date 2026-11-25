@@ -1203,7 +1203,8 @@ class AgentSessionJob < ApplicationJob
         air_service = AirPrepareService.new(
           session: session,
           working_directory: working_directory,
-          file_system: @file_system
+          file_system: @file_system,
+          mint_brokered_tokens: !clone_only
         )
         if session.mcp_servers.present? || session.catalog_skills.present? || session.catalog_hooks.present? || session.catalog_plugins.present?
           begin
@@ -1216,6 +1217,7 @@ class AgentSessionJob < ApplicationJob
             "AIR prepare synced for follow-up prompt",
             level: "info"
           )
+          report_brokered_tokens(session, air_service, log_buffer)
         else
           # A session that genuinely configures no artifacts belongs on the
           # baseline config, and says so at info. The case that must be loud —
@@ -1227,6 +1229,7 @@ class AgentSessionJob < ApplicationJob
             level: "info"
           )
           air_service.ensure_baseline_mcp_config!
+          report_brokered_tokens(session, air_service, log_buffer)
         end
         store_injected_mcp_servers(session, air_service.injected_mcp_servers)
 
@@ -1288,6 +1291,12 @@ class AgentSessionJob < ApplicationJob
           # `.env` would otherwise never be written — a clone created before
           # scoping would keep the whole bundle across every retry.
           inject_secrets_to_env_file(session, working_directory, log_buffer)
+
+          # The reused clone's config holds the previous attempt's brokered
+          # token, which was revoked when that attempt came to rest. A session
+          # with a brokered entry re-prepares here to mint this turn's; every
+          # other session takes this path exactly as before.
+          return if remint_brokered_tokens_for_reused_clone(session, working_directory, log_buffer, mint: !clone_only) == :failed
 
           # Re-inject OAuth credentials before spawning into the reused clone.
           # The reused-clone path is taken after a job retry AND after the user
@@ -1495,7 +1504,8 @@ class AgentSessionJob < ApplicationJob
           air_service = AirPrepareService.new(
             session: session,
             working_directory: working_directory,
-            file_system: @file_system
+            file_system: @file_system,
+            mint_brokered_tokens: !clone_only
           )
           if session.mcp_servers.present? || session.catalog_skills.present? || session.catalog_hooks.present? || session.catalog_plugins.present?
             begin
@@ -1508,8 +1518,10 @@ class AgentSessionJob < ApplicationJob
               "AIR prepare completed: MCP config and catalog skills generated",
               level: "info"
             )
+            report_brokered_tokens(session, air_service, log_buffer)
           else
             air_service.ensure_baseline_mcp_config!
+            report_brokered_tokens(session, air_service, log_buffer)
           end
           store_injected_mcp_servers(session, air_service.injected_mcp_servers)
 
@@ -5202,9 +5214,14 @@ class AgentSessionJob < ApplicationJob
         # rejection keeps reporting its full error, which is where its detail lives.
         detail = server_rejected_credentials?(server["error"]) ? credential_rejection_detail(server["error"]) : nil
 
+        explanation = if server_config&.brokered?
+          "It carried this turn's token from the token broker, not a static credential: check the grant on the Token broker page."
+        else
+          "This server authenticates with a static token, not OAuth, so authorizing it will not help.#{hint}"
+        end
+
         log_buffer.add(
-          "MCP server '#{server['name']}' rejected its credentials (#{detail || server['error']}). " \
-          "This server authenticates with a static token, not OAuth, so authorizing it will not help.#{hint}",
+          "MCP server '#{server['name']}' rejected its credentials (#{detail || server['error']}). #{explanation}",
           level: "error"
         )
       end
@@ -6617,6 +6634,94 @@ class AgentSessionJob < ApplicationJob
     session.fail! if session.may_fail?
   end
 
+  # Say what the token broker did for this turn's prepare (TokenBroker).
+  #
+  # A brokered entry that got no token is absent from this turn's config. That
+  # is recorded where every other lost MCP capability is: the session log, and
+  # `metadata["mcp_degraded_servers"]`, which the session page shows and
+  # #build_prompt_with_goal renders into the agent's next prompt — with the
+  # cause, so neither the human nor the agent reads it as a mysterious missing
+  # tool. The record clears itself the moment the server connects on a later
+  # turn (McpStatusPersisting). Nothing at all happens for a session with no
+  # brokered entry.
+  def report_brokered_tokens(session, air_service, log_buffer)
+    result = air_service.brokered_token_result
+    forget_resolved_broker_degradations(session, result)
+    return unless result.any?
+
+    if result.tokens.any?
+      log_buffer.add(
+        "Token broker: minted this turn's short-lived token for #{result.tokens.keys.sort.join(', ')}; " \
+        "it is revoked when the turn comes to rest",
+        level: "info"
+      )
+    end
+    return if result.failures.empty?
+
+    result.failures.sort.each do |name, cause|
+      log_buffer.add(
+        "Token broker: MCP server '#{name}' is unavailable this turn because #{cause}. " \
+        "It was left out of the session rather than given a broader credential.",
+        level: "warning"
+      )
+    end
+
+    degradations = result.failures.map do |name, cause|
+      { server: { "name" => name, "error" => "token_broker_unavailable" }, reason: "the token broker could not mint its token: #{cause}" }
+    end
+    session.merge_metadata!("mcp_degraded_servers" => merged_degraded_entries(session, degradations))
+  rescue StandardError => e
+    log_buffer.add("Warning: could not record the token broker's outcome: #{e.class}", level: "warning")
+  end
+
+  # A server the broker left out on an earlier turn and not on this one is no
+  # longer degraded, whether it got a token or the broker was turned off. Without
+  # this the record would outlive its cause: the agent's next prompt would say the
+  # tools are gone, and a real connection failure would get no retries.
+  def forget_resolved_broker_degradations(session, result)
+    entries = session.degraded_mcp_servers
+    kept = entries.reject { |entry| entry["error"] == "token_broker_unavailable" && !result.failures.key?(entry["name"]) }
+    session.merge_metadata!("mcp_degraded_servers" => kept) if kept.size != entries.size
+  end
+
+  # The reused-clone spawn path runs no prepare, so a session with a brokered
+  # entry would start with the previous attempt's (revoked) token. Re-prepare
+  # just those sessions, minting this turn's. A session with no brokered entry
+  # returns at once and takes the path exactly as it always has.
+  #
+  # Decided by whether ANY catalog entry is brokered here, with an unreadable
+  # catalog counted as yes: the file on the clone may hold a brokered entry the
+  # session has since dropped, or one whose name no longer resolves.
+  #
+  # "With a brokered entry" includes one whose config the broker shaped before it
+  # was turned off: that file holds a revoked token, or is missing the entry, and
+  # nothing but a prepare puts the entry's own credential back.
+  #
+  # @return [Symbol, nil] :failed when the prepare failed the session (the
+  #   caller must return), :reprepared, or nil when there was nothing to do
+  def remint_brokered_tokens_for_reused_clone(session, working_directory, log_buffer, mint: true)
+    broker_shaped = Array(session.metadata&.dig(RuntimeConfigPostProcessor::BROKERED_ENTRIES_KEY)).any?
+    return nil unless broker_shaped || TokenBroker.any_brokered?
+
+    air_service = AirPrepareService.new(
+      session: session,
+      working_directory: working_directory,
+      file_system: @file_system,
+      mint_brokered_tokens: mint
+    )
+    if session.mcp_servers.present? || session.catalog_skills.present? || session.catalog_hooks.present? || session.catalog_plugins.present?
+      air_service.prepare!
+    else
+      air_service.ensure_baseline_mcp_config!
+    end
+    store_injected_mcp_servers(session, air_service.injected_mcp_servers)
+    report_brokered_tokens(session, air_service, log_buffer)
+    :reprepared
+  rescue AirPrepareService::RootResolutionError, AirPrepareService::SecretResolutionError => e
+    fail_session_for_air_config_error!(session, log_buffer, e)
+    :failed
+  end
+
   # Check OAuth requirements for MCP servers and inject credentials if available.
   #
   # For remote MCP servers (http, streamable-http, sse types), this method:
@@ -6704,12 +6809,7 @@ class AgentSessionJob < ApplicationJob
       # the authorization flow will actually send.
       begin
         catalog_server = ServersConfig.find(server_name)
-        requirement = oauth_service.check_oauth_requirement(
-          server_url,
-          configured_client_id: catalog_server&.oauth_client_id,
-          configured_client_secret: catalog_server&.oauth_client_secret,
-          configured_redirect_uri: catalog_server&.oauth_redirect_uri
-        )
+        requirement = oauth_service.check_oauth_requirement(server_url, **(catalog_server&.oauth_client_options || {}))
 
         # Keep what the server just told us, so the Connectors page — which
         # cannot make a network call — reads a recorded fact instead of assuming

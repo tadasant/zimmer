@@ -106,6 +106,10 @@ Rails.application.routes.draw do
     resources :pi_provider_keys, only: [ :index, :show ]
     resources :mcp_oauth_credentials
     resources :mcp_oauth_pending_flows
+    # Read-only: the token broker creates, revokes and deletes every row, and a
+    # grant is ended from /token-broker, which revokes it upstream first.
+    resources :mcp_broker_grants, only: [ :index, :show ]
+    resources :mcp_brokered_tokens, only: [ :index, :show ]
     # Read-only plus destroy: every row records what a remote MCP server answered
     # when Zimmer last asked whether it requires OAuth, so there is nothing to
     # hand-author and a typed-in `advertised_not_required` would forge an
@@ -225,6 +229,11 @@ Rails.application.routes.draw do
   # This Zimmer's public key for signed cross-deployment merge approvals
   # (MergeAttestations). Receivers pin it from here; see MergeAttestationKeysController.
   get ".well-known/merge-attestation-jwks.json", to: "merge_attestation_keys#show", as: :merge_attestation_jwks
+  # Zimmer as an OAuth CLIENT of remote MCP servers (OauthClientIdentity): its
+  # Client ID Metadata Document (the URL is the client_id) and the public keys its
+  # private_key_jwt assertions verify against. 404 until configured.
+  get "oauth-client/metadata.json", to: "oauth_client_identity#metadata", as: :oauth_client_metadata, format: false
+  get "oauth-client/jwks.json", to: "oauth_client_identity#jwks", as: :oauth_client_jwks, format: false
   # The iOS app's edge sign-in: hands the app the Cloudflare Access assertion its
   # sign-in sheet earned on the app hostname. See NativeAccessHandoffsController.
   get "native/access-handoff", to: "native_access_handoffs#show", as: :native_access_handoff
@@ -781,6 +790,14 @@ Rails.application.routes.draw do
   # AFTER the collection route above so `/connectors/secret-store` is not
   # swallowed by the glob.
   get "connectors/*name", to: "connectors#show", as: :connector, format: false
+
+  # The session token broker (TokenBroker): its parent grants, one per
+  # authorization server, and the one-time consent that creates each. The
+  # consent's callback is the shared /mcp_oauth/callback below.
+  resource :token_broker, only: [ :show ], controller: :token_broker, path: "token-broker" do
+    post :connect
+    delete :disconnect
+  end
 
   # Deleting a stored OAuth credential (the "Disconnect" button on Connectors).
   resources :mcp_oauth_credentials, only: [ :destroy ], path: "connector_credentials"

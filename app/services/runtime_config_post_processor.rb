@@ -57,6 +57,21 @@ class RuntimeConfigPostProcessor
 
   attr_reader :session, :working_directory, :file_system, :injected_mcp_servers
 
+  # Whether #inject_brokered_credentials! mints child tokens (a turn is
+  # starting) or only leaves brokered entries out. See AirPrepareService.
+  attr_accessor :mint_brokered_tokens
+
+  # Session metadata naming the config entries the broker wrote or removed. It is
+  # what lets a later prepare know that a file already on the clone is not what
+  # AIR (or the seeding a runtime does in its place) would have written, including
+  # after the broker was turned off.
+  BROKERED_ENTRIES_KEY = "brokered_config_entries"
+
+  # @return [TokenBroker::MintResult] what the broker step did on the last run
+  def brokered_token_result
+    @brokered_token_result || TokenBroker::MintResult.empty
+  end
+
   # @param session [Session] the session being prepared
   # @param working_directory [String] the session's working directory
   # @param file_system [FileSystemAdapter] injectable file system
@@ -88,6 +103,9 @@ class RuntimeConfigPostProcessor
     inject_self_session_server!(servers)
     retarget_zimmer_servers_to_current_env!(servers)
     stamp_session_id_on_zimmer_servers!(servers)
+    # After the steps that rewrite URLs, so nothing moves an entry that carries a
+    # token. Before the elicitation header, which the rewritten entry needs too.
+    inject_brokered_credentials!(servers)
     inject_elicitation_env!(servers)
     inject_elicitation_header!(servers)
     resolve_secrets!(servers)
@@ -95,6 +113,7 @@ class RuntimeConfigPostProcessor
     apply_startup_timeouts!(servers)
 
     persist_config!(config)
+    forget_brokered_entries!
   end
 
   # Ensure a baseline MCP config exists for sessions without explicit MCP
@@ -116,6 +135,11 @@ class RuntimeConfigPostProcessor
 
     inject_subagent_server!(servers)
     inject_self_session_server!(servers)
+    # A session that had MCP servers and no longer does reaches here with the
+    # previous run's entries still on the clone, possibly written before the
+    # broker was turned on. No turn's token is minted on this path, so a brokered
+    # entry is only ever removed.
+    removed = inject_brokered_credentials!(servers, mint: false)
 
     # Nothing injected means no Zimmer entry needs retarget/secret resolution: this
     # path runs only for a session with blank mcp_servers/skills/hooks/plugins, so
@@ -123,7 +147,10 @@ class RuntimeConfigPostProcessor
     # post_process! branch) can be present for inject_subagent_server! to skip over.
     # A catalog entry that DID reach here would be left un-retargeted by this early
     # return — but by construction one cannot.
-    return if injected_mcp_servers.empty?
+    if injected_mcp_servers.empty? && !removed
+      forget_brokered_entries!
+      return
+    end
 
     retarget_zimmer_servers_to_current_env!(servers)
     stamp_session_id_on_zimmer_servers!(servers)
@@ -146,6 +173,7 @@ class RuntimeConfigPostProcessor
     apply_startup_timeouts!(servers)
 
     persist_config!(config)
+    forget_brokered_entries!
   end
 
   private
@@ -331,6 +359,180 @@ class RuntimeConfigPostProcessor
       Rails.logger.warn "[#{self.class.name}] Retargeted Zimmer MCP servers in #{Rails.env} env with blank API key — " \
         "MCP calls will fail to authenticate. Set #{env_var} in your .env or credentials."
     end
+  end
+
+  # Brokered auth (TokenBroker): write every brokered entry the session selected
+  # with this turn's child token as its `Authorization`, and leave out every one
+  # that got no token.
+  #
+  # Never a fallback, and never an edit in place. A brokered entry is not passed to
+  # AIR at all, every key on disk that is or could be one is removed, and what the
+  # session gets is built here from the catalog: the catalog's URL, which is the
+  # resource the token was minted for, the child token, and the catalog's other
+  # headers, which carry no credential (TokenBroker::Declaration). So nothing an
+  # earlier prepare, the repository or the agent left on that entry survives beside
+  # the token: no second header, no env forwarding, no other URL. A key the session
+  # did not select is removed and nothing is minted for it.
+  #
+  # "Could not tell" is treated as brokered, never as not: a catalog that cannot be
+  # read, or a name that could be two entries, costs those servers the turn. The
+  # cause is in #brokered_token_result, which AgentSessionJob writes into the
+  # session's log and metadata.
+  #
+  # Free while the broker is off, apart from taking out what it left behind
+  # (#discard_brokered_leftovers!).
+  #
+  # @return [Boolean] whether any entry was written or removed
+  def inject_brokered_credentials!(servers, mint: mint_brokered_tokens)
+    @brokered_token_result = TokenBroker::MintResult.empty
+    @brokered_entry_names = []
+    discarded = discard_brokered_leftovers!(servers)
+    return discarded unless TokenBroker.enabled?
+
+    owned = servers.keys.map(&:to_s) - zimmer_injected_keys
+    plan = begin
+      TokenBroker.plan_config(owned, selected: selected_mcp_servers) { |server| brokered_config_key(server) }
+    rescue AirCatalogService::CatalogError => e
+      cause = "the catalog could not be read (#{e.class}), so Zimmer cannot tell whether it is brokered"
+      TokenBroker::ConfigPlan.new(serve: {}, remove: owned, refused: (owned | selected_mcp_servers.map(&:to_s)).index_with { cause })
+    end
+    return discarded if plan.empty?
+
+    # What the session selected, which a later prepare has to put back. A key it did
+    # not select is not recorded: the broker never wrote it, so once off there is
+    # nothing of the broker's to take out of it.
+    remember_brokered_entries!(plan.serve.keys | (plan.refused.keys & selected_config_keys))
+    plan.remove.each { |key| servers.delete(key) }
+    plan.refused.each { |name, cause| @brokered_token_result.failures[name] = cause }
+    unselected = plan.remove - plan.serve.keys - plan.refused.keys
+    if unselected.any?
+      Rails.logger.warn "[#{self.class.name}] Removed #{unselected.join(', ')} from the MCP config: the broker " \
+        "authenticates #{unselected.one? ? 'it' : 'them'}, and the session did not select #{unselected.one? ? 'it' : 'them'}"
+    end
+    return true if plan.serve.empty?
+
+    unless mint
+      Rails.logger.info "[#{self.class.name}] Left brokered MCP server(s) #{plan.serve.keys.join(', ')} out of a config " \
+        "written outside a turn start; the turn that runs them mints their token"
+      return true
+    end
+
+    names = plan.serve.values.map(&:name)
+    minted = begin
+      TokenBroker.mint_for_session(session, names)
+    rescue StandardError => e
+      # A broker bug must cost the brokered entries, not the whole turn.
+      TokenBroker::MintResult.new(tokens: {}, failures: names.index_with { "the token broker raised #{e.class}" })
+    end
+
+    plan.serve.each do |key, server|
+      if (token = minted.tokens[server.name])
+        servers[key] = brokered_entry(server, token)
+        @brokered_token_result.tokens[server.name] = token
+      else
+        @brokered_token_result.failures[server.name] = minted.failures[server.name] || "the token broker gave no reason"
+      end
+    end
+    true
+  end
+
+  # The key this runtime's config uses for a catalog server. AIR writes the short id.
+  def brokered_config_key(server) = config_key_for(server.name)
+
+  def brokered_entry(server, token)
+    replaced = [ "authorization", ELICITATION_URL_HEADER.downcase ]
+    headers = server.headers.to_h.reject { |header, _| replaced.include?(header.to_s.downcase) }
+    entry = build_http_entry(url: server.url, headers: headers.merge("Authorization" => "Bearer #{token}"))
+    # `sse` and streamable HTTP are different wire protocols. Codex writes no type.
+    entry["type"] = server.type if entry.key?("type") && server.type == "sse"
+    entry
+  end
+
+  # Remove what the broker left that nothing else will rewrite, off or on: a key the
+  # session no longer selects, and a selected one still carrying one of the session's
+  # child tokens, which neither AIR nor the broker handles (it has gone from the catalog).
+  # Anything else selected is AIR's to write back, or Pi's seeding, which reads the
+  # same record. Never a server Zimmer injected.
+  def discard_brokered_leftovers!(servers)
+    # Nothing on record, which is every session of a deployment that never turned
+    # the broker on: nothing below is even evaluated.
+    return false if brokered_entries_on_record.empty?
+
+    record = brokered_entries_on_record - zimmer_injected_keys
+    keep = selected_config_keys
+    tokens = nil
+    record.count do |key|
+      next false unless servers.key?(key)
+
+      if keep.include?(key)
+        tokens ||= brokered_tokens_of_session
+        next false unless tokens.include?(bearer_of(servers[key]))
+      end
+      servers.delete(key).present?
+    end.positive?
+  end
+
+  def bearer_of(entry)
+    headers = entry.is_a?(Hash) ? entry[http_headers_key] : nil
+    headers.is_a?(Hash) ? headers["Authorization"].to_s.delete_prefix("Bearer ") : nil
+  end
+
+  # This session's children, and, for a fork, its source's: the clone was copied.
+  def brokered_tokens_of_session
+    ids = [ session.id, session.metadata["forked_from_session_id"] ].compact
+    McpBrokeredToken.for_sessions.where(session_id: ids).filter_map do |row|
+      row.token
+    rescue ActiveRecord::Encryption::Errors::Base
+      nil
+    end.to_set
+  end
+
+  # The servers Zimmer puts in the config itself, on this prepare or an earlier one,
+  # unless the session also selected one by that name.
+  def zimmer_injected_keys
+    earlier = session.respond_to?(:custom_metadata) ? Array(session.custom_metadata&.dig("injected_mcp_servers")) : []
+    injected_mcp_servers.map(&:to_s) | (earlier.map(&:to_s) - selected_config_keys)
+  end
+
+  def selected_config_keys = selected_mcp_servers.map { |name| config_key_for(name.to_s) }
+
+  # The config key a stored server name is written under.
+  def config_key_for(name) = ArtifactIdentity.short_id(name)
+
+  def selected_mcp_servers
+    session.respond_to?(:user_selected_mcp_servers) ? Array(session.user_selected_mcp_servers) : []
+  end
+
+  # Recorded BEFORE the config is written: a prepare that dies in between must
+  # leave a record of what the broker may have done, not a file nobody knows about.
+  # A warm pool's template session is never saved, and has no later prepare to tell.
+  def remember_brokered_entries!(names)
+    @brokered_entry_names |= names.map(&:to_s)
+    return unless session.respond_to?(:merge_metadata!) && session.persisted?
+
+    known = brokered_entries_on_record
+    return if (@brokered_entry_names - known).empty?
+
+    session.merge_metadata!({ BROKERED_ENTRIES_KEY => (known | @brokered_entry_names).sort })
+  end
+
+  # Once a config with nothing of the broker's in it is on disk, the record is done.
+  def forget_brokered_entries!
+    return if Array(@brokered_entry_names).any? || brokered_entries_on_record.empty? || !session.persisted?
+
+    # Off: nothing the broker did can still be why one of these is missing, including
+    # a child token the server itself rejected mid-turn.
+    unless TokenBroker.enabled?
+      names = brokered_entries_on_record
+      kept = session.degraded_mcp_servers.reject { |entry| names.include?(entry["name"]) || names.include?(config_key_for(entry["name"].to_s)) }
+      updates = kept.size == session.degraded_mcp_servers.size ? {} : { "mcp_degraded_servers" => kept }
+    end
+    session.merge_metadata!(updates || {}, [ BROKERED_ENTRIES_KEY ])
+  end
+
+  def brokered_entries_on_record
+    metadata = session.respond_to?(:metadata) ? session.metadata : nil
+    metadata.is_a?(Hash) ? Array(metadata[BROKERED_ENTRIES_KEY]).map(&:to_s) : []
   end
 
   # Write the approval endpoint's address into every stdio server's own `env`

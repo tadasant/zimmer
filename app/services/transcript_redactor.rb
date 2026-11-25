@@ -461,6 +461,12 @@ module TranscriptRedactor
     # plugin's key is minted over MCP by `action_external_app`, which puts the
     # secret in the calling session's transcript.
     pattern("ZIMMER_API_KEY", /\bzmr_[0-9a-f]{64}\b/),
+    # strad's own OAuth access and refresh tokens (`strad_oat_` / `strad_ort_`
+    # + base64url). The token broker writes a `strad_oat_` child into a
+    # session's MCP config, where an agent debugging its own auth can print
+    # it; the exact value is also in the known-value set, this is the line
+    # behind it for a token minted in the last KNOWN_SECRETS_TTL.
+    pattern("STRAD_OAUTH_TOKEN", /#{TOKEN_START}strad_o[ar]t_[A-Za-z0-9_\-]{16,}/o),
     # 1Password service-account token — the credential the `1password-provisioning`
     # MCP server runs on. The `op://` references it consumes are not secret; its
     # token is, and so is anything `op read` prints (which has no shape and is
@@ -1155,6 +1161,24 @@ module TranscriptRedactor
       XOauthCredential.pluck(:access_token, :refresh_token).flatten.each(&block)
       ClaudeAccount.pluck(:oauth_config).each do |config|
         deep_sensitive_strings(config).each(&block)
+      end
+      each_brokered_token(&block)
+    end
+
+    # The token broker's parent grants, and every child that has not been
+    # expired for more than an hour. Encrypted at rest, so read through the
+    # model, which decrypts. Last, and per row: a row that cannot be decrypted
+    # costs that row, never the tokens of the sources above.
+    def each_brokered_token(&block)
+      McpBrokerGrant.find_each do |grant|
+        [ grant.access_token, grant.refresh_token ].each(&block)
+      rescue ActiveRecord::Encryption::Errors::Base
+        next
+      end
+      McpBrokeredToken.where("expires_at > ?", 1.hour.ago).find_each do |row|
+        block.call(row.token)
+      rescue ActiveRecord::Encryption::Errors::Base
+        next
       end
     end
 
