@@ -47,6 +47,9 @@ enum CarPlayImages {
     /// events, and a line when it called off the main thread, because no test can see which thread
     /// a head unit's tap arrives on.
     static func arrived(_ control: String, onMain: Bool) {
+        #if DEBUG
+        CarPlayDrillRecord.note("heard \(control)")
+        #endif
         LiveTelemetry.shared.mark("carplay:\(control):\(onMain ? "main" : "off_main")")
         if !onMain {
             LiveTelemetry.shared.track(.carPlay("off_main", level: .warn, ["control": .string(control)]))

@@ -45,6 +45,9 @@ final class CarPlayHome {
             buttons.append(CPGridButton(titleVariants: CarHomeSettingsTile.titleVariants, image: CarPlayImages.tile(CarHomeSettingsTile.symbol),
                                         handler: CarPlayImages.tapped("tile.settings") { [weak self] in self?.onSettings?() }))
         }
+        #if DEBUG
+        CarPlayDrillRecord.note("drew the tiles")
+        #endif
         template.updateGridButtons(buttons)
     }
 }

@@ -629,7 +629,8 @@ rm -f "$artifacts/.started"
 # row with no choices is drawn no differently, and the host also takes updates no tap caused. A
 # home tile tap is `Sending UIEvent` lines, then `button selected with UUID` in the host, then
 # `Received update for grid template` as the app redraws the tiles. With no `button selected`,
-# the host dropped the tap before Zimmer heard it.
+# the host dropped the tap before Zimmer heard it. `carplay-drill-record.txt` in the artifacts is
+# the app's side alone, untimed, which the drill reads as it goes (`CarPlayDrillRecord`).
 if [ -n "$carplay" ]; then
   xcrun simctl spawn "$udid" log show --last 30m --info --predicate 'subsystem == "com.tadasant.zimmer"' \
     >"$artifacts/app-log.txt" 2>/dev/null || true

@@ -514,6 +514,11 @@ then drives the real templates, which the system's `CarPlayTemplateUIHost` draws
   Retry: no call, one tile, New, and a tap on it tries a call. The car's calls can leave the system's
   microphone prompt over the phone, so the drill answers it first if it is up, with Don't Allow.
 
+A tap on a tile or a row that changes nothing is made again only when Zimmer's record of the car
+(`CarPlayDrillRecord`) shows no Zimmer handler ran for it, because CarPlay's host can drop one. A tap Zimmer
+heard and did nothing about fails the drill. See `limitations.md`, "CarPlay's host can stop answering
+in the drill".
+
 The tiles come back to rest only when a call ends, and no call in the drill connects or can be ended,
 so the order is what reaches each state: Continue gets one tap at rest, and nothing to continue comes
 last. Which conversation each tile called is `CarPlayTests`', because the drill can see only the
