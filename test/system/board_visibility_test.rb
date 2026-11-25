@@ -111,6 +111,52 @@ class BoardVisibilityTest < ApplicationSystemTestCase
     assert_no_selector "#board_v2", text: "Tucked away"
   end
 
+  # A dashboard left open on another filter fetches its own board again whenever the
+  # categories change. That must not bring its filter back for anyone who has since
+  # asked for the default board.
+  test "an All board left open in another tab does not undo Reset filters" do
+    create_session(title: "Still on the board")
+    create_session(title: "Tucked away", visibility: SessionVisibility::HIDDEN)
+    create_session(title: "Snoozed for now", visibility: SessionVisibility::SNOOZED, snoozed_until: 2.days.from_now)
+    create_session(title: "Some other month", visibility: SessionVisibility::BACKLOGGED)
+
+    visit root_path(view: SessionsController::VIEW_MODE_BOARD_V2,
+                    SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "all")
+    assert_selector "#board_v2", text: "Tucked away"
+
+    within_window(open_new_window) do
+      visit root_path(view: SessionsController::VIEW_MODE_BOARD_V2)
+      assert_selector "#board_v2", text: "Tucked away"
+      click_on "Reset filters"
+      assert_on_default_board
+    end
+
+    # The open tab hears of the new category, so it has fetched its board again.
+    BoardCategory.create!(name: "Arrived later")
+    assert_selector "#board_v2", text: "Arrived later", wait: 8
+
+    within_window(open_new_window) do
+      visit root_path(view: SessionsController::VIEW_MODE_BOARD_V2)
+      assert_on_default_board
+      [ "Tucked away", "Snoozed for now", "Some other month" ].each { |title| assert_no_selector "#board_v2", text: title }
+    end
+  end
+
+  test "hovering over a view does not choose it" do
+    visit root_path(view: SessionsController::VIEW_MODE_BOARD_V2)
+    within("[aria-label='Dashboard view mode']") { find_link("Ranked").hover }
+    sleep 1 # Turbo prefetches 100ms into a hover; this is the request not being made.
+
+    visit root_path
+    assert_selector "[aria-label='Dashboard view mode'] [aria-pressed='true']", text: "Your board"
+  end
+
+  def assert_on_default_board
+    assert_checked_field "visibility", with: SessionsController::VISIBILITY_ON_BOARD, visible: :all, wait: 8
+    wait_for_dashboard_board
+    assert_selector "#board_v2", text: "Still on the board"
+  end
+
   # The removal decision is the browser's: visibility_controller.js takes a row off
   # the page when the board on screen does not show the visibility it is moving to.
   test "moving a row to the backlog takes it off the default board and counts it" do
@@ -133,7 +179,12 @@ class BoardVisibilityTest < ApplicationSystemTestCase
 
     visit root_path(view: SessionsController::VIEW_MODE_BOARD_V2,
                     SessionsController::FILTERS_SUBMITTED_PARAM => "1", visibility: "all")
+    # The page visits itself once the server agrees. Waited out, so the row is read
+    # from the board that visit brought, and the test does not end with it in flight.
+    page.execute_script("document.querySelector('#board_v2').dataset.beforeTheVisit = ''")
     backlog_from_menu(Session.find_by!(title: "Low priority, half done"))
+    assert_no_selector "#board_v2[data-before-the-visit]", wait: 8
+    wait_for_dashboard_board
 
     assert_selector "#board_v2 [id^='board_v2_row_']", text: /Low priority, half done.*Backlog/m
     assert_equal SessionVisibility::BACKLOGGED, Session.find_by!(title: "Low priority, half done").visibility

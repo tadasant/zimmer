@@ -241,7 +241,7 @@
           <p class="mt-1 text-xs text-gray-500">
             Spot sessions are worked highest-precedence first, on an absolute scale — 100000 comes before 50 —
             and nothing renumbers, so leave gaps. Leave blank for the default (0). Manage the whole queue in the
-            <%= link_to "Ranked view", root_path(view: SessionsController::VIEW_MODE_RANKED), class: "text-indigo-600 hover:text-indigo-500" %>.
+            <%= link_to "Ranked view", root_path(view: SessionsController::VIEW_MODE_RANKED), data: { turbo_prefetch: false }, class: "text-indigo-600 hover:text-indigo-500" %>.
           </p>
         </div>
 

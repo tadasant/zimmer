@@ -750,6 +750,29 @@ each of its own tests.
 The rule: **a test is not isolated until the browser's caches are, too.** A response the app tells
 the browser it may keep is state that one test hands to the next, unless something clears it.
 
+### The last test's filters: a response that lands after the reset
+
+[Run 45603621299](https://github.com/tadasant/zimmer/actions/runs/45603621299) failed
+`BoardVisibilityTest` because a hidden session was drawn on what should have been the default board.
+The failure screenshot had the answer: the Filters panel read **All**. The row belonged on the board
+that was open. The test had inherited the previous test's filters.
+
+The previous test visits `/?filters=1&visibility=all`, and its last act makes the page visit that
+address again. The row it asserts on arrives over the live stream first, so the test can end with
+that second request still in flight. Capybara's reset then navigates to `about:blank`, clears the
+cookies, and waits for the server's pending requests, in that order. Chrome's back/forward cache
+parks the page instead of destroying it and lets its fetches finish, so the `sessions_filters` cookie
+is set after the clear. A response that took 300ms or longer left the cookie behind every time.
+
+The All-board test waits for that visit to finish. Two things in `ApplicationSystemTestCase`
+prevent it for every other test. Chrome runs with `BackForwardCache` off,
+so leaving a page ends its requests. And each test's `setup` clears the cookies again, after the
+reset has waited for the server. `BrowserIsolationTest` holds a response open across a reset and
+checks that no cookie comes out of it.
+
+The rule: **when a row is on a board it should not be on, read the Filters panel in the screenshot
+before looking for how the row got there.**
+
 ## The catalog coupling — read this before you debug
 
 :::danger[A broken catalog fails every session test at once]

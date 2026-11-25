@@ -85,7 +85,14 @@ def build_selenium_options
   # These help prevent ERR_NETWORK_CHANGED errors when Docker networks change
   options.add_argument("--dns-prefetch-disable")
   options.add_argument("--no-first-run")
-  options.add_argument("--disable-features=NetworkService,NetworkServiceInProcess")
+
+  # NetworkService is off for the reason above. BackForwardCache is off because
+  # Capybara's reset navigates to about:blank, and with that cache on Chrome parks
+  # the page it left instead of destroying it, keeping its in-flight fetches alive.
+  # Their responses then set cookies after the reset cleared them, and the next test
+  # starts with the last one's dashboard filters. One flag: Chrome reads only the
+  # last --disable-features it is given. See docs/src/content/docs/operate/testing.md.
+  options.add_argument("--disable-features=NetworkService,NetworkServiceInProcess,BackForwardCache")
   options.add_argument("--disable-backgrounding-occluded-windows")
   options.add_argument("--disable-renderer-backgrounding")
 
@@ -176,8 +183,14 @@ class ApplicationSystemTestCase < ActionDispatch::SystemTestCase
   #
   # Cleared at setup rather than teardown so a test that exercises the prefetch
   # cache still has it for its own duration.
+  #
+  # And with no cookies. Capybara's reset clears them BEFORE it waits for the
+  # server's pending requests, so a response that was still on its way can set one
+  # after the clear. Setup runs after that wait. BackForwardCache being off, above, is
+  # what ends those requests; this catches one that was answered anyway.
   setup do
     page.driver.browser.execute_cdp("Network.clearBrowserCache")
+    page.driver.browser.execute_cdp("Network.clearBrowserCookies")
     page.driver.browser.manage.window.resize_to(*DESKTOP_WINDOW_SIZE)
   end
 

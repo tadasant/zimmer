@@ -2718,8 +2718,8 @@ class SessionsController < ApplicationController
 
   # Resolve the dashboard view mode for #index, in precedence order:
   #   1. An explicit, valid ?view= param (or a LEGACY_VIEW_MODES name, remapped) —
-  #      honored and persisted to a cookie so the choice survives subsequent
-  #      navigation back to the dashboard.
+  #      honored, and persisted to a cookie when somebody loads the dashboard, so the
+  #      choice survives subsequent navigation back to it.
   #   2. A previously-persisted valid cookie value (the user's last explicit pick),
   #      or a LEGACY_VIEW_MODES name remapped to the view that replaced it.
   #   3. The default: "last_touched" on mobile, Your board on desktop. The default
@@ -2727,10 +2727,10 @@ class SessionsController < ApplicationController
   def resolve_view_mode
     requested = params[:view].to_s
     # A bookmarked ?view=categories lands on the view that replaced it, the same as
-    # a stale cookie does — and is persisted under its new name.
+    # a stale cookie does.
     requested = LEGACY_VIEW_MODES.fetch(requested, requested)
     if VALID_VIEW_MODES.include?(requested)
-      cookies[VIEW_MODE_COOKIE] = { value: requested, expires: 1.year }
+      cookies[VIEW_MODE_COOKIE] = { value: requested, expires: 1.year } if remember_dashboard_choice?
       return requested
     end
 
@@ -2757,6 +2757,35 @@ class SessionsController < ApplicationController
     true
   end
 
+  # Whether this request may write the cookies that remember the view and filters.
+  #
+  # Loading the shell may. What an open page fetches to keep itself current may
+  # not: the board, which `board-v2` fetches again when the categories change, and
+  # the copy of the page the reconnect backfill asks for. Both carry the filters the
+  # page was opened with. If they wrote the cookies, a dashboard left open on "All"
+  # would put "All" back after "Reset filters" in another tab, and the next visit to
+  # "/" would show hidden and backlogged rows to someone who had asked not to see
+  # them.
+  #
+  # A hover prefetch is not excluded here: Turbo answers the click that follows from
+  # it, so the choice would go unremembered. Links that choose a view or filters opt
+  # out of prefetching instead.
+  def remember_dashboard_choice?
+    action_name == "index" && request.headers["X-Zimmer-Backfill"].blank?
+  end
+
+  def remember_filters
+    cookies[FILTERS_COOKIE] = {
+      value: {
+        "status" => @status_filter,
+        "priority_class" => @priority_class_filter,
+        "visibility" => @visibility_filter,
+        "carplay_fit" => @carplay_fit_filter
+      }.to_json,
+      expires: 1.year
+    }
+  end
+
   # "Reset filters" is a GET that drops the persisted Filters choice and redirects to
   # a bare dashboard. Writing a display preference on a GET is the same thing
   # resolve_view_mode already does — this is a preference, not data.
@@ -2773,7 +2802,7 @@ class SessionsController < ApplicationController
   # Resolve the Filters section — the status multi-select and the spot/priority
   # narrowing — from three sources, in order:
   #
-  #   1. A submitted Filters form. Wins, and is persisted to FILTERS_COOKIE.
+  #   1. A submitted Filters form. Wins, and the shell persists it to FILTERS_COOKIE.
   #   2. The persisted choice from a previous submit. This is what makes a selection
   #      survive a reload and a bare visit to "/".
   #   3. The defaults.
@@ -2792,15 +2821,7 @@ class SessionsController < ApplicationController
       @priority_class_filter = sanitized_priority_class(params[:priority_class])
       @visibility_filter = sanitized_visibility_filter(params[:visibility])
       @carplay_fit_filter = sanitized_carplay_fit_filter(params[:carplay_fit])
-      cookies[FILTERS_COOKIE] = {
-        value: {
-          "status" => @status_filter,
-          "priority_class" => @priority_class_filter,
-          "visibility" => @visibility_filter,
-          "carplay_fit" => @carplay_fit_filter
-        }.to_json,
-        expires: 1.year
-      }
+      remember_filters if remember_dashboard_choice?
       return
     end
 
