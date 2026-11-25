@@ -845,9 +845,10 @@ by saying so too: "hang up" or "stop listening" ends the call once the model has
 with the hung-up cue, and counts as End, so nothing retries and the tiles come back with Continue
 ([Hanging up by voice](/sessions/live/#hanging-up-by-voice)). With
 [standby](/sessions/live/#standby), the car holds a connection ready for Continue and one for New while
-it is connected, so a tap goes straight to the call screen and is usually talking as soon as the
-microphone is open. Nothing is heard or shown until you tap. The phone does the same while Live is on
-screen on a conversation with voice on.
+it is connected, so a tap is usually talking as soon as the microphone is open. Nothing is heard or shown
+until you tap. The phone does the same while Live is on screen on a conversation with voice on. On GPT-Live
+a held connection bills, so none is held until the Live setting *Paid standby cap per day* is above 0.
+A tap goes straight to the call screen either way.
 
 **Unplug with a call up and the phone goes to it.** The call carries on, and the phone lands on its
 Live thread, with Mute and Hang up, about three seconds later if the app is open, or the next time it

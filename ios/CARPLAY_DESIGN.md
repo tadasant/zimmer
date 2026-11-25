@@ -600,7 +600,8 @@ running after every step, and any crash report fails the job.
 While it is connected, the car holds a connection ready for Continue and one for New, with a conversation
 kept ready for New. The tap starts the call on it, and the call exists from the tap whether or not there
 was one, so there is one *Connecting…*: the call screen's. Nothing anybody said goes up before the tap and
-no microphone is opened. The design, the measurements and the numbers are in
+no microphone is opened. On GPT-Live a held connection bills, so none is held unless the Live settings opt
+in, and the tap starts from cold. The design, the measurements and the numbers are in
 [`CARPLAY_PREWARM_DESIGN.md`](CARPLAY_PREWARM_DESIGN.md).
 
 ## Follow-ups

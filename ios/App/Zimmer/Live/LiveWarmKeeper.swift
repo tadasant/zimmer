@@ -25,7 +25,8 @@ struct LiveWarmTake {
 /// the connection, sees that it is alive, closes it — and hands it to `LiveCall` at the tap.
 ///
 /// There is no flag in the app. What stops it is a hold (`LiveWarmStart.Hold`), the budget, or
-/// Zimmer refusing: the Live setting *Standby cap per day* at 0 turns GPT-Live standby off.
+/// Zimmer refusing: a GPT-Live connection bills while it is held, so Zimmer refuses one until the Live
+/// setting *Paid standby cap per day* is above 0.
 ///
 /// **Nothing a person says goes up a connection in standby.** A Realtime one (`LiveWarmLink`) has no
 /// way to send an event. A GPT-Live one (`GptLiveCall` in standby) sends none, and its microphone
@@ -407,7 +408,12 @@ private final class LiveWarmHolder {
             } catch {
                 guard let self, self.isWarming(conversation) else { return }
                 self.minting = nil
-                self.failed(Self.describe(error))
+                if case ZimmerError.http(status: 409, _) = error {
+                    self.telemetry.track(.warmRefused(self.slot, Self.describe(error)))
+                    self.perform(self.start.refused())
+                } else {
+                    self.failed(Self.describe(error))
+                }
             }
         }
     }

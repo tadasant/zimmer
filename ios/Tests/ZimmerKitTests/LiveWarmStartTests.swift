@@ -324,6 +324,47 @@ final class LiveWarmStartTests: XCTestCase {
         XCTAssertEqual(backingOff.settingsChanged(at: 11), [.mint(conversation: 30)], "and what was refused may not be now")
     }
 
+    /// Paid standby is off, or at its cap: one question a conversation, no retries, and the tap starts cold.
+    func testARefusalIsAnAnswerNotAFailureToTryAgain() {
+        for slot in [LiveWarmStart.Slot.open, .new] {
+            var start = LiveWarmStart(slot)
+            _ = start.activate(at: 0)
+            XCTAssertEqual(start.update(.init(conversation: 30), at: 0.3), [.mint(conversation: 30)])
+            XCTAssertEqual(start.refused(), [.close(.refused)])
+            XCTAssertEqual(start.phase, .idle)
+            let later = run(&start, from: 1, to: 3_000).map(\.1)
+            XCTAssertEqual(Set(later.map { "\($0)" }), ["refresh"], "nothing asked for again")
+            XCTAssertEqual(start.update(.init(conversation: 30), at: 3_001), [])
+            XCTAssertEqual(start.hold, .refused)
+            XCTAssertEqual(start.claim(30, at: 3_003), .cold(.none))
+            XCTAssertEqual(start.warms, 1)
+            XCTAssertEqual(start.interest(at: 3_003), [.mint(conversation: 30)], "Zimmer came to the front: asked once more")
+            XCTAssertEqual(start.refused(), [.close(.refused)])
+            XCTAssertEqual(start.update(.init(conversation: 30), at: 3_004), [])
+
+            XCTAssertEqual(start.update(.init(conversation: 31), at: 3_004), [.mint(conversation: 31)], "another conversation is another question")
+            XCTAssertEqual(start.refused(), [.close(.refused)])
+            XCTAssertEqual(start.settingsChanged(at: 3_005), [.mint(conversation: 31)], "opted in on this phone")
+            XCTAssertEqual(start.refused(), [.close(.refused)])
+            XCTAssertEqual(start.update(.init(conversation: 32), at: 3_006), [.mint(conversation: 32)])
+            start.ready(at: 3_007)
+            XCTAssertEqual(start.update(.init(conversation: 31), at: 3_008), [.close(.conversationMoved), .mint(conversation: 31)],
+                           "gone back to: it may be one to hold by then")
+        }
+    }
+
+    func testARefusalEndsWithTheVisit() {
+        var start = LiveWarmStart(.new)
+        _ = start.activate(at: 0)
+        _ = start.update(.init(conversation: 30), at: 0)
+        _ = start.refused()
+        _ = start.deactivate()
+        _ = start.activate(at: 100)
+        XCTAssertEqual(start.update(.init(conversation: 30), at: 100), [.mint(conversation: 30)])
+        XCTAssertEqual(start.refused(), [.close(.refused)])
+        XCTAssertEqual(start.refused(), [], "nothing on its way to refuse")
+    }
+
     /// Putting the phone down and picking it up is no new budget.
     func testTheBudgetIsTheHoursNotTheOpenings() {
         var start = LiveWarmStart(.new)
