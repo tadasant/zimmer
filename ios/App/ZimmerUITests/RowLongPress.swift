@@ -33,8 +33,7 @@ extension XCTestCase {
                 // row on the board, and the page shows "Loading session…" with no back button
                 // until its read returns. So the row is given a moment to leave, and once it has,
                 // the back button is waited for rather than looked for once.
-                let leaving = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: row)
-                let leftBoard = back.exists || XCTWaiter().wait(for: [leaving], timeout: 3) == .completed
+                let leftBoard = back.exists || waitForDisappearance(row, timeout: 3)
                 if leftBoard, !back.exists, !back.waitForExistence(timeout: timeout) {
                     XCTAssertFalse(app.staticTexts["Loading session…"].exists,
                                    "the session a press opened was still loading after \(Int(timeout)) seconds")

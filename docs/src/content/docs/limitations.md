@@ -374,18 +374,18 @@ When a wait's clock runs out, XCTest cancels an accessibility query that is stil
 so one slow query can fail a wait that saw nothing: on
 [run 45603621053](https://github.com/tadasant/zimmer/actions/runs/45603621053) the keyboard had been
 gone for three seconds when the wait began, and its one query was cancelled 19 seconds in. The waits
-in `ios/App/ZimmerUITests/Waits.swift` look once more, with nothing to cancel it, after the clock
-ends, and every helper the test classes share uses them.
+in `ios/App/ZimmerUITests/Waits.swift` look once more after the clock ends, outside the waiter, where
+the query has XCTest's own limit of three 30-second tries. Every helper the test classes share uses
+them. A query that outlasts those tries still fails its test.
 
 Nineteen of the UI test files still have waits of their own without that last look, and can fail the
 same way. They are listed in `test/config/ios_ui_test_waits_test.rb`, which fails on a new one. They
 move a few at a time because a pull request runs every UI test class it touches, and all of them do
 not fit in the `ios` job's budget.
 
-Two more keep their own on purpose, because there the clock is part of what is tested.
-`BoardStaysCurrentUITests` gives a row five seconds to go, to tell a read on return from the
-fifteen-second poll, and a late look could see the poll's. `RowLongPress` gives a row three seconds to
-leave the board before it presses again.
+`BoardStaysCurrentUITests` keeps its own on purpose, because there the clock is part of what is
+tested: it gives a row five seconds to go, to tell a read on return from the fifteen-second poll, and
+a late look could see the poll's.
 
 ### Dragging the iOS trigger form back up can stall
 
@@ -442,7 +442,7 @@ The car can also stay connected after the drill unplugs it. In [run 44560053511,
 
 The fixture holds the drill's first call on Connecting… for 600 seconds, the drill's whole time allowance, and the gear is what ends it. With a hold of 120 seconds a slow unplug and replug outlasted it: in [run 45103157432](https://github.com/tadasant/zimmer/actions/runs/45103157432) the call failed at 03:31:49, some 10 seconds before the gear was due. The drill then failed on the gear's panel with an empty car, because Zimmer had aborted playing the cue for that failure ("A stalled audio server can end the app during a call", below). A failure message that shows the car says when Zimmer is not running.
 
-Apart from a tap's wait for its answer, above, and the retries' 30 and 90, the other steps wait 20 seconds or less. A stall longer than that at another step fails the drill, and is the drill's timing, not the app: the job log's app and host lines say which. Before the gear, a stall of about 12 seconds fails it with `Send now's state goes up` or `a Send now with nothing to send leaves the screen as it is`, and the voice settings in the dump.
+Apart from a tap's wait for its answer, above, and the retries' 30 and 90, the other steps wait 20 seconds or less. (A wait for something to go looks once more after its time, so a stall that ends during that look passes.) A stall longer than that at another step fails the drill, and is the drill's timing, not the app: the job log's app and host lines say which. Before the gear, a stall of about 12 seconds fails it with `Send now's state goes up` or `a Send now with nothing to send leaves the screen as it is`, and the voice settings in the dump.
 
 ### Send now in the car has never ended a real turn
 

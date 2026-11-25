@@ -1,20 +1,20 @@
 import XCTest
 
 /// The waits a UI test uses beside `waitForExistence`. A predicate handed to `XCTWaiter` anywhere
-/// else is the flake these are here to end, and `test/config/ios_ui_test_waits_test.rb` fails on a
-/// new one.
+/// else has the flake these are here to end, and `test/config/ios_ui_test_waits_test.rb` lists the
+/// ones there are and fails on a new one.
 ///
-/// A waiter's clock is not a limit on how long the app may take, it is a limit on everything, the
-/// looking included. When it runs out XCTest cancels a query that is still being answered, and the
-/// wait fails having seen nothing. On main's run 45603621053 the keyboard was gone three seconds
+/// A waiter's clock covers the looking as well as the app. When it runs out XCTest cancels a query
+/// that is still being answered, and the wait fails having seen nothing. On main's run 45603621053 the keyboard was gone three seconds
 /// before the wait for that began, the one query the wait made was still walking the accessibility
 /// tree nineteen seconds later, XCTest logged `Interrupted by waiter`, and the test said the
 /// keyboard was up.
 ///
-/// So when the clock runs out each of these looks once more, outside the waiter, where nothing
-/// cancels the query. That look begins after the clock ended, so it can only pass on what is on
-/// screen then: what is still wrong after the timeout still fails. `waitForExistence` takes the
-/// same last look by itself.
+/// So when the clock runs out each of these looks once more, outside the waiter, where the query
+/// has XCTest's own limit instead: three tries of 30 seconds, and then the test fails. That look
+/// begins after the clock ended, so it can only pass on what is on screen then: what is still wrong
+/// after the timeout still fails. `waitForExistence` takes the same last look by itself, outside its
+/// predicate (the `live.call.state` wait in actions/runs/45092022457).
 extension XCTestCase {
     /// Whether `element` goes away within `timeout`, or has gone by the look taken when it ends.
     @MainActor

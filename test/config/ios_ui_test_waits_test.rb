@@ -8,14 +8,16 @@ require "test_helper"
 # A new test that writes its own brings that flake back, and nothing but a red `main` would say so.
 class IosUiTestWaitsTest < ActiveSupport::TestCase
   SOURCES = Rails.root.join("ios/App/ZimmerUITests")
-  PREDICATE_WAIT = /NSPredicateExpectation\s*\(|\bexpectation\s*\(\s*for:/
+  PREDICATE_WAIT = /\bXCTNSPredicateExpectation\b|\bXCTKVOExpectation\b|\bkeyValueObservingExpectation\b|\bexpectation\s*\(\s*for:/
 
   # Where the clock is itself what is tested, so a later look would be the wrong answer. Each
   # with how many such waits it has.
-  OWN_CLOCK = { "BoardStaysCurrentUITests.swift" => 2, "RowLongPress.swift" => 1 }.freeze
+  OWN_CLOCK = { "BoardStaysCurrentUITests.swift" => 2 }.freeze
 
   # Still to move to `Waits.swift`. A pull request runs every UI test class it touches, so they
-  # move a few files at a time (Known limitations). A file comes off here as it moves.
+  # move a few files at a time (Known limitations). A file comes off here as it moves. Two need
+  # care: OperationsUITests waits 30 seconds, not the shared 20, and OptimisticActionsUITests looks
+  # before an answer it is holding back, so a late look must still be before it lets the answer go.
   STILL_TO_MOVE = {
     "AccountUITests.swift" => 2, "AttachmentsUITests.swift" => 1, "BoardReadParityUITests.swift" => 4,
     "CarplayFitUITests.swift" => 2, "CatalogUITests.swift" => 1, "LiveHandoverUITests.swift" => 1,
