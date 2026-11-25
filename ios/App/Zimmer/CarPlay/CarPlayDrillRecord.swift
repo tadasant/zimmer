@@ -1,10 +1,10 @@
 #if DEBUG
 import Foundation
 
-/// What the car's app did, one line each, in a file the CarPlay drill reads: a control whose
-/// handler CarPlay ran, and a redraw. CarPlay's host can drop a tap before Zimmer hears it, and
+/// What the car's app did, one line each, in a file the CarPlay drill reads: each handler that ran
+/// (`CarPlayImages.arrived`), and each drawing of the tiles or the voice settings. CarPlay's host can drop a tap before Zimmer hears it, and
 /// no screen tells that apart from a tap Zimmer heard and did nothing about. The drill taps again
-/// only after a tap this file says nothing followed.
+/// only when this file says nothing followed.
 ///
 /// `CarPlayDrillUITests` names the file in the launch environment. Without it, nothing is written.
 enum CarPlayDrillRecord {

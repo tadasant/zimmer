@@ -1045,7 +1045,7 @@ is behind the gear is driven for real.
 When a tap in the drill changes nothing, the job log says how far it got: `ios/bin/ui-test` prints the
 app's and CarPlay's logs in time order, and keeps CarPlay's as `carplay-host-log.txt` with the run.
 The drill taps again, up to three times, only when Zimmer's own record of the car
-(`carplay-drill-record.txt`, written by `CarPlayDrillRecord` in Debug code) shows it ran no handler and
+(`carplay-drill-record.txt`, written by `CarPlayDrillRecord`, compiled under `DEBUG`) shows it ran no handler and
 redrew nothing after the tap. A tap Zimmer heard and did nothing about fails.
 
 Zimmer must still be running after every step, and any crash report fails the job. The rules under
