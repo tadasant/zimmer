@@ -111,4 +111,14 @@ final class SessionExtrasUITests: XCTestCase {
         let (top, bottom) = edges()
         XCTAssertTrue(element.frame.minY >= top && element.frame.maxY <= bottom, "\(element) is in the open part of the page")
     }
+
+    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
+
+    private func waitForLabelContaining(_ element: XCUIElement, _ text: String) -> Bool {
+        let matches = expectation(for: NSPredicate(format: "label CONTAINS %@", text), evaluatedWith: element)
+        return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
+    }
 }

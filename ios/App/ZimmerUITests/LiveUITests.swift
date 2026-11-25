@@ -40,7 +40,7 @@ final class LiveUITests: XCTestCase {
         let confirm = app.buttons["Start new conversation"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: timeout), "New conversation asks before ending this one")
         confirm.tap()
-        XCTAssertTrue(waitForDisappearance(spoken), "a fresh thread replaces the old one")
+        XCTAssertTrue(waitForGone(spoken), "a fresh thread replaces the old one")
         XCTAssertTrue(element(app, "live.composer").waitForExistence(timeout: timeout), "typed, as the one it replaced was")
         attachScreenshot(app, named: "live-new-conversation")
     }
@@ -65,7 +65,7 @@ final class LiveUITests: XCTestCase {
         XCTAssertTrue(spoken.waitForExistence(timeout: timeout))
         app.buttons["live.conversation.menu"].tap()
         app.buttons["End conversation"].tap()
-        XCTAssertTrue(waitForDisappearance(app.buttons["live.voice.disable"]), "an ended conversation has no call controls")
+        XCTAssertTrue(waitForGone(app.buttons["live.voice.disable"]), "an ended conversation has no call controls")
         closeLive(app)
 
         openLive(app)
@@ -108,7 +108,7 @@ final class LiveUITests: XCTestCase {
 
         app.buttons["live.conversation.menu"].tap()
         app.buttons["End conversation"].tap()
-        XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["live.composer"].firstMatch), "an ended conversation takes no more messages")
+        XCTAssertTrue(waitForGone(app.descendants(matching: .any)["live.composer"].firstMatch), "an ended conversation takes no more messages")
     }
 
     func test_a_thread_with_voice_on_shows_what_was_said_the_call_controls_and_type_instead() throws {
@@ -144,7 +144,7 @@ final class LiveUITests: XCTestCase {
         attachScreenshot(app, named: "live-settings-voice-engine")
 
         app.buttons["live-settings.done"].tap()
-        XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["live-settings-view"].firstMatch))
+        XCTAssertTrue(waitForGone(app.descendants(matching: .any)["live-settings-view"].firstMatch))
     }
 
     /// The Live settings without entering Live Mode: the board's gear, then Live settings. The
@@ -179,7 +179,7 @@ final class LiveUITests: XCTestCase {
         attachScreenshot(app, named: "live-settings-from-settings-guidance")
 
         app.navigationBars["Live settings"].buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(waitForDisappearance(element(app, "live-settings-view")), "Back leaves the Live settings")
+        XCTAssertTrue(waitForGone(element(app, "live-settings-view")), "Back leaves the Live settings")
         XCTAssertTrue(app.staticTexts["settings.server"].exists || app.buttons["settings.live"].exists, "back on Settings")
     }
 
@@ -195,7 +195,7 @@ final class LiveUITests: XCTestCase {
         let done = app.buttons["live.done"]
         XCTAssertTrue(done.waitForExistence(timeout: timeout))
         done.tap()
-        XCTAssertTrue(waitForDisappearance(done))
+        XCTAssertTrue(waitForGone(done))
     }
 
     /// The conversation's Back button, to the Live list.
@@ -209,7 +209,8 @@ final class LiveUITests: XCTestCase {
 
     /// Waits for the button to exist and take a tap, then taps it.
     private func tapWhenEnabled(_ button: XCUIElement) {
-        XCTAssertTrue(waitUntil(NSPredicate(format: "exists == true AND enabled == true"), on: button), "\(button) is enabled")
+        let enabled = expectation(for: NSPredicate(format: "exists == true AND enabled == true"), evaluatedWith: button)
+        XCTAssertEqual(XCTWaiter().wait(for: [enabled], timeout: timeout), .completed, "\(button) is enabled")
         button.tap()
     }
 
@@ -227,6 +228,16 @@ final class LiveUITests: XCTestCase {
     /// The first element whose label contains `text`, whatever kind of element SwiftUI made it.
     private func labelled(_ app: XCUIApplication, _ text: String) -> XCUIElement {
         app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
+    }
+
+    private func waitForValue(_ element: XCUIElement, _ text: String) -> Bool {
+        let holds = expectation(for: NSPredicate(format: "value == %@", text), evaluatedWith: element)
+        return XCTWaiter().wait(for: [holds], timeout: timeout) == .completed
+    }
+
+    private func waitForGone(_ element: XCUIElement) -> Bool {
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
     }
 
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {

@@ -226,11 +226,18 @@ final class SessionSectionsUITests: XCTestCase {
     }
 
     private func waitForNotHittable(_ element: XCUIElement) -> Bool {
-        waitUntil(NSPredicate(format: "hittable == false"), on: element)
+        let covered = expectation(for: NSPredicate(format: "hittable == false"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [covered], timeout: timeout) == .completed
     }
 
     private func waitForSelected(_ element: XCUIElement) -> Bool {
-        waitUntil(NSPredicate(format: "selected == true"), on: element)
+        let selected = expectation(for: NSPredicate(format: "selected == true"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [selected], timeout: timeout) == .completed
+    }
+
+    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
     }
 
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {

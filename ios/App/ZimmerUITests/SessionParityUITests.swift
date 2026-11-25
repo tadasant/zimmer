@@ -133,8 +133,24 @@ final class SessionParityUITests: XCTestCase {
         button.tap()
     }
 
+    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
+
+    private func waitForLabel(_ element: XCUIElement, _ label: String) -> Bool {
+        let matches = expectation(for: NSPredicate(format: "label == %@", label), evaluatedWith: element)
+        return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
+    }
+
+    private func waitForLabelContaining(_ element: XCUIElement, _ text: String) -> Bool {
+        let matches = expectation(for: NSPredicate(format: "label CONTAINS %@", text), evaluatedWith: element)
+        return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
+    }
+
     private func waitForHittable(_ element: XCUIElement) -> Bool {
-        waitUntil(NSPredicate(format: "hittable == true"), on: element)
+        let hittable = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [hittable], timeout: timeout) == .completed
     }
 
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {
@@ -294,6 +310,11 @@ final class BoardViewUITests: XCTestCase {
         app.descendants(matching: .any)["session.row.\(id)"]
     }
 
+    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
+
     /// A screenshot kept with the result, and beside the result bundle as `test-<name>.png`,
     /// where a pull request can take it from the artifact.
     private func photograph(_ app: XCUIApplication, named name: String) {
@@ -327,7 +348,8 @@ final class RankedUITests: XCTestCase {
         // The toast that confirms it is up for 2.5 seconds, less than a tap and its idle wait
         // can take on a CI runner; the row reading Running is the proof.
         start.tap()
-        XCTAssertTrue(waitUntil(NSPredicate(format: "label CONTAINS 'Running'"), on: sweep))
+        let running = expectation(for: NSPredicate(format: "label CONTAINS 'Running'"), evaluatedWith: sweep)
+        XCTAssertEqual(XCTWaiter().wait(for: [running], timeout: timeout), .completed)
     }
 
     func test_the_spot_queue_is_reordered_by_dragging() throws {

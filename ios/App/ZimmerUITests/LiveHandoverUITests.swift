@@ -91,7 +91,8 @@ final class LiveHandoverUITests: XCTestCase {
         XCTAssertFalse(callState(app).exists, "with no call on it")
         letTheScriptPlay(through: 10)
         XCTAssertTrue(callState(app).waitForExistence(timeout: lookTimeout), "ended elsewhere, the screen goes to where Live Mode is now")
-        XCTAssertTrue(waitForDisappearance(oldThread), "and leaves the old thread")
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: oldThread)
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: timeout), .completed, "and leaves the old thread")
     }
 
     func test_a_sheet_the_model_does_not_know_about_holds_it_too() {

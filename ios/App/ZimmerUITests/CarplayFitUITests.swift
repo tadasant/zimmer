@@ -142,6 +142,16 @@ final class CarplayFitUITests: XCTestCase {
         app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH %@", title)).firstMatch
     }
 
+    private func waitForLabelContaining(_ element: XCUIElement, _ text: String) -> Bool {
+        let matches = expectation(for: NSPredicate(format: "label CONTAINS %@", text), evaluatedWith: element)
+        return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
+    }
+
+    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
+
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {
         let shot = app.screenshot()
         let attachment = XCTAttachment(screenshot: shot)

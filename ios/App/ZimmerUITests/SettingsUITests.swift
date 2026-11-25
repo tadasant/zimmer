@@ -194,4 +194,14 @@ final class SettingsUITests: XCTestCase {
         let to = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: down ? 0.75 : 0.45))
         from.press(forDuration: 0.1, thenDragTo: to, withVelocity: .default, thenHoldForDuration: 0.3)
     }
+
+    private func waitForLabel(_ element: XCUIElement, _ label: String) -> Bool {
+        let matches = expectation(for: NSPredicate(format: "label == %@", label), evaluatedWith: element)
+        return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
+    }
+
+    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
 }

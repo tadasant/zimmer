@@ -24,7 +24,7 @@ final class OptimisticActionsUITests: XCTestCase {
         // At the tap: the row is gone and Undo is offered, with the fixture's answer held.
         let undo = app.buttons["toast.undo"]
         XCTAssertTrue(undo.waitForExistence(timeout: timeout), "Undo is offered before the server answers")
-        XCTAssertTrue(waitForDisappearance(row), "the row left the board before the server answered")
+        XCTAssertTrue(waitForDisappearance(row, within: timeout), "the row left the board before the server answered")
         hold.assertStillHeld()
         attachScreenshot(app, named: "trash-at-the-tap")
         hold.answer()
@@ -35,7 +35,7 @@ final class OptimisticActionsUITests: XCTestCase {
         XCTAssertTrue(waitForToast(app, saying: "Not moved to trash", on: "toast", timeout: timeout), "the refusal shows over the board")
         attachScreenshot(app, named: "trash-put-back")
         XCTAssertTrue(row.waitForExistence(timeout: timeout), "the refused trash put the row back")
-        XCTAssertTrue(waitForDisappearance(undo), "nothing to undo")
+        XCTAssertTrue(waitForDisappearance(undo, within: timeout), "nothing to undo")
     }
 
     func test_a_follow_up_shows_at_the_tap_and_keeps_its_words_when_the_server_refuses() throws {
@@ -61,7 +61,7 @@ final class OptimisticActionsUITests: XCTestCase {
         XCTAssertTrue(app.buttons["outgoing.retry"].exists)
         attachScreenshot(app, named: "follow-up-not-sent")
         app.buttons["outgoing.edit"].tap()
-        XCTAssertTrue(waitForDisappearance(failed))
+        XCTAssertTrue(waitForDisappearance(failed, within: timeout))
         XCTAssertEqual(field.value as? String, "Yes, merge it.", "Edit put the words back in the composer")
     }
 
@@ -85,7 +85,7 @@ final class OptimisticActionsUITests: XCTestCase {
         let title = app.staticTexts["detail.title"]
         XCTAssertTrue(title.waitForExistence(timeout: timeout), "the session filled the page in once it existed")
         XCTAssertEqual(title.label, "Rotate the staging deploy key")
-        XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["start.pending"]))
+        XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["start.pending"], within: timeout))
         attachScreenshot(app, named: "quick-router-started")
     }
 
@@ -116,6 +116,11 @@ final class OptimisticActionsUITests: XCTestCase {
         app.launchArguments = ["-ZimmerFixture"] + extra
         app.launch()
         return app
+    }
+
+    private func waitForDisappearance(_ element: XCUIElement, within limit: TimeInterval) -> Bool {
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
+        return XCTWaiter().wait(for: [gone], timeout: limit) == .completed
     }
 
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {

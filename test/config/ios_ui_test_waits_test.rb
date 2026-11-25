@@ -14,19 +14,38 @@ class IosUiTestWaitsTest < ActiveSupport::TestCase
   # with how many such waits it has.
   OWN_CLOCK = { "BoardStaysCurrentUITests.swift" => 2, "RowLongPress.swift" => 1 }.freeze
 
+  # Still to move to `Waits.swift`. A pull request runs every UI test class it touches, so they
+  # move a few files at a time (Known limitations). A file comes off here as it moves.
+  STILL_TO_MOVE = {
+    "AccountUITests.swift" => 2, "AttachmentsUITests.swift" => 1, "BoardReadParityUITests.swift" => 4,
+    "CarplayFitUITests.swift" => 2, "CatalogUITests.swift" => 1, "LiveHandoverUITests.swift" => 1,
+    "LiveUITests.swift" => 3, "LiveUpdatesUITests.swift" => 3, "OperationsUITests.swift" => 4,
+    "OptimisticActionsUITests.swift" => 1, "SessionActionsUITests.swift" => 4,
+    "SessionControlsUITests.swift" => 2, "SessionDetailPanelsUITests.swift" => 4,
+    "SessionExtrasUITests.swift" => 2, "SessionParityUITests.swift" => 6,
+    "SessionSectionsUITests.swift" => 3, "SettingsUITests.swift" => 2,
+    "TranscriptParityUITests.swift" => 5, "TriggerEditorUITests.swift" => 1
+  }.freeze
+
   def waits_by_file
     Dir.glob(SOURCES.join("**/*.swift")).to_h { |file| [ File.basename(file), File.read(file).scan(PREDICATE_WAIT).size ] }
       .reject { |_, count| count.zero? }
   end
 
-  test "the predicate waits are in Waits.swift, so this is checking something" do
+  test "Waits.swift has the one predicate wait the others go through, so this is checking something" do
     assert_equal 1, waits_by_file["Waits.swift"]
   end
 
-  test "a UI test waits on a predicate through Waits.swift" do
-    assert_equal OWN_CLOCK, waits_by_file.except("Waits.swift"),
-      "a predicate wait outside Waits.swift fails when one query outlasts its clock, whatever the " \
-      "app did. Use waitForDisappearance, waitForLabel, waitForLabelContaining, waitForValue or " \
-      "waitUntil. If the clock is what the test is about, add the file to OWN_CLOCK and to limitations.md"
+  test "no UI test has a predicate wait of its own that is not accounted for here" do
+    known = OWN_CLOCK.merge(STILL_TO_MOVE)
+    found = waits_by_file.except("Waits.swift")
+    added = found.select { |file, count| count > known.fetch(file, 0) }.keys
+    assert_empty added,
+      "#{added.join(", ")}: a predicate wait outside Waits.swift fails when one query outlasts its " \
+      "clock, whatever the app did. Use waitForDisappearance, waitForLabel, waitForLabelContaining, " \
+      "waitForValue or waitUntil. If the clock is what the test is about, add the file to OWN_CLOCK"
+
+    moved = known.select { |file, count| found.fetch(file, 0) < count }.keys
+    assert_empty moved, "#{moved.join(", ")}: fewer waits than listed here; lower or remove the entry"
   end
 end

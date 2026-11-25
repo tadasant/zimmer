@@ -83,13 +83,13 @@ final class OperationsUITests: XCTestCase {
         root.tap()
         // The narrowed figures arrive where the page is; the banner that names the scope heads
         // the page, which a lazy List lays out only once scrolled back up to.
-        XCTAssertTrue(waitForDisappearance(app.buttons["costs.root.motet"], timeout: timeout), "only the narrowed root is left")
+        XCTAssertTrue(waitForDisappearance(app.buttons["costs.root.motet"]), "only the narrowed root is left")
         let clear = app.buttons["costs.scope.clear"]
         XCTAssertTrue(reach(app, "costs.scope.clear", whole: true, searching: .up), "the page says what it is narrowed to")
         XCTAssertTrue(app.descendants(matching: .any)["costs.scope"].exists)
         clear.tap()
         // The banner goes when the fleet's figures arrive; the roots are below the fold again.
-        XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["costs.scope"], timeout: timeout), "back to the fleet")
+        XCTAssertTrue(waitForDisappearance(app.descendants(matching: .any)["costs.scope"]), "back to the fleet")
         let motet = app.buttons["costs.root.motet"]
         XCTAssertTrue(reach(app, "costs.root.motet", whole: true), "back to every root")
         XCTAssertTrue(motet.exists)
@@ -98,9 +98,10 @@ final class OperationsUITests: XCTestCase {
         XCTAssertTrue(reach(app, "costs.window", whole: true, searching: .up), "the window picker heads the page")
         let showing = app.staticTexts["costs.showing"]
         window.buttons["30d"].tap()
-        XCTAssertTrue(waitForLabel(showing, "Showing 30 days", timeout: timeout))
+        XCTAssertTrue(waitForLabel(showing, "Showing 30 days"))
         app.buttons["costs.range.apply"].tap()
-        XCTAssertTrue(waitForLabelContaining(showing, "–", timeout: timeout), "the calendar range, from the fields the horizon filled")
+        let range = expectation(for: NSPredicate(format: "label CONTAINS %@", "–"), evaluatedWith: showing)
+        XCTAssertEqual(XCTWaiter().wait(for: [range], timeout: timeout), .completed, "the calendar range, from the fields the horizon filled")
 
         let session = app.buttons["costs.session.1042"]
         XCTAssertTrue(reach(app, "costs.session.1042", whole: true), "the sessions are far down the page")
@@ -109,7 +110,7 @@ final class OperationsUITests: XCTestCase {
         only.tap()
         // The other session goes where the page is; the banner heads the page, laid out once
         // scrolled back up to.
-        XCTAssertTrue(waitForDisappearance(app.buttons["costs.session.1038"], timeout: timeout), "narrowed to the one session")
+        XCTAssertTrue(waitForDisappearance(app.buttons["costs.session.1038"]), "narrowed to the one session")
         XCTAssertTrue(reach(app, "costs.scope.clear", whole: true, searching: .up), "the page says which session")
         XCTAssertTrue(app.descendants(matching: .any)["costs.scope"].exists)
     }
@@ -184,7 +185,7 @@ final class OperationsUITests: XCTestCase {
         let root = app.buttons["costs.root.zimmer"]
         XCTAssertTrue(reach(app, "costs.root.zimmer", whole: true, searching: .up), "the roots are above the burn rates the walk ended on")
         root.tap()
-        XCTAssertTrue(waitForDisappearance(app.buttons["costs.root.motet"], timeout: timeout), "only the narrowed root is left")
+        XCTAssertTrue(waitForDisappearance(app.buttons["costs.root.motet"]), "only the narrowed root is left")
         XCTAssertTrue(reach(app, "costs.scope.clear", whole: true, searching: .up), "the page says what it is narrowed to")
         XCTAssertTrue(app.descendants(matching: .any)["costs.scope"].exists)
         XCTAssertTrue(reach(app, "costs.session.1042"), "the narrowed page still lists its session")
@@ -214,7 +215,8 @@ final class OperationsUITests: XCTestCase {
         // the state the run left behind, not a toast.
         let title = app.staticTexts["detail.title"]
         XCTAssertTrue(title.waitForExistence(timeout: timeout))
-        XCTAssertTrue(waitForLabelContaining(title, "Review PR 42", timeout: timeout), "the variables reached the prompt")
+        let carried = expectation(for: NSPredicate(format: "label CONTAINS %@", "Review PR 42"), evaluatedWith: title)
+        XCTAssertEqual(XCTWaiter().wait(for: [carried], timeout: timeout), .completed, "the variables reached the prompt")
     }
 
     func test_the_trigger_page_shows_the_catalog_chips_and_the_windows() throws {
@@ -336,5 +338,15 @@ final class OperationsUITests: XCTestCase {
             if page.waitForExistence(timeout: attempt < 2 ? 5 : timeout) { return true }
         }
         return false
+    }
+
+    private func waitForLabel(_ element: XCUIElement, _ label: String) -> Bool {
+        let matches = expectation(for: NSPredicate(format: "label == %@", label), evaluatedWith: element)
+        return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
+    }
+
+    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
     }
 }

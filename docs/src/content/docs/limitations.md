@@ -368,20 +368,24 @@ launch, so one late move does not push back the rest. Other tests that wait on a
 query throughout, so a timeout there with slow queries in the log can mean the app was late only
 because it was being asked.
 
-### Two waits in the iOS UI tests can still run out on a slow query
+### Some waits in the iOS UI tests run out on a slow query
 
 When a wait's clock runs out, XCTest cancels an accessibility query that is still being answered,
 so one slow query can fail a wait that saw nothing: on
 [run 45603621053](https://github.com/tadasant/zimmer/actions/runs/45603621053) the keyboard had been
-gone for three seconds when the wait began, and its one query was cancelled 19 seconds in. So the
-UI tests wait through `ios/App/ZimmerUITests/Waits.swift`, which looks once more, with nothing to
-cancel it, after the clock ends. `test/config/ios_ui_test_waits_test.rb` fails on a predicate wait
-written anywhere else.
+gone for three seconds when the wait began, and its one query was cancelled 19 seconds in. The waits
+in `ios/App/ZimmerUITests/Waits.swift` look once more, with nothing to cancel it, after the clock
+ends, and every helper the test classes share uses them.
 
-Two files keep their own, because there the clock is part of what is tested. `BoardStaysCurrentUITests`
-gives a row five seconds to go, to tell a read on return from the fifteen-second poll, and a late look
-could see the poll's. `RowLongPress` gives a row three seconds to leave the board before it presses
-again. A query slower than those fails the first as it failed the run above, and costs the second a press.
+Nineteen of the UI test files still have waits of their own without that last look, and can fail the
+same way. They are listed in `test/config/ios_ui_test_waits_test.rb`, which fails on a new one. They
+move a few at a time because a pull request runs every UI test class it touches, and all of them do
+not fit in the `ios` job's budget.
+
+Two more keep their own on purpose, because there the clock is part of what is tested.
+`BoardStaysCurrentUITests` gives a row five seconds to go, to tell a read on return from the
+fifteen-second poll, and a late look could see the poll's. `RowLongPress` gives a row three seconds to
+leave the board before it presses again.
 
 ### Dragging the iOS trigger form back up can stall
 
@@ -1275,9 +1279,7 @@ silently stop firing forever. A loud failure beats a silent one.)
 
 `timed_out` in `alert-ci-failure.yml`'s allowlist does not catch a job that hits its own `timeout-minutes`. GitHub concluded such a run `cancelled`, twice, on [run 41991046159](https://github.com/tadasant/zimmer/actions/runs/41991046159), even though `all-checks-pass` failed. That was a pull request. On `main` the same cut-off would page nobody and would not reach the re-run script, which is inferred, because no such run on `main` has been seen. `ios-ui-tests.yml` records the same thing costing four days of post-merge coverage.
 
-The `ios` job is the likely place for it, because its smoke run grows with every UI test file a pull request touches. Six files needed more than 45 minutes, so its budget is 75, and a change to more than eight of them adds none, with a warning on the run. Eight slow ones could still be cut off.
-
-So a pull request that touches more than eight UI test files is gated on the smoke subset alone. Its author runs the whole suite on the branch with `gh workflow run ios-ui-tests.yml --ref <branch>` and nothing checks that they did. The same suite runs after the merge.
+The `ios` job is the likely place for it, because its smoke run grows with every UI test file a pull request touches, and nothing bounds that. Six files needed more than 45 minutes, so its budget is 75, but a wider change can still pass that.
 
 ### A queued run that never starts is never alerted on
 

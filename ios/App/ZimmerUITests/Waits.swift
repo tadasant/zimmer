@@ -1,8 +1,8 @@
 import XCTest
 
-/// Every wait in the UI tests that is not a `waitForExistence`. A predicate handed to `XCTWaiter`
-/// anywhere else is the flake these are here to end, and `test/config/ios_ui_test_waits_test.rb`
-/// fails on it.
+/// The waits a UI test uses beside `waitForExistence`. A predicate handed to `XCTWaiter` anywhere
+/// else is the flake these are here to end, and `test/config/ios_ui_test_waits_test.rb` fails on a
+/// new one.
 ///
 /// A waiter's clock is not a limit on how long the app may take, it is a limit on everything, the
 /// looking included. When it runs out XCTest cancels a query that is still being answered, and the

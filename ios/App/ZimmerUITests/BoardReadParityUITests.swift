@@ -41,7 +41,8 @@ final class BoardReadParityUITests: XCTestCase {
         let demote = pressForMenu(app, sweep, offering: "Demote to Spot") { scrollBelowTheBar(app, sweep) }
         XCTAssertTrue(demote.exists, "a priority row's long press offers the demotion")
         demote.tap()
-        XCTAssertTrue(waitUntil(NSPredicate(format: "NOT (label CONTAINS 'Priority')"), on: sweep), "the sweep is spot again: \(sweep.label)")
+        let demoted = expectation(for: NSPredicate(format: "NOT (label CONTAINS 'Priority')"), evaluatedWith: sweep)
+        XCTAssertEqual(XCTWaiter().wait(for: [demoted], timeout: timeout), .completed, "the sweep is spot again: \(sweep.label)")
     }
 
     /// Last Touched draws the web's cards, whose top-right heart is the heartbeat: the row's
@@ -61,7 +62,8 @@ final class BoardReadParityUITests: XCTestCase {
         let turnOff = pressForMenu(app, merge, offering: "Turn Heartbeat Off") { scrollBelowTheBar(app, merge) }
         XCTAssertTrue(turnOff.exists, "on, the menu offers off")
         turnOff.tap()
-        XCTAssertTrue(waitUntil(NSPredicate(format: "NOT (label CONTAINS 'Heartbeat on')"), on: merge), "the heart leaves the row")
+        let gone = expectation(for: NSPredicate(format: "NOT (label CONTAINS 'Heartbeat on')"), evaluatedWith: merge)
+        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: timeout), .completed, "the heart leaves the row")
     }
 
     /// The session page's header carries what the session has spent, beside the id, as the
@@ -208,6 +210,16 @@ final class BoardReadParityUITests: XCTestCase {
             }
         }
         XCTAssertTrue(belowTheBar(app, element), "the row is on screen and clear of the bar")
+    }
+
+    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
+
+    private func waitForLabelContaining(_ element: XCUIElement, _ text: String) -> Bool {
+        let matches = expectation(for: NSPredicate(format: "label CONTAINS %@", text), evaluatedWith: element)
+        return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
     }
 
     private func attachScreenshot(_ app: XCUIApplication, named name: String) {

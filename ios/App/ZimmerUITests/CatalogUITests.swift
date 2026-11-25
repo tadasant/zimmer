@@ -66,4 +66,9 @@ final class CatalogUITests: XCTestCase {
         app.launch()
         return app
     }
+
+    private func waitForLabelContaining(_ element: XCUIElement, _ text: String) -> Bool {
+        let matches = expectation(for: NSPredicate(format: "label CONTAINS %@", text), evaluatedWith: element)
+        return XCTWaiter().wait(for: [matches], timeout: timeout) == .completed
+    }
 }
