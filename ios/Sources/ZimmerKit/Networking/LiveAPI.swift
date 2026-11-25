@@ -40,7 +40,8 @@ public protocol LiveAPI: Sendable {
     /// Standby: what a call on this conversation would run on, asked ahead of the tap, for a
     /// connection held ready until then (`LiveWarmStart`). On Realtime, a secret; on GPT-Live, none,
     /// and the session is started with `startGptLiveSession`. Changes nothing on the conversation and
-    /// needs no voice. 409 when none may be held: paid standby is off, or its daily cap is spent.
+    /// needs no voice. 409 when none may be held: paid standby is off or its daily cap is spent, or the
+    /// conversation is not one a call could be on.
     func livePrewarmGrant(_ id: Int) async throws -> LiveCallGrant
     /// Voice, `gpt_live_claude`: the phone's WebRTC offer, which Zimmer starts the GPT-Live session
     /// with (the OpenAI key stays on the server); OpenAI's SDP answer back. 409 when the call is no

@@ -772,7 +772,7 @@ connection ready for each of them. The tap makes the connection the call's and o
 Zimmer is told at the same time. For New a conversation is kept ready too.
 
 **No connection that bills is held unless somebody opts in.** On Realtime an idle connection costs nothing,
-so one is always held. On GPT-Live it bills, so by default none is, and a call is first billed for at the tap
+so the bounds below are all that stop it. On GPT-Live it bills, so by default none is, and a call is first billed for at the tap
 that starts it. GPT-Live taps then start from cold: 4 to 11 s in the five taps on New measured in November
 2026, on the call screen from the tap. The design, the measurements behind it and every number are in
 [`ios/CARPLAY_PREWARM_DESIGN.md`](https://github.com/tadasant/zimmer/blob/main/ios/CARPLAY_PREWARM_DESIGN.md).
@@ -797,8 +797,8 @@ that starts it. GPT-Live taps then start from cold: 4 to 11 s in the five taps o
   has reported, and closed if it wakes before the tap. On Realtime, which bills by tokens, an idle connection
   makes none.
 - **A refusal is asked once.** With it off, or at its cap, Zimmer refuses the hold (409) before anything is
-  asked of OpenAI. The app takes that as the answer for that conversation until the car next connects, Live is
-  next opened on the phone, or the settings change on it. A build that does not know a refusal from a failure
+  asked of OpenAI. The app takes that as the answer for that conversation until the car next connects, Zimmer next
+  comes to the front, the settings change on the phone, or another conversation has been asked about. A build that does not know a refusal from a failure
   (`warm.failed` rather than `warm.refused` in the call log) tries up to 15 times for each tap over about 25
   minutes, and then stops. No try costs anything.
 - **Bounded.** One connection for each tap at most. A Realtime one is replaced after 5 minutes and a

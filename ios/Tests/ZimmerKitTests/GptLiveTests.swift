@@ -72,7 +72,13 @@ final class GptLiveAPITests: XCTestCase {
         XCTAssertEqual(grant.choice?.spokenFallback,
                        "(Zimmer: this call is on OpenAI Realtime, not the gpt_live_claude engine, because Zimmer has no current Claude Code account. Say that in one short sentence, then stop.)")
 
-        await XCTAssertThrowsAsync(try await api.livePrewarmGrant(7), "paid standby is off: nothing to hold, and the call starts from cold")
+        do {
+            _ = try await api.livePrewarmGrant(7)
+            XCTFail("paid standby is off: nothing to hold, and the call starts from cold")
+        } catch let ZimmerError.http(status, message) {
+            XCTAssertEqual(status, 409, "what the app takes as an answer rather than a failure")
+            XCTAssertEqual(message, "Paid standby is off (its daily cap is 0).")
+        }
         XCTAssertEqual(LiveEngineChoice.spokenLine("GPT-Live could not start."),
                        "(Zimmer: GPT-Live could not start. Say that in one short sentence, then stop.)")
         let prewarm = try body(transport.sent[1])

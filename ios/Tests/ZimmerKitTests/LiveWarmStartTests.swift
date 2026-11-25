@@ -335,14 +335,21 @@ final class LiveWarmStartTests: XCTestCase {
             let later = run(&start, from: 1, to: 3_000).map(\.1)
             XCTAssertEqual(Set(later.map { "\($0)" }), ["refresh"], "nothing asked for again")
             XCTAssertEqual(start.update(.init(conversation: 30), at: 3_001), [])
-            XCTAssertEqual(start.interest(at: 3_002), [])
             XCTAssertEqual(start.hold, .refused)
             XCTAssertEqual(start.claim(30, at: 3_003), .cold(.none))
             XCTAssertEqual(start.warms, 1)
+            XCTAssertEqual(start.interest(at: 3_003), [.mint(conversation: 30)], "Zimmer came to the front: asked once more")
+            XCTAssertEqual(start.refused(), [.close(.refused)])
+            XCTAssertEqual(start.update(.init(conversation: 30), at: 3_004), [])
 
             XCTAssertEqual(start.update(.init(conversation: 31), at: 3_004), [.mint(conversation: 31)], "another conversation is another question")
             XCTAssertEqual(start.refused(), [.close(.refused)])
             XCTAssertEqual(start.settingsChanged(at: 3_005), [.mint(conversation: 31)], "opted in on this phone")
+            XCTAssertEqual(start.refused(), [.close(.refused)])
+            XCTAssertEqual(start.update(.init(conversation: 32), at: 3_006), [.mint(conversation: 32)])
+            start.ready(at: 3_007)
+            XCTAssertEqual(start.update(.init(conversation: 31), at: 3_008), [.close(.conversationMoved), .mint(conversation: 31)],
+                           "gone back to: it may be one to hold by then")
         }
     }
 

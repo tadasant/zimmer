@@ -397,7 +397,7 @@ class Api::V1::LiveConversationsControllerTest < ActionDispatch::IntegrationTest
   end
 
   # Realtime bills by tokens, and an idle connection uses none: it is still held.
-  test "a Realtime connection is held whatever the paid standby cap" do
+  test "a Realtime connection is held with paid standby off" do
     use_voice_engine("openai_realtime")
     conversation = create_live_conversation(mode: "voice")
     LiveConversations::RealtimeSession.any_instance.stubs(:create_secret).returns({ "value" => "ek_1", "expires_at" => 1_900_000_000 })

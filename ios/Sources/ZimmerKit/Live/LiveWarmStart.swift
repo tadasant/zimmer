@@ -149,7 +149,8 @@ public struct LiveWarmStart: Sendable, Equatable {
         case resting
         case budgetSpent = "budget_spent"
         case backingOff = "backing_off"
-        /// Zimmer will not have one held: paid standby is off, or has reached its cap.
+        /// Zimmer will not have one held (409): paid standby is off or has reached its cap, or the
+        /// conversation cannot take a call.
         case refused
     }
 
@@ -275,7 +276,9 @@ public struct LiveWarmStart: Sendable, Equatable {
     public mutating func interest(at now: TimeInterval) -> [Action] {
         guard active else { return [] }
         interestAt = now
-        return hold == .resting ? evaluate(at: now) : []
+        guard hold == .resting || refusedFor != nil else { return [] }
+        refusedFor = nil
+        return evaluate(at: now)
     }
 
     /// A refresh answered, or the phone changed (Low Power Mode, the network, the call).
@@ -323,7 +326,8 @@ public struct LiveWarmStart: Sendable, Equatable {
     }
 
     /// Zimmer answered that no connection may be held. An answer, not a failure: it is not asked again for
-    /// this conversation until the settings change on this phone or the next visit.
+    /// this conversation until something could have changed it: `interest`, the settings on this phone, another
+    /// conversation in between, or the next visit.
     public mutating func refused() -> [Action] {
         guard phase == .warming else { return [] }
         refusedFor = conversation
@@ -459,9 +463,12 @@ public struct LiveWarmStart: Sendable, Equatable {
                 return []
             }
         }
-        if refusedFor == target {
-            hold = .refused
-            return actions
+        if let refusedFor {
+            if refusedFor == target {
+                hold = .refused
+                return actions
+            }
+            self.refusedFor = nil
         }
         if let retryAt, now < retryAt {
             hold = .backingOff

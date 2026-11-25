@@ -5336,7 +5336,8 @@ connection bills: the conversation kept ready does not shorten a cold tap by its
 
 A connection's instructions, voice and model are fixed when it is opened. A change to the Live settings
 made on the same phone, or on the car's panel, starts it again. One made anywhere else reaches a GPT-Live
-connection within 20 minutes and a Realtime one within 5, or on the call after. On Realtime the tap's
+connection within 20 minutes and a Realtime one within 5, or on the call after. Paid standby turned on anywhere
+else is found the next time Zimmer comes to the front, or the car connects. On Realtime the tap's
 `session.update` brings the instructions up to date; on GPT-Live nothing can. Continue's GPT-Live
 connection is made again when the open conversation is added to, as of the last read, up to 30 s ago.
 

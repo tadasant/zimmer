@@ -18,10 +18,11 @@ module LiveConversations
   # next one starts on the default (VoiceEngine).
   #
   # Standby — a GPT-Live session the app holds ready for a tap, billed at a lower
-  # rate — is off unless its own daily cap (`voice_standby_daily_cap_usd`) is above
-  # 0, the default. Off, or at the cap, the app's pre-warm is refused, OpenAI is
-  # asked for nothing, and calls start from cold. It counts toward the daily cap, being real money, and not toward a
-  # conversation's, which nobody has spoken in yet.
+  # rate — is off by default: its own daily cap (`voice_standby_daily_cap_usd`) is
+  # 0 until somebody raises it. Off, or at the cap, the app's pre-warm is refused,
+  # OpenAI is asked for nothing, and calls start from cold. It counts toward the
+  # daily cap, being real money, and not toward a conversation's, which nobody has
+  # spoken in yet.
   #
   # The default engine is not capped: there is nothing cheaper-and-safe to
   # fall back to, and capping it would leave Live Mode with no voice at all.

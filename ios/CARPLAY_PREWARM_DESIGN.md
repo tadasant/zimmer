@@ -214,7 +214,7 @@ Rails
 | Rest | never | 20 min after the last sign of a call | It costs money |
 | After a suspend | ping | close and start again | ICE consent lapsed while iOS had the app |
 | Backoff | 5, 15, 60, 120 s | same | One per failure in a row |
-| Refused (409) | not asked again for that conversation this visit | same | An answer, not a failure |
+| Refused (409) | asked again when Zimmer comes to the front, on a settings change, or after another conversation | same | An answer, not a failure |
 | Budget | 15 mints a visit | same | A car connection or Live open on the phone, and any within the hour after |
 
 Nothing is held on Low Power Mode, at a serious thermal state, on Low Data Mode or with no network. A
@@ -245,7 +245,7 @@ usage page with `voice_standby` on `/live/costs`.
 
 - **GPT-Live standby**: Live settings → *Paid standby cap per day* → 0, which is the default. No deploy. The
   next hold is refused; one already open goes on for up to 20 minutes, or until the app lets it go.
-- **All of it, with a server deploy**: make `Actions#require_prewarm!` refuse. The app is refused once
+- **All of it, with a server deploy**: make `Actions#require_prewarm!` refuse with a 409. The app is refused once
   for each conversation, and calls start from cold.
 - **All of it, in the app**: drop the `LiveWarmKeeper` calls in `CarPlaySceneDelegate` and `LiveHomeView`.
 
