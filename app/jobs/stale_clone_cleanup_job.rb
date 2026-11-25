@@ -439,7 +439,9 @@ class StaleCloneCleanupJob < ApplicationJob
       # the `projects/` symlink inside.
       [ "Claude config", ClaudeSessionConfigDirectory.base ],
       [ "prompt files", FileStorageService.base_dir ],
-      [ "prompt images", ImageStorageService.base_dir ]
+      [ "prompt images", ImageStorageService.base_dir ],
+      # Exists only for sessions that ran under their own uid (SessionUid).
+      [ "session home", SessionHomeDirectory.base ]
     ]
   end
 

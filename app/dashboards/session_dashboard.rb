@@ -16,6 +16,9 @@ class SessionDashboard < Administrate::BaseDashboard
     slug: Field::String,
     title: Field::String,
     agent_runtime: Field::String,
+    # The unix uid this session's agent runs as under ZIMMER_SESSION_UID=1. Blank
+    # means it has only ever run as the app's own uid. See SessionUid.
+    agent_uid: Field::Number,
     branch: Field::String,
     config: Field::String.with_options(searchable: false),
     logs: Field::HasMany,

@@ -35,7 +35,7 @@ module ClaudeCredentialStore
       dir = File.dirname(credentials_path)
       FileUtils.mkdir_p(dir)
 
-      File.open(File.join(dir, LOCK_FILENAME), File::RDWR | File::CREAT, 0o600) do |lock|
+      SessionUid::PathGuard.open_for_write(File.join(dir, LOCK_FILENAME), File::RDWR | File::CREAT, 0o600) do |lock|
         lock.flock(File::LOCK_EX)
         yield
       end
@@ -50,10 +50,18 @@ module ClaudeCredentialStore
     def read(path)
       return {} unless File.exist?(path)
 
-      parsed = JSON.parse(File.read(path))
+      # Through the guard: an isolated session can replace this file with a symlink.
+      parsed = JSON.parse(SessionUid::PathGuard.read(path))
       parsed.is_a?(Hash) ? parsed : {}
     rescue JSON::ParserError => e
       Rails.logger.warn "[ClaudeCredentialStore] Failed to parse #{path}: #{e.message}"
+      {}
+    rescue Errno::EACCES => e
+      # Only the guard's refusal means "nothing recorded"; without per-session uids a
+      # permission error is what it always was.
+      raise unless SessionUid.enabled?
+
+      Rails.logger.warn "[ClaudeCredentialStore] Refused to read #{path}: #{e.message}"
       {}
     end
 
@@ -64,9 +72,24 @@ module ClaudeCredentialStore
     def write_atomically(path, data)
       FileUtils.mkdir_p(File.dirname(path))
       temp_path = "#{path}.#{Process.pid}.tmp"
-      File.write(temp_path, JSON.pretty_generate(data))
+      # Through the guard: in an isolated session's config dir the temp name is one the
+      # session could have planted as a symlink. Opened without following one.
+      SessionUid::PathGuard.open_for_write(temp_path, File::WRONLY | File::CREAT | File::TRUNC, 0o600) do |file|
+        file.write(JSON.pretty_generate(data))
+      end
       File.chmod(0o600, temp_path)
       File.rename(temp_path, path)
+      hand_to_session(path)
+    end
+
+    # A running isolated session reads its credential store as its own uid; one the app
+    # just rewrote (umask 077) would be unreadable to it until the next spawn's handover.
+    # lchown, so a link swapped in after the rename is all that changes owner.
+    def hand_to_session(path)
+      uid = SessionUid.owner_uid_for(File.dirname(path))
+      File.lchown(uid, uid, path) if uid
+    rescue SystemCallError => e
+      Rails.logger.warn "[ClaudeCredentialStore] Could not hand #{path} to its session: #{e.message}"
     end
   end
 end

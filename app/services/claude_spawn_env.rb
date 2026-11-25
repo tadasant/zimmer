@@ -133,6 +133,10 @@ module ClaudeSpawnEnv
     # Keep Claude Code waiting on a tool call for as long as a human may answer it.
     apply_mcp_tool_idle_timeout(env_vars)
 
+    # Last, so the clone's env file cannot override it: an isolated session's own
+    # HOME (SessionUid).
+    apply_session_uid_env(env_vars, working_dir)
+
     env_vars
   end
 

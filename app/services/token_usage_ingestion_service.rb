@@ -141,7 +141,7 @@ class TokenUsageIngestionService
   def scan_file(path, features: nil)
     seen = Set.new
 
-    File.foreach(path) do |line|
+    SessionUid::PathGuard.foreach(path) do |line|
       # Cheap pre-filter. Most lines in a transcript carry no `usage` object, and
       # parsing them would make a full backfill several times slower for nothing.
       # Attribution widens the filter rather than dropping it: it has to see user

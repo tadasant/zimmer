@@ -314,10 +314,12 @@ class PiRuntimeAdapter
     # The provider credential Pi resolves per request. Without this the key set on
     # the Inference page's Pi tab reaches the store and stops there.
     env_vars = apply_provider_key(env_vars)
+    # Last, so the clone's env file cannot override it. A no-op until SessionUid covers Pi.
+    env_vars = apply_session_uid_env(env_vars, working_dir)
 
     pid = @process_manager.spawn(
       env_vars,
-      *apply_session_memory_cgroup(command),
+      *confine_session_command(command, working_dir),
       chdir: working_dir,
       pgroup: true,
       in: File::NULL,

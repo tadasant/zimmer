@@ -3201,6 +3201,7 @@ class Session < ApplicationRecord
     ClaudeSessionConfigDirectory.cleanup_for(id)
     FileStorageService.cleanup_for(id)
     ImageStorageService.cleanup_for(id)
+    SessionHomeDirectory.cleanup_for(id)
   rescue => e
     Rails.logger.warn "[Session] Failed to reclaim directories for deleted session #{id}: #{e.class} - #{e.message}"
   end

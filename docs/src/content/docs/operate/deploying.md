@@ -442,6 +442,62 @@ The mechanism, the sizing arguments, and what a session sees when either fires a
 the deployments that get no bound at all are in
 [Limitations](/limitations/#a-sessions-memory-bound-needs-the-nested-docker-worker).
 
+## Running agent sessions as their own uid
+
+`ZIMMER_SESSION_UID=1` runs each in-scope agent session as a Unix uid of its own, so a session can
+no longer read the worker's environment (`/proc/<pid>/environ`), the app's credential files, or another
+session's clone. It is **off by default**, and with the variable unset the rendered deploy config,
+the entrypoint's commands and every spawn argv are exactly what they were before it existed. How it
+works is in [Spawning](/sessions/spawning/#a-session-can-run-as-its-own-uid). What it does not
+cover is in [Limitations](/limitations/#per-session-uids-are-opt-in-claude-code-only-and-unproven-in-production).
+
+### The variables
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `ZIMMER_SESSION_UID` | unset | `1` turns isolation on. `0` keeps the root start without isolation, for a rollback deploy. Unset changes nothing. |
+| `ZIMMER_SESSION_UID_ROOTS` | empty | Comma-separated agent roots to isolate. Empty means every root. Use one throwaway root for a canary. |
+| `ZIMMER_SESSION_UID_DOCKER` | `0` | `1` gives isolated sessions the nested Docker socket. That voids the boundary, because the inner daemon will bind-mount any path in the container. |
+| `ZIMMER_SESSION_UID_MIN` / `_MAX` | `20000` / `49999` | The uid range. It has to fit inside the container's user namespace, which is ids 0–65535 under sysbox and Incus by default. The entrypoint warns if it does not. |
+
+All of them are read at deploy time by `config/deploy.production.yml` and `config/deploy.staging.yml`
+and only rendered into the containers when `ZIMMER_SESSION_UID` is `0` or `1`. Either value also
+starts **both** roles as container-root: web writes into session directories too (uploads, forks,
+MCP OAuth re-injection), and needs the same capabilities. `bin/docker-entrypoint` drops each role
+straight back to uid 1000. Under `1` the app keeps six ambient capabilities (`chown`,
+`dac_override`, `fowner`, `kill`, `setgid`, `setuid`), and the worker writes a passwd entry for every
+uid in the range.
+
+Staging takes the same switch as a `deploy-staging.yml` input (`session_uid`: off, on, rollback, plus
+`session_uid_roots`). Production's deploy environment is set in the private companion repo, so turning
+it on there is a change in that repo, made by the root that owns production deploys.
+
+### Turning it on
+
+1. Deploy with `ZIMMER_SESSION_UID=1` and `ZIMMER_SESSION_UID_ROOTS=<one throwaway root>`. Sessions
+   on every other root run as before, except that they no longer inherit the app's capabilities.
+2. Start a session on that root. Its `/supervisor` page shows its `agent_uid`, and its log says
+   `Session runs as uid N (SessionUid)`. A spawn that cannot be isolated fails with an error naming
+   what is missing. It never quietly runs as uid 1000.
+3. Widen `ZIMMER_SESSION_UID_ROOTS`, then clear it.
+
+Existing sessions are safe to carry across. On the first isolated spawn the worker closes the app's
+files to other users and hands the session's own directories to its uid. A session from before the
+flag also has its Claude transcripts moved out of the shared tree into its own config directory, so
+`--resume` keeps working.
+
+### Rolling it back
+
+Deploy with `ZIMMER_SESSION_UID=0`: set it to `0`, don't unset it. The containers still start as
+root, so the worker's reclaim sweep hands every file a session uid owns back to uid 1000 at boot.
+Sessions that ran isolated then resume as the app's uid. On production nested Docker already starts
+the worker as root, so unsetting the variable also works there. On a deployment without nested
+Docker an unset variable starts the worker as uid 1000. Nothing then chowns the files back, and
+those sessions can't read their own clones. After one deploy at `0`, unsetting is safe.
+
+The modes the worker tightened (`/home/rails` at 0711, the app's files at 0700 or 0600) all still
+let uid 1000 in, so nothing else needs undoing.
+
 ## Ops actions ship with the deploy
 
 **Nothing Zimmer needs done in production requires a shell on the box.** A feature is not finished

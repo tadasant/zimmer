@@ -35,6 +35,23 @@ on:
         type: boolean
         required: false
         default: true
+      session_uid:
+        description: >-
+          Per-session uids (ZIMMER_SESSION_UID). "off" deploys exactly as before; "on"
+          runs each in-scope agent session as a uid of its own; "rollback" keeps the
+          root start for one deploy so the worker hands session-owned files back to
+          uid 1000. See docs/operate/deploying.md.
+        type: choice
+        options: [ "off", "on", "rollback" ]
+        required: false
+        default: "off"
+      session_uid_roots:
+        description: >-
+          With session_uid on, isolate only these agent roots (comma-separated). Empty
+          means every root.
+        type: string
+        required: false
+        default: ""
       remove_cloudflared:
         description: >-
           Take the optional Cloudflare Tunnel connector off the droplet (and its token).
@@ -586,6 +603,9 @@ jobs:
           # dispatch checkbox is a real lever and the deploy log records which way it
           # went. The config still defaults this ON -- see its header.
           ZIMMER_NESTED_DOCKER: ${{ inputs.nested_docker && '1' || '0' }}
+          # Per-session uids: empty (the default) renders the config exactly as before.
+          ZIMMER_SESSION_UID: ${{ inputs.session_uid == 'on' && '1' || (inputs.session_uid == 'rollback' && '0' || '') }}
+          ZIMMER_SESSION_UID_ROOTS: ${{ inputs.session_uid_roots }}
           # Pin the domain to this host inside the containers (config/deploy.yml). On
           # staging DNS already points at this box, so this changes where nothing goes --
           # it is armed here so that the mechanism production needs behind the optional

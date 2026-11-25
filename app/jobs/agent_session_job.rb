@@ -6293,7 +6293,7 @@ class AgentSessionJob < ApplicationJob
     return stderr_position unless stderr_log_path && @file_system.exists?(stderr_log_path)
     return stderr_position if File.size(stderr_log_path) < stderr_position
 
-    File.open(stderr_log_path, "r") do |file|
+    SessionUid::PathGuard.open(stderr_log_path, "r") do |file|
       file.seek(stderr_position)
       while (line = file.gets)
         next if line.strip.empty?

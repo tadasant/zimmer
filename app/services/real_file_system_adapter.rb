@@ -10,8 +10,11 @@ require "fileutils"
 #   adapter.write("/tmp/test.txt", "Hello World")
 #   content = adapter.read("/tmp/test.txt") # => "Hello World"
 class RealFileSystemAdapter < FileSystemAdapter
+  # Reads go through SessionUid::PathGuard: under ZIMMER_SESSION_UID=1 a session must not
+  # be able to point one of its files at something only the app may read. With the flag
+  # unset the guard is File.read / File.binread / File.foreach, unchanged.
   def read(path)
-    File.read(path)
+    SessionUid::PathGuard.read(path)
   end
 
   def write(path, content, **options)
@@ -73,11 +76,11 @@ class RealFileSystemAdapter < FileSystemAdapter
   end
 
   def binread(path)
-    File.binread(path)
+    SessionUid::PathGuard.binread(path)
   end
 
   def each_line(path, &block)
-    File.foreach(path, mode: "rb", &block)
+    SessionUid::PathGuard.foreach(path, mode: "rb", &block)
   end
 
   private

@@ -241,10 +241,7 @@ class CloneArtifactService
     # Create git bundle for unpushed commits
     if upstream_ref
       bundle_path = File.join(artifacts_dir, "bundle.pack")
-      _, _, bundle_status = run_git(
-        "bundle", "create", bundle_path, "#{upstream_ref}..HEAD",
-        cwd: clone_path
-      )
+      bundle_status = create_bundle(clone_path, bundle_path, upstream_ref)
       metadata["has_bundle"] = SubprocessStatus.success?(bundle_status) && file_system.exists?(bundle_path)
       @logger.info("Git bundle creation", success: metadata["has_bundle"], path: bundle_path) if metadata["has_bundle"]
     else
@@ -639,6 +636,21 @@ class CloneArtifactService
   #   metadata, and JSON.pretty_generate.
   # binmode: true — keep the raw bytes (ASCII-8BIT) untouched. Use when the
   #   output must round-trip byte-for-byte, e.g. a diff written as a patch.
+  # `git bundle create` for the commits not yet upstream.
+  #
+  # In a clone an isolated session owns, git runs as that session (BoundedSubprocess),
+  # which cannot write into the app's artifacts directory. There the bundle comes back
+  # on stdout and this process writes it. Everywhere else git writes the file itself,
+  # as it always has.
+  def create_bundle(clone_path, bundle_path, upstream_ref)
+    range = "#{upstream_ref}..HEAD"
+    return run_git("bundle", "create", bundle_path, range, cwd: clone_path)[2] unless SessionUid.owner_uid_for(clone_path)
+
+    stdout, _, status = run_git("bundle", "create", "-", range, cwd: clone_path, binmode: true)
+    File.binwrite(bundle_path, stdout) if SubprocessStatus.success?(status)
+    status
+  end
+
   def run_git(*args, cwd:, binmode: false)
     command = [ "git" ] + args.map(&:to_s)
     @logger.debug("Running git command", command: command.join(" "), cwd: cwd)

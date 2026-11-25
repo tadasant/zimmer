@@ -386,6 +386,55 @@ module CliSpawnEnv
     command
   end
 
+  # Wrap the runtime's argv in everything that confines it: the session's own uid when
+  # SessionUid covers it (or the app's uid with the app's capabilities stripped when it
+  # does not), inside the session's memory cgroup.
+  #
+  # The order matters. The cgroup wrapper's shell runs first, still as uid 1000, because
+  # only uid 1000 may write the delegated `cgroup.procs`; it then execs `setpriv`, which
+  # changes uid and execs the runtime. One pid throughout, so the process group, the
+  # recorded pid and every signal path are unchanged.
+  #
+  # With ZIMMER_SESSION_UID unset this is exactly #apply_session_memory_cgroup.
+  #
+  # @param command [Array<String>] the argv the adapter built
+  # @param working_dir [String] the session's working directory
+  # @return [Array<String>] argv to hand Process.spawn
+  # @raise [SessionUid::Unavailable] when the session is in scope and cannot be isolated
+  def confine_session_command(command, working_dir)
+    context = take_session_uid_context(working_dir)
+    inner = context ? SessionUid.wrap(command, uid: context.uid) : SessionUid.strip_capabilities(command)
+    apply_session_memory_cgroup(inner)
+  end
+
+  # Give an isolated session its own HOME (and the rest of SessionUid.apply_env), after
+  # handing its directories to its uid. Runs last in every runtime's env builder, so it
+  # overrides a `.env` value: a session cannot opt itself back into the app's HOME.
+  #
+  # @param env_vars [Hash]
+  # @param working_dir [String]
+  # @return [Hash]
+  # @raise [SessionUid::Unavailable]
+  def apply_session_uid_env(env_vars, working_dir)
+    @session_uid_context_dir = working_dir
+    @session_uid_context = SessionUid.context_for(@zimmer_session_id, working_dir: working_dir)
+    return env_vars if @session_uid_context.nil?
+
+    SessionUid.apply_env(env_vars, @session_uid_context)
+    @logger.info "Session runs as uid #{@session_uid_context.uid} (SessionUid)"
+    env_vars
+  end
+
+  # The context #apply_session_uid_env computed for this spawn, consumed once so a reused
+  # adapter cannot carry it into the next spawn without the handover running again.
+  def take_session_uid_context(working_dir)
+    context = @session_uid_context if @session_uid_context_dir == working_dir && defined?(@session_uid_context)
+    context ||= SessionUid.context_for(@zimmer_session_id, working_dir: working_dir)
+    @session_uid_context = nil
+    @session_uid_context_dir = nil
+    context
+  end
+
   # Tell the MCP servers this agent starts where Zimmer's approval endpoint is, and
   # which session is asking.
   #

@@ -81,7 +81,76 @@ if [ "$(id -u)" = "0" ]; then
     exit 1
   fi
 
-  if [ "${ZIMMER_NESTED_DOCKER:-0}" = "1" ]; then
+  # -------------------------------------------------------------------------
+  # Per-session uids (ZIMMER_SESSION_UID=1, app/services/session_uid.rb)
+  #
+  # Under the flag BOTH roles start here as root (config/deploy.*.yml), because both
+  # touch session files across the uid boundary: the worker spawns sessions and reads
+  # what they write, and web writes uploads, forks clones and re-injects credentials.
+  # Before this flag only the worker ever started as root, so everything below that
+  # is the worker's business -- dockerd, the cgroup delegation, the reclaim sweep --
+  # is skipped for web, which is recognised by its command, the same test the
+  # db:prepare step at the bottom of this file uses.
+  #
+  # ZIMMER_SESSION_UID=0 (set, not unset) keeps the root start without the flag. That
+  # is the rollback: the reclaim sweep below then hands every file a session uid owns
+  # back to uid 1000, so sessions that ran isolated resume as the app's uid.
+  # -------------------------------------------------------------------------
+  # Only under the variable: without it a root start is the worker's alone, as it always
+  # was, whatever the command -- so a self-hosted single container started as root with
+  # the image's default CMD keeps its dockerd, cgroups and sweep.
+  zimmer_role=worker
+  if [ -n "${ZIMMER_SESSION_UID:-}" ] && [ "${@: -2:1}" == "./bin/rails" ] && [ "${@: -1:1}" == "server" ]; then
+    zimmer_role=web
+  fi
+
+  zimmer_session_uid_min="${ZIMMER_SESSION_UID_MIN:-20000}"
+  zimmer_session_uid_max="${ZIMMER_SESSION_UID_MAX:-49999}"
+  zimmer_drop_caps=()
+  if [ "${ZIMMER_SESSION_UID:-0}" = "1" ]; then
+    # A range that is not two integers above the app's uid would hand session uids out
+    # over system or app ids (a second uid 1000), so it refuses to boot instead.
+    case "$zimmer_session_uid_min$zimmer_session_uid_max" in
+      *[!0-9]* | "")
+        echo "Refusing to start: ZIMMER_SESSION_UID_MIN/MAX must be integers." >&2
+        exit 1 ;;
+    esac
+    if [ "$zimmer_session_uid_min" -le 1000 ] || [ "$zimmer_session_uid_max" -lt "$zimmer_session_uid_min" ]; then
+      echo "Refusing to start: the session uid range must lie above 1000 with MIN <= MAX" >&2
+      echo "(got $zimmer_session_uid_min-$zimmer_session_uid_max)." >&2
+      exit 1
+    fi
+
+    # The ambient set the app keeps: start a process as a session's uid
+    # (setuid/setgid), hand it its files (chown), chmod and read what it wrote
+    # (fowner, dac_override), and signal it (kill). SessionUid::APP_CAPABILITIES names
+    # the same set and test/services/session_uid_test.rb holds the two together.
+    zimmer_caps="+chown,+dac_override,+fowner,+kill,+setgid,+setuid"
+    zimmer_drop_caps=(--inh-caps="$zimmer_caps" --ambient-caps="$zimmer_caps")
+
+    # A passwd entry for every session uid. Without one, getpwuid() fails for the
+    # agent, and plenty of tools treat that as fatal (Node's os.userInfo(), ssh,
+    # Python's getpass). Written once per container: the image layer is fresh on every
+    # deploy, and a restart of the same container finds the entries already there.
+    if ! grep -q "^zimmer-s${zimmer_session_uid_min}:" /etc/passwd || ! grep -q "^zimmer-s${zimmer_session_uid_max}:" /etc/passwd; then
+      { seq "$zimmer_session_uid_min" "$zimmer_session_uid_max" |
+          awk '{ print "zimmer-s" $1 ":x:" $1 ":" $1 "::/nonexistent:/usr/sbin/nologin" }' >>/etc/passwd &&
+        seq "$zimmer_session_uid_min" "$zimmer_session_uid_max" |
+          awk '{ print "zimmer-s" $1 ":x:" $1 ":" }' >>/etc/group; } 2>/dev/null ||
+        echo "Warning: could not add passwd entries for the session uids; tools that look the user up will fail." >&2
+    fi
+
+    # A user namespace (sysbox, Incus) maps a limited run of ids, 65536 by default; a
+    # uid outside it cannot be switched to, and every isolated spawn would fail.
+    zimmer_uid_span="$(awk 'NR == 1 && $1 == 0 { print $3 }' /proc/self/uid_map 2>/dev/null)"
+    if [ -n "$zimmer_uid_span" ] && [ "$zimmer_session_uid_max" -ge "$zimmer_uid_span" ] 2>/dev/null; then
+      echo "Warning: ZIMMER_SESSION_UID_MAX=$zimmer_session_uid_max is outside this container's" >&2
+      echo "user namespace (ids 0-$((zimmer_uid_span - 1))); sessions given a uid above it will fail to start." >&2
+    fi
+    echo "Per-session uids are on: agent sessions run as uids $zimmer_session_uid_min-$zimmer_session_uid_max ($zimmer_role)." >&2
+  fi
+
+  if [ "${ZIMMER_NESTED_DOCKER:-0}" = "1" ] && [ "$zimmer_role" = worker ]; then
     # A user namespace is the thing that makes running as root here defensible, and
     # it is exactly what is missing under plain runc. Refuse rather than silently
     # handing an agent session real host root.
@@ -301,7 +370,9 @@ if [ "$(id -u)" = "0" ]; then
 
     echo "Per-session memory bounds are available (delegated $zimmer_cgroup_root to uid 1000)." >&2
   }
-  zimmer_delegate_cgroups || true
+  if [ "$zimmer_role" = worker ]; then
+    zimmer_delegate_cgroups || true
+  fi
 
   # ---------------------------------------------------------------------------
   # Reclaim root-owned files in the volumes the app uses at uid 1000.
@@ -349,7 +420,7 @@ if [ "$(id -u)" = "0" ]; then
   # operands -- $HOME comes from /etc/passwd and nothing here validates it.
   zimmer_reclaim_roots=()
   for d in "$HOME/.claude" "$HOME/.codex" "$HOME/.config/gh" "$HOME/.local" "$HOME/.zimmer"; do
-    if [ -d "$d" ]; then
+    if [ "$zimmer_role" = worker ] && [ -d "$d" ]; then
       zimmer_reclaim_roots+=("$d")
     fi
   done
@@ -373,8 +444,18 @@ if [ "$(id -u)" = "0" ]; then
     # -h so a symlink is retargeted rather than its target, which may live
     # outside the volume entirely.
     zimmer_reclaim_list="$(mktemp)" || return 0
-    find -H "${zimmer_reclaim_roots[@]}" -xdev ! -uid 1000 -print0 \
-      >"$zimmer_reclaim_list" 2>/dev/null || true
+    if [ "${ZIMMER_SESSION_UID:-0}" = "1" ]; then
+      # Under the flag a session's files belong to its own uid; handing them to 1000
+      # would undo the boundary every minute. Their trees are pruned, not filtered, so
+      # the sweep never descends into a directory a session controls -- where it could
+      # be steered by a symlink swapped in between find and chown.
+      find -H "${zimmer_reclaim_roots[@]}" -xdev \
+        \( -uid +"$((zimmer_session_uid_min - 1))" -uid -"$((zimmer_session_uid_max + 1))" -prune \) \
+        -o \( ! -uid 1000 -print0 \) >"$zimmer_reclaim_list" 2>/dev/null || true
+    else
+      find -H "${zimmer_reclaim_roots[@]}" -xdev ! -uid 1000 -print0 \
+        >"$zimmer_reclaim_list" 2>/dev/null || true
+    fi
 
     # `|| ... =0` because this is the one command here whose failure would
     # otherwise abort the boot under `-e`: a repair that takes down the app it
@@ -396,7 +477,9 @@ if [ "$(id -u)" = "0" ]; then
   # inherited stdout forever. An interval of 0 drops the repeat and keeps the
   # boot sweep, which is the correctness half and costs under a second.
   ZIMMER_RECLAIM_INTERVAL="${ZIMMER_RECLAIM_INTERVAL:-60}"
-  if [ "$ZIMMER_RECLAIM_INTERVAL" -gt 0 ] 2>/dev/null; then
+  if [ "$zimmer_role" = web ]; then
+    :
+  elif [ "$ZIMMER_RECLAIM_INTERVAL" -gt 0 ] 2>/dev/null; then
     while sleep "$ZIMMER_RECLAIM_INTERVAL"; do zimmer_reclaim; done &
   elif [ "$ZIMMER_RECLAIM_INTERVAL" != "0" ]; then
     # `[` writes "integer expression expected" to a stderr this discards, so an
@@ -414,7 +497,10 @@ if [ "$(id -u)" = "0" ]; then
   #
   # The sweep above is forked, not exec'd, so it survives this and keeps its root
   # credentials -- which it needs, since chown is root-only.
-  exec setpriv --reuid=1000 --regid=1000 --init-groups "$0" "$@"
+  #
+  # zimmer_drop_caps is empty unless ZIMMER_SESSION_UID=1, which keeps this the exact
+  # command it has always been for every deployment without the flag.
+  exec setpriv --reuid=1000 --regid=1000 --init-groups "${zimmer_drop_caps[@]}" "$0" "$@"
 fi
 
 # Refuse to boot an image with two migrations on one version. `db:prepare` below
@@ -500,6 +586,14 @@ rm -f "$ZIMMER_BOOT_TASKS_MARKER" 2>/dev/null || true
 # If running the rails server then create or migrate existing database
 if [ "${@: -2:1}" == "./bin/rails" ] && [ "${@: -1:1}" == "server" ]; then
   ./bin/rails db:prepare
+fi
+
+# Under per-session uids nothing the app creates may be readable by anyone else: a
+# session reads only what SessionUid::Sandbox has handed to its own uid. Set here, after
+# the boot tasks above were forked, so the Claude CLI update and the Playwright install
+# keep the image's 022.
+if [ "${ZIMMER_SESSION_UID:-0}" = "1" ]; then
+  umask 077
 fi
 
 exec "${@}"

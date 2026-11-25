@@ -18,6 +18,16 @@
 # which is the rollback posture.
 <% nested_docker = ENV.fetch("ZIMMER_NESTED_DOCKER", "0") == "1" %>
 
+# Per-session uids (SessionUid; docs/src/content/docs/operate/deploying.md). OFF unless
+# ZIMMER_SESSION_UID is set in the deploy environment, and with it unset nothing below
+# renders differently. "1" turns it on; "0" (set, not unset) keeps the root start for
+# the rollback deploy, so the worker's reclaim sweep can hand every session-owned file
+# back to uid 1000. Either value starts BOTH roles as container-root: under the flag web
+# writes into session directories too, and the entrypoint drops each role straight back
+# to uid 1000.
+<% session_uid = ENV.fetch("ZIMMER_SESSION_UID", "").strip %>
+<% session_uid_root = %w[0 1].include?(session_uid) %>
+
 # The PRODUCTION catalog + its encrypted credentials, delivered to the host by
 # artifacts-sync-prod and bind-mounted read-only into BOTH roles. Persistent host
 # paths, so they survive Kamal deploys (unlike the old docker-cp-into-the-container
@@ -56,6 +66,13 @@ servers:
   web:
     hosts:
       - <%= ENV["PRODUCTION_HOST"] %>
+<% if session_uid_root %>
+    options:
+      # Per-session uids only (see the header): web starts as container-root so the
+      # entrypoint can keep the capabilities it needs to write into session directories
+      # before dropping to uid 1000. Never sysbox, never nested Docker.
+      user: "0:0"
+<% end %>
   worker:
     hosts:
       - <%= ENV["PRODUCTION_HOST"] %>
@@ -73,7 +90,8 @@ servers:
       # Quoted: YAML reads a bare 0:0 as a sexagesimal integer and hands Kamal `0`,
       # which is uid 0 with the image's default gid -- close enough to look right and
       # wrong in a way nothing would report.
-      user: "<%= nested_docker ? "0:0" : "1000:1000" %>"
+      # Container-root also under per-session uids (see the header), without sysbox.
+      user: "<%= (nested_docker || session_uid_root) ? "0:0" : "1000:1000" %>"
       # The droplet is 16 GB with no swap, and this role is the only one that runs
       # arbitrary work: agent sessions, and jobs whose peak allocation is a function of
       # the data they touch rather than of anything this config knows. Uncapped, an
@@ -169,6 +187,13 @@ env:
     # above). The entrypoint reads it to decide whether to start an inner dockerd,
     # and refuses if the container turns out not to be user-namespaced.
     ZIMMER_NESTED_DOCKER: "<%= nested_docker ? "1" : "0" %>"
+<% if session_uid_root %>
+    # See the header. ROOTS limits isolation to the listed agent roots (a canary);
+    # DOCKER hands isolated sessions the nested Docker socket, which voids the boundary.
+    ZIMMER_SESSION_UID: "<%= session_uid %>"
+    ZIMMER_SESSION_UID_ROOTS: <%= ENV.fetch("ZIMMER_SESSION_UID_ROOTS", "").to_json %>
+    ZIMMER_SESSION_UID_DOCKER: "<%= ENV.fetch("ZIMMER_SESSION_UID_DOCKER", "0") %>"
+<% end %>
     # Per-session memory bound, in MB (SessionMemoryCgroup). Each agent session gets its
     # own cgroup with this memory.max, so a runaway command exhausts its own budget and
     # the kernel's kill lands inside the session that caused it -- rather than inside the
