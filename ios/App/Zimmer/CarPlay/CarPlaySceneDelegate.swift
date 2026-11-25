@@ -52,7 +52,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 
         let home = CarPlayHome()
         home.onTap = { [weak self] tile in self?.live?.start(tile) }
-        home.onSettings = { [weak self] in self?.live?.openSettingsFromHome() }
+        home.onSettings = {}
         self.home = home
 
         let live = CarPlayLive(interfaceController: interfaceController)
