@@ -104,7 +104,6 @@ final class CarPlayVoiceSettings {
     private nonisolated static func handler(_ text: String, log: Logger, tapped: (@MainActor @Sendable () -> Void)?) -> @Sendable (any CPSelectableListItem, @escaping () -> Void) -> Void {
         { _, done in
             nonisolated(unsafe) let done = done
-            if text == "Done", DropOnce.drops("row.Done") { done(); return }
             CarPlayTap.run(arrived: { CarPlayImages.arrived("row", onMain: $0) }) {
                 log.notice("voice settings row handler: \(text, privacy: .public)")
                 tapped?()

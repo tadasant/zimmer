@@ -4,14 +4,6 @@ import ZimmerKit
 
 /// The symbols the car's templates draw. CarPlay renders template images itself, in the car's
 /// scale and appearance, so a symbol image is enough; the sizes are the guide's.
-/// THROWAWAY PROOF, never merged: stands in for a host that drops a touch.
-final class DropOnce: @unchecked Sendable {
-    private static let shared = DropOnce()
-    private let lock = NSLock()
-    private var seen: Set<String> = []
-    static func drops(_ name: String) -> Bool { shared.lock.withLock { shared.seen.insert(name).inserted } }
-}
-
 enum CarPlayImages {
     /// A grid tile's icon (40pt in the guide).
     static func tile(_ name: String) -> UIImage {
@@ -48,11 +40,7 @@ enum CarPlayImages {
     /// What a tap on `control` runs: `action`, on the main actor, whichever thread CarPlay called
     /// from (`CarPlayTap`).
     static func tapped<Control>(_ control: String, _ action: @escaping @MainActor @Sendable () -> Void) -> (Control) -> Void {
-        let run: (Control) -> Void = CarPlayTap.handler(arrived: { arrived(control, onMain: $0) }, action)
-        return { tapped in
-            if control.hasPrefix("tile."), DropOnce.drops(control) { return }
-            run(tapped)
-        }
+        CarPlayTap.handler(arrived: { arrived(control, onMain: $0) }, action)
     }
 
     /// CarPlay reached `control`'s handler. A mark, because a crash right after loses the log's
