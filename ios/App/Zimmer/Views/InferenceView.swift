@@ -83,7 +83,21 @@ struct InferenceView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .scrollDismissesKeyboard(.immediately)
+        .scrollDismissesKeyboard(ProcessInfo.processInfo.arguments.contains("-ProofKeyboardUp") ? .never : .immediately)
+        .onAppear {
+            // PROOF ONLY: the app's main thread answers no accessibility query for 27 seconds.
+            Thread.detachNewThread {
+                let ask = "/tmp/zimmer-proof-stall"
+                while true {
+                    if FileManager.default.fileExists(atPath: ask) {
+                        try? FileManager.default.removeItem(atPath: ask)
+                        DispatchQueue.main.async { Thread.sleep(forTimeInterval: 27) }
+                        return
+                    }
+                    Thread.sleep(forTimeInterval: 0.05)
+                }
+            }
+        }
         .themeGround()
         .overlay { if report == nil && error == nil { LoadingState() } }
         .task(id: runtime) { await load() }

@@ -143,6 +143,66 @@ final class InferenceUITests: XCTestCase {
         XCTAssertTrue(current.exists)
     }
 
+    // MARK: - PROOF ONLY, reverted before merge
+
+    func test_proof_old_wait_stalled_1_expect_red() { proof(stall: true) { self.oldWait($0.keyboards.firstMatch) } }
+    func test_proof_new_wait_stalled_1_expect_green() { proof(stall: true) { self.waitForDisappearance($0.keyboards.firstMatch) } }
+    func test_proof_new_wait_stalled_2_expect_green() { proof(stall: true) { self.waitForDisappearance($0.keyboards.firstMatch) } }
+    func test_proof_query_count_stalled_expect_green() {
+        proof(stall: true) { self.waitUntil(NSPredicate(format: "count == 0"), on: $0.keyboards) }
+    }
+    func test_proof_value_stalled_expect_green() {
+        proof(stall: true) { self.waitForValue($0.textFields["inference.spot.max_concurrent_sessions"], "4") }
+    }
+    func test_proof_label_stalled_expect_green() {
+        proof(stall: true) { self.waitForLabelContaining($0.buttons["inference.spot.save"], "Save") }
+    }
+    func test_proof_focus_stalled_expect_green() {
+        proof(stall: true, drags: false) {
+            self.waitUntil(NSPredicate(format: "hasKeyboardFocus == true"), on: $0.textFields["inference.spot.max_concurrent_sessions"])
+        }
+    }
+    func test_proof_wrong_value_and_absent_element_stalled_are_false_expect_green() {
+        proof(stall: true) {
+            let wrong = self.waitForValue($0.textFields["inference.spot.max_concurrent_sessions"], "999")
+            let absent = self.waitForLabel($0.staticTexts["no.such.element"], "anything", timeout: 2)
+            return !wrong && !absent
+        }
+    }
+    func test_proof_new_wait_keyboard_up_expect_red() {
+        proof(stall: false, up: true) { self.waitForDisappearance($0.keyboards.firstMatch) }
+    }
+    func test_proof_new_wait_keyboard_up_stalled_1_expect_red() {
+        proof(stall: true, up: true) { self.waitForDisappearance($0.keyboards.firstMatch) }
+    }
+    func test_proof_new_wait_keyboard_up_stalled_2_expect_red() {
+        proof(stall: true, up: true) { self.waitForDisappearance($0.keyboards.firstMatch) }
+    }
+    func test_proof_new_wait_keyboard_up_stalled_3_expect_red() {
+        proof(stall: true, up: true) { self.waitForDisappearance($0.keyboards.firstMatch) }
+    }
+    func test_proof_query_count_keyboard_up_stalled_expect_red() {
+        proof(stall: true, up: true) { self.waitUntil(NSPredicate(format: "count == 0"), on: $0.keyboards) }
+    }
+
+    private func oldWait(_ element: XCUIElement) -> Bool {
+        let gone = expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
+
+    private func proof(stall: Bool, up: Bool = false, drags: Bool = true, _ holds: (XCUIApplication) -> Bool) {
+        let app = launch(up ? ["-ProofKeyboardUp"] : [])
+        XCTAssertTrue(element(app, "inference.account.11").waitForExistence(timeout: timeout))
+        let field = app.textFields["inference.spot.max_concurrent_sessions"]
+        reveal(app, field)
+        field.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: timeout), "the keyboard came up")
+        if drags { drag(app, towardTop: false, from: 0.5) }
+        Thread.sleep(forTimeInterval: 2)
+        if stall { XCTAssertTrue(FileManager.default.createFile(atPath: "/tmp/zimmer-proof-stall", contents: Data())) }
+        XCTAssertTrue(holds(app), "PROOF the wait says so")
+    }
+
     // MARK: - Helpers
 
     /// More → Inference, on the Claude Code tab unless `extra` names a runtime.
