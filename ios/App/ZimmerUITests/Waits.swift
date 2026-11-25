@@ -6,17 +6,18 @@ import XCTest
 ///
 /// A waiter's clock covers the looking as well as the app. When it runs out XCTest cancels a query
 /// that is still being answered, and reads the cancelled query as an element that is not there. So
-/// a wait for something to go can fail having seen nothing, or pass having seen nothing. On main's run 45603621053 the keyboard was gone three seconds
-/// before the wait for that began, the one query the wait made was still walking the accessibility
-/// tree nineteen seconds later, XCTest logged `Interrupted by waiter`, and the test said the
-/// keyboard was up. With the keyboard held up and the query stalled, the same wait completed, 20.3
-/// seconds into its 20 (actions/runs/45623496827).
+/// a wait for something to go can fail having seen nothing, or pass having seen nothing. On main's
+/// run 45603621053 the keyboard was gone three seconds before the wait for that began, the one query
+/// the wait made was still walking the accessibility tree nineteen seconds later, XCTest logged
+/// `Interrupted by waiter`, and the test said the keyboard was up. With the keyboard held up and the
+/// query stalled, the same wait completed, 20.3 seconds into its 20 (actions/runs/45623496827).
 ///
-/// So a wait is believed only when it ends inside its clock. When the clock runs out each of these looks once more, outside the waiter, where the query
-/// has XCTest's own limit instead: three tries of 30 seconds, and then the test fails. That look
-/// begins after the clock ended, so it can only pass on what is on screen then: what is still wrong
-/// after the timeout still fails. `waitForExistence` takes the same last look by itself, outside its
-/// predicate (the `live.call.state` wait in actions/runs/45092022457).
+/// So a wait is believed only when it ends inside its clock. When the clock runs out each of these
+/// looks once more, outside the waiter, where the query has XCTest's own limit instead: three tries
+/// of 30 seconds, and then the test fails. That look begins after the clock ended, so it can only
+/// pass on what is on screen then: what is still wrong after the timeout still fails.
+/// `waitForExistence` takes the same last look by itself, outside its predicate (the
+/// `live.call.state` wait in actions/runs/45092022457).
 // `@nonobjc`: the two `waitUntil`s differ only in a type, which an Objective-C selector does not carry.
 @nonobjc extension XCTestCase {
     /// Whether `element` goes away within `timeout`, or has gone by the look taken when it ends.
