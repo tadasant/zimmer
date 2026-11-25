@@ -15,7 +15,8 @@ import XCTest
 /// begins after the clock ended, so it can only pass on what is on screen then: what is still wrong
 /// after the timeout still fails. `waitForExistence` takes the same last look by itself, outside its
 /// predicate (the `live.call.state` wait in actions/runs/45092022457).
-extension XCTestCase {
+// `@nonobjc`: the two `waitUntil`s differ only in a type, which an Objective-C selector does not carry.
+@nonobjc extension XCTestCase {
     /// Whether `element` goes away within `timeout`, or has gone by the look taken when it ends.
     @MainActor
     func waitForDisappearance(_ element: XCUIElement, timeout: TimeInterval = 20) -> Bool {
