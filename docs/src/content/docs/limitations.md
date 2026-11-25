@@ -368,6 +368,29 @@ launch, so one late move does not push back the rest. Other tests that wait on a
 query throughout, so a timeout there with slow queries in the log can mean the app was late only
 because it was being asked.
 
+### Some waits in the iOS UI tests can be decided by a slow query
+
+When a wait's clock runs out, XCTest cancels an accessibility query that is still being answered.
+Usually the wait then fails, having seen nothing: on
+[run 45603621053](https://github.com/tadasant/zimmer/actions/runs/45603621053) the keyboard had been
+gone for three seconds when the wait began, and its one query was cancelled 19 seconds in. Sometimes
+the cancelled query's answer, "not there", gets in first, and a wait for something to go passes with
+the thing still on screen: on
+[run 45623496827](https://github.com/tadasant/zimmer/actions/runs/45623496827) a wait completed 20.3
+seconds into its 20 with the keyboard held up. The waits in `ios/App/ZimmerUITests/Waits.swift`
+believe only an answer that came inside the clock, and look once more after it ends, outside the
+waiter, where the query has XCTest's own, longer limit. Every shared helper that waits on a predicate
+uses them.
+
+Nineteen of the UI test files still have waits of their own, and can fail, or pass, the same way. They
+are listed in `test/config/ios_ui_test_waits_test.rb`, which fails on a new one. They move a few at a
+time because a pull request runs every UI test class it touches, and all of them do not fit in the
+`ios` job's budget.
+
+`BoardStaysCurrentUITests` waits with no late look, because there the clock is part of what is tested:
+it gives a row five seconds to go, to tell a read on return from the fifteen-second poll, and a late
+look could see the poll's. A query slower than that fails it.
+
 ### Dragging the iOS trigger form back up can stall
 
 In the iOS trigger form, a drag toward the top of the form can move the whole sheet instead of the list, with the rows above still out of reach. On [run 42138907862](https://github.com/tadasant/zimmer/actions/runs/42138907862), 115 climbs from the prompt to the top on the simulator took a median of 9 drags and as many as 21, where about 8 is what the distance needs, and one used 30, with the list stalled for over a minute before it moved on. Why is not known: the runs were not instrumented to read the list's scroll position, and nothing was measured on a real device. It may not need a refusal at all, since only that climb was measured.
@@ -423,7 +446,7 @@ The car can also stay connected after the drill unplugs it. In [run 44560053511,
 
 The fixture holds the drill's first call on Connecting… for 600 seconds, the drill's whole time allowance, and the gear is what ends it. With a hold of 120 seconds a slow unplug and replug outlasted it: in [run 45103157432](https://github.com/tadasant/zimmer/actions/runs/45103157432) the call failed at 03:31:49, some 10 seconds before the gear was due. The drill then failed on the gear's panel with an empty car, because Zimmer had aborted playing the cue for that failure ("A stalled audio server can end the app during a call", below). A failure message that shows the car says when Zimmer is not running.
 
-Apart from a tap's wait for its answer, above, and the retries' 30 and 90, the other steps wait 20 seconds or less. A stall longer than that at another step fails the drill, and is the drill's timing, not the app: the job log's app and host lines say which. Before the gear, a stall of about 12 seconds fails it with `Send now's state goes up` or `a Send now with nothing to send leaves the screen as it is`, and the voice settings in the dump.
+Apart from a tap's wait for its answer, above, and the retries' 30 and 90, the other steps wait 20 seconds or less. A stall longer than that at another step fails the drill, and is the drill's timing, not the app: the job log's app and host lines say which. A wait for something to go looks once more after its time, so there a stall that ends during that look passes. Before the gear, a stall of about 12 seconds fails it with `Send now's state goes up` or `a Send now with nothing to send leaves the screen as it is`, and the voice settings in the dump.
 
 ### Send now in the car has never ended a real turn
 

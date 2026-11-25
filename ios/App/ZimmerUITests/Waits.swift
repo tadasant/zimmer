@@ -1,0 +1,76 @@
+import XCTest
+
+/// The waits a UI test uses beside `waitForExistence`. A predicate handed to `XCTWaiter` anywhere
+/// else has the flake these are here to end, and `test/config/ios_ui_test_waits_test.rb` lists the
+/// ones there are and fails on a new one.
+///
+/// A waiter's clock covers the looking as well as the app. When it runs out XCTest cancels a query
+/// that is still being answered. The wait has usually timed out by then, and fails having seen
+/// nothing. Sometimes the cancelled query's answer, "not there", gets in first, and a wait for
+/// something to go passes having seen nothing. On main's run 45603621053 the keyboard was gone
+/// three seconds before the wait for that began, the one query the wait made was still walking the
+/// accessibility tree nineteen seconds later, XCTest logged `Interrupted by waiter`, and the test
+/// said the keyboard was up. With the keyboard held up and the query stalled, the same wait
+/// completed 20.331 seconds into its 20 (the session log in the `ios-ui-test` artifact of
+/// actions/runs/45623496827).
+///
+/// So a wait is believed only when it ends inside its clock. When the clock runs out each of these
+/// looks once more, outside the waiter, where the query has XCTest's own limit instead, three tries
+/// of 30 seconds in the runs that met it, and then the test fails. That look begins after the clock
+/// ended, so it can only pass on what is on screen then: what is still wrong after the timeout
+/// still fails. `waitForExistence` takes the same last look by itself, outside its predicate (the
+/// `live.call.state` wait in actions/runs/45092022457).
+// `@nonobjc`: the two `waitUntil`s differ only in a type, which an Objective-C selector does not carry.
+@nonobjc extension XCTestCase {
+    /// Whether `element` goes away within `timeout`, or has gone by the look taken when it ends.
+    @MainActor
+    func waitForDisappearance(_ element: XCUIElement, timeout: TimeInterval = 20) -> Bool {
+        completes(NSPredicate(format: "exists == false"), on: element, timeout: timeout) || !element.exists
+    }
+
+    /// Whether `element` goes away within `limit`, with no look after it: for a test of how soon.
+    /// A query slower than the limit fails it.
+    @MainActor
+    func disappears(_ element: XCUIElement, within limit: TimeInterval) -> Bool {
+        completes(NSPredicate(format: "exists == false"), on: element, timeout: limit)
+    }
+
+    /// Whether `predicate` comes true of `element` within `timeout`, or is true of it at the look
+    /// taken when that ends. At that look, an element that is not there meets no predicate.
+    @MainActor
+    func waitUntil(_ predicate: NSPredicate, on element: XCUIElement, timeout: TimeInterval = 20) -> Bool {
+        // Asking an absent element for its label fails the test in XCTest's words, not the caller's.
+        completes(predicate, on: element, timeout: timeout) || (element.exists && predicate.evaluate(with: element))
+    }
+
+    /// The same of a query, for a predicate on how many elements match it.
+    @MainActor
+    func waitUntil(_ predicate: NSPredicate, on query: XCUIElementQuery, timeout: TimeInterval = 20) -> Bool {
+        completes(predicate, on: query, timeout: timeout) || predicate.evaluate(with: query)
+    }
+
+    @MainActor
+    func waitForLabel(_ element: XCUIElement, _ label: String, timeout: TimeInterval = 20) -> Bool {
+        waitUntil(NSPredicate(format: "label == %@", label), on: element, timeout: timeout)
+    }
+
+    @MainActor
+    func waitForLabelContaining(_ element: XCUIElement, _ text: String, timeout: TimeInterval = 20) -> Bool {
+        waitUntil(NSPredicate(format: "label CONTAINS %@", text), on: element, timeout: timeout)
+    }
+
+    @MainActor
+    func waitForValue(_ element: XCUIElement, _ value: String, timeout: TimeInterval = 20) -> Bool {
+        waitUntil(NSPredicate(format: "value == %@", value), on: element, timeout: timeout)
+    }
+
+    /// Whether the wait ended, met, before its clock did. A query is only cancelled once the clock
+    /// has run out, so one that ends sooner was answered.
+    @MainActor
+    private func completes(_ predicate: NSPredicate, on object: Any, timeout: TimeInterval) -> Bool {
+        let met = XCTNSPredicateExpectation(predicate: predicate, object: object)
+        let began = ProcessInfo.processInfo.systemUptime
+        let result = XCTWaiter().wait(for: [met], timeout: timeout)
+        return result == .completed && ProcessInfo.processInfo.systemUptime - began < timeout
+    }
+}

@@ -146,8 +146,7 @@ final class InteractionUITests: XCTestCase {
     }
 
     private func waitForSelected(_ element: XCUIElement) -> Bool {
-        let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: element)
-        return XCTWaiter().wait(for: [selected], timeout: timeout) == .completed
+        waitUntil(NSPredicate(format: "selected == true"), on: element)
     }
 
     /// Drags the page until `element` sits in the middle of what is open: below the bar and the
@@ -181,10 +180,5 @@ final class InteractionUITests: XCTestCase {
             let to = from.withOffset(CGVector(dx: 0, dy: shift))
             from.press(forDuration: 0.1, thenDragTo: to, withVelocity: .default, thenHoldForDuration: 0.3)
         }
-    }
-
-    private func waitForDisappearance(_ element: XCUIElement) -> Bool {
-        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
-        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
     }
 }

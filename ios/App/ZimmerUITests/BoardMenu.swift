@@ -37,8 +37,7 @@ extension XCTestCase {
             opened = true
             XCTAssertTrue(choice.waitForExistence(timeout: timeout), "the board menu offers \(item)")
             choice.tap()
-            let closed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: open)
-            if XCTWaiter().wait(for: [closed], timeout: last ? timeout : 5) == .completed { return }
+            if waitForDisappearance(open, timeout: last ? timeout : 5) { return }
         }
         XCTFail(opened ? "the board menu was still open after \(attempts) tries at \(item)"
                        : "the board menu did not open in \(attempts) taps")

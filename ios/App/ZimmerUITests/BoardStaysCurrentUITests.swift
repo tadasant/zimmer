@@ -24,8 +24,7 @@ final class BoardStaysCurrentUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].waitForExistence(timeout: timeout), "back on the board")
         // Well inside the fifteen-second poll, whose clock started at launch: the board read on
         // coming back, not on its clock.
-        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: trashed)
-        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed, "the trashed session left without a pull")
+        XCTAssertTrue(disappears(trashed, within: 5), "the trashed session left without a pull")
     }
 
     func test_opening_the_app_again_shows_the_board_as_it_now_stands_without_a_pull() throws {
@@ -43,8 +42,7 @@ final class BoardStaysCurrentUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["session.row.1038"].waitForExistence(timeout: timeout), "back on the board")
         // Well inside the poll interval, whose clock starts again on the return: the board read
         // because the app came back to the front, not on its clock, and nothing was pulled.
-        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: trashed)
-        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: 5), .completed, "the session trashed while away left without a pull")
+        XCTAssertTrue(disappears(trashed, within: 5), "the session trashed while away left without a pull")
     }
 
     // MARK: - Helpers

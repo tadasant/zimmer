@@ -30,8 +30,7 @@ extension XCTestCase {
             // press at a coordinate would land on whatever is covering it.
             toggle.press(forDuration: 0.2)
         }
-        let flipped = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value != %@", before), object: toggle)
-        if XCTWaiter().wait(for: [flipped], timeout: timeout) != .completed {
+        if !waitUntil(NSPredicate(format: "value != %@", before), on: toggle, timeout: timeout) {
             XCTFail("\(toggle.identifier) was still \(before) after a press", file: file, line: line)
         }
     }

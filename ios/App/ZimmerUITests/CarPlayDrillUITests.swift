@@ -317,8 +317,7 @@ final class CarPlayDrillUITests: XCTestCase {
         let end = zimmer.buttons["End conversation"]
         XCTAssertTrue(end.waitForExistence(timeout: timeout), "the menu offers End conversation")
         end.tap()
-        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: menu)
-        XCTAssertEqual(XCTWaiter().wait(for: [gone], timeout: timeout), .completed, "the conversation ended on the phone")
+        XCTAssertTrue(waitForDisappearance(menu), "the conversation ended on the phone")
     }
 
     /// The tile's words, longest first: CarPlay chooses among them by the width it has.
@@ -385,8 +384,7 @@ final class CarPlayDrillUITests: XCTestCase {
     private func tap(_ target: XCUIElement, _ name: String, until sign: XCUIElement, exists: Bool = true) {
         func answered(within seconds: TimeInterval) -> Bool {
             if exists { return sign.waitForExistence(timeout: seconds) }
-            let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: sign)
-            return XCTWaiter().wait(for: [gone], timeout: seconds) == .completed
+            return waitForDisappearance(sign, timeout: seconds)
         }
         // Counted from the first tap: a line that comes late is still an answer to one of them.
         let before = whatZimmerDid().count
@@ -477,10 +475,8 @@ final class CarPlayDrillUITests: XCTestCase {
         var titles = ["Connecting…", "Hearing you", "Replying", "Muted"]
         if !panelUp { titles.append("Listening") }
         let title = car.descendants(matching: .any).matching(NSPredicate(format: "label IN %@", titles)).firstMatch
-        let gone = NSPredicate(format: "exists == false")
-        let wait = XCTNSPredicateExpectation(predicate: gone, object: title)
-        XCTAssertEqual(XCTWaiter().wait(for: [wait], timeout: 10), .completed,
-                       "the call screen is still up \(when); \(whatTheCarShowed)")
+        XCTAssertTrue(waitForDisappearance(title, timeout: 10),
+                      "the call screen is still up \(when); \(whatTheCarShowed)")
     }
 
     /// No system alert over the phone. XCUITest answers one Don't Allow when a tap finds it up,

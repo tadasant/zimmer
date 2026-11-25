@@ -22,7 +22,6 @@ extension XCTestCase {
             XCTFail("no confirmation offering \(title)", file: file, line: line)
             return
         }
-        let gone = NSPredicate(format: "exists == false")
         let attempts = 3
         for attempt in 1...attempts {
             if attempt > 1 {
@@ -33,8 +32,7 @@ extension XCTestCase {
                 add(still)
             }
             button.tap()
-            let left = XCTNSPredicateExpectation(predicate: gone, object: button)
-            if XCTWaiter().wait(for: [left], timeout: attempt == attempts ? timeout : 5) == .completed { return }
+            if waitForDisappearance(button, timeout: attempt == attempts ? timeout : 5) { return }
         }
         XCTFail("the dialog took none of \(attempts) taps on \(title)", file: file, line: line)
     }
