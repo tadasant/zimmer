@@ -5,18 +5,20 @@ import XCTest
 /// ones there are and fails on a new one.
 ///
 /// A waiter's clock covers the looking as well as the app. When it runs out XCTest cancels a query
-/// that is still being answered, and reads the cancelled query as an element that is not there. So
-/// a wait for something to go can fail having seen nothing, or pass having seen nothing. On main's
-/// run 45603621053 the keyboard was gone three seconds before the wait for that began, the one query
-/// the wait made was still walking the accessibility tree nineteen seconds later, XCTest logged
-/// `Interrupted by waiter`, and the test said the keyboard was up. With the keyboard held up and the
-/// query stalled, the same wait completed, 20.3 seconds into its 20 (actions/runs/45623496827).
+/// that is still being answered. The wait has usually timed out by then, and fails having seen
+/// nothing. Sometimes the cancelled query's answer, "not there", gets in first, and a wait for
+/// something to go passes having seen nothing. On main's run 45603621053 the keyboard was gone
+/// three seconds before the wait for that began, the one query the wait made was still walking the
+/// accessibility tree nineteen seconds later, XCTest logged `Interrupted by waiter`, and the test
+/// said the keyboard was up. With the keyboard held up and the query stalled, the same wait
+/// completed 20.331 seconds into its 20 (the session log in the `ios-ui-test` artifact of
+/// actions/runs/45623496827).
 ///
 /// So a wait is believed only when it ends inside its clock. When the clock runs out each of these
-/// looks once more, outside the waiter, where the query has XCTest's own limit instead: three tries
-/// of 30 seconds, and then the test fails. That look begins after the clock ended, so it can only
-/// pass on what is on screen then: what is still wrong after the timeout still fails.
-/// `waitForExistence` takes the same last look by itself, outside its predicate (the
+/// looks once more, outside the waiter, where the query has XCTest's own limit instead, three tries
+/// of 30 seconds in the runs that met it, and then the test fails. That look begins after the clock
+/// ended, so it can only pass on what is on screen then: what is still wrong after the timeout
+/// still fails. `waitForExistence` takes the same last look by itself, outside its predicate (the
 /// `live.call.state` wait in actions/runs/45092022457).
 // `@nonobjc`: the two `waitUntil`s differ only in a type, which an Objective-C selector does not carry.
 @nonobjc extension XCTestCase {
@@ -26,8 +28,15 @@ import XCTest
         completes(NSPredicate(format: "exists == false"), on: element, timeout: timeout) || !element.exists
     }
 
+    /// Whether `element` goes away within `limit`, with no look after it: for a test of how soon.
+    /// A query slower than the limit fails it.
+    @MainActor
+    func disappears(_ element: XCUIElement, within limit: TimeInterval) -> Bool {
+        completes(NSPredicate(format: "exists == false"), on: element, timeout: limit)
+    }
+
     /// Whether `predicate` comes true of `element` within `timeout`, or is true of it at the look
-    /// taken when that ends. An element that is not there meets no predicate.
+    /// taken when that ends. At that look, an element that is not there meets no predicate.
     @MainActor
     func waitUntil(_ predicate: NSPredicate, on element: XCUIElement, timeout: TimeInterval = 20) -> Bool {
         // Asking an absent element for its label fails the test in XCTest's words, not the caller's.

@@ -9,16 +9,13 @@ require "test_helper"
 # A new test that writes its own brings that flake back, and nothing but a red `main` would say so.
 class IosUiTestWaitsTest < ActiveSupport::TestCase
   SOURCES = Rails.root.join("ios/App/ZimmerUITests")
-  PREDICATE_WAIT = /\bXCTNSPredicateExpectation\b|\bXCTKVOExpectation\b|\bkeyValueObservingExpectation\b|\bexpectation\s*\(\s*for:/
-
-  # Where the clock is itself what is tested, so a later look would be the wrong answer. Each
-  # with how many such waits it has.
-  OWN_CLOCK = { "BoardStaysCurrentUITests.swift" => 2 }.freeze
+  PREDICATE_WAIT = /\bXCTNSPredicateExpectation\b|\bXCTKVOExpectation\b|\bkeyValueObservingExpectation\b|\bwaitForNonExistence\b|\bwait\s*\(\s*for:\s*\\\.|\bexpectation\s*\(\s*for:/
 
   # Still to move to `Waits.swift`. A pull request runs every UI test class it touches, so they
   # move a few files at a time (Known limitations). A file comes off here as it moves. Two need
   # care: OperationsUITests waits 30 seconds, not the shared 20, and OptimisticActionsUITests looks
   # before an answer it is holding back, so a late look must still be before it lets the answer go.
+  # A predicate that is true of an absent element (`hittable == false`) needs the element asserted too.
   STILL_TO_MOVE = {
     "AccountUITests.swift" => 2, "AttachmentsUITests.swift" => 1, "BoardReadParityUITests.swift" => 4,
     "CarplayFitUITests.swift" => 2, "CatalogUITests.swift" => 1, "LiveHandoverUITests.swift" => 1,
@@ -40,15 +37,14 @@ class IosUiTestWaitsTest < ActiveSupport::TestCase
   end
 
   test "no UI test has a predicate wait of its own that is not accounted for here" do
-    known = OWN_CLOCK.merge(STILL_TO_MOVE)
     found = waits_by_file.except("Waits.swift")
-    added = found.select { |file, count| count > known.fetch(file, 0) }.keys
+    added = found.select { |file, count| count > STILL_TO_MOVE.fetch(file, 0) }.keys
     assert_empty added,
-      "#{added.join(", ")}: a predicate wait outside Waits.swift fails when one query outlasts its " \
-      "clock, whatever the app did. Use waitForDisappearance, waitForLabel, waitForLabelContaining, " \
-      "waitForValue or waitUntil. If the clock is what the test is about, add the file to OWN_CLOCK"
+      "#{added.join(", ")}: a predicate wait outside Waits.swift fails, or passes, when one query " \
+      "outlasts its clock, whatever the app did. Use waitForDisappearance, waitForLabel, waitForLabelContaining, " \
+      "waitForValue or waitUntil, or disappears(_:within:) where the clock is what is tested"
 
-    moved = known.select { |file, count| found.fetch(file, 0) < count }.keys
+    moved = STILL_TO_MOVE.select { |file, count| found.fetch(file, 0) < count }.keys
     assert_empty moved, "#{moved.join(", ")}: fewer waits than listed here; lower or remove the entry"
   end
 end
