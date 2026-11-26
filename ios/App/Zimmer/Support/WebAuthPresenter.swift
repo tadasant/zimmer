@@ -16,7 +16,14 @@ final class WebAuthPresenter: NSObject, ASWebAuthenticationPresentationContextPr
     private var current: ASWebAuthenticationSession?
 
     func present(_ url: URL) async throws -> URL {
-        try await withCheckedThrowingContinuation { continuation in
+        // A request the car made, with the phone locked or Zimmer not in front on it, has nowhere to
+        // show the sheet: there is no window to anchor it to, and it would wait for an answer that
+        // never comes, holding up every request behind it. Refused at once, the request fails as the
+        // edge refusing the phone (`LiveBlock.signInOnPhone`) and the car says to sign in on the phone.
+        guard Self.phoneIsInFront else {
+            throw ZimmerError.signIn("The sign-in sheet needs Zimmer open on the phone.")
+        }
+        return try await withCheckedThrowingContinuation { continuation in
             let session = ASWebAuthenticationSession(url: url, callbackURLScheme: OAuthSignIn.callbackScheme) { callback, error in
                 if let callback {
                     continuation.resume(returning: callback)
@@ -30,6 +37,15 @@ final class WebAuthPresenter: NSObject, ASWebAuthenticationPresentationContextPr
             if !session.start() {
                 continuation.resume(throwing: ZimmerError.signIn("The sign-in sheet could not open."))
             }
+        }
+    }
+
+    /// The phone's own screen is showing Zimmer: a window scene of the app's in the foreground, active
+    /// or momentarily not (Control Center over it, one sheet closing before the next). The car's scene
+    /// is not a window scene, and a locked phone's is in the background.
+    static var phoneIsInFront: Bool {
+        UIApplication.shared.connectedScenes.contains { scene in
+            scene is UIWindowScene && (scene.activationState == .foregroundActive || scene.activationState == .foregroundInactive)
         }
     }
 

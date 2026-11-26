@@ -42,4 +42,20 @@ final class LiveBlockTests: XCTestCase {
         XCTAssertEqual(LiveBlock.outOfCredits.titleVariants.count, 2)
         XCTAssertLessThanOrEqual(LiveBlock.outOfCredits.titleVariants[1].count, 10)
     }
+
+    /// A request the phone has to sign in again for is a block; anything a retry may get past is not.
+    func testSignInFailuresAreABlockAndOtherFailuresAreNot() {
+        for error in [ZimmerError.edgeRefused, .unauthorized] {
+            XCTAssertEqual(LiveBlock(error: error), .signInOnPhone, "\(error)")
+        }
+        // An app host missing is put right by adding one, not by signing in: its own message says so.
+        let retryable: [Error] = [ZimmerError.edgeNeedsAppHost, ZimmerError.timedOut, ZimmerError.transport("offline"), ZimmerError.http(status: 503, message: nil),
+                                  ZimmerError.http(status: 409, message: "busy"), ZimmerError.decoding("x"), URLError(.notConnectedToInternet)]
+        for error in retryable {
+            XCTAssertNil(LiveBlock(error: error), "\(error)")
+        }
+        XCTAssertTrue(LiveBlock.signInOnPhone.message.contains("Open Zimmer on the phone"))
+        XCTAssertEqual(LiveBlock.signInOnPhone.titleVariants.count, 2)
+        XCTAssertLessThanOrEqual(LiveBlock.signInOnPhone.titleVariants[1].count, 10)
+    }
 }

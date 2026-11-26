@@ -295,6 +295,25 @@ host". The only way to give it one is to remove it and add it again with the App
 which drops its drafts and settings on the phone. A first add that is refused this way is never put
 on the list, so trying again with the App host works.
 
+### A phone used only from the car must be opened once a month
+
+The iOS app's Cloudflare Access credential for the app host lasts 30 days (the Access application's
+session length, set in the private companion repo), and renewing it needs the sign-in sheet, which only
+the phone's own screen can show. The app renews it when a week or less is left, at launch and whenever
+Zimmer comes to the front on the phone. A phone that never shows Zimmer's screen for the last week of
+those 30 days lets it lapse, and from then on the car cannot reach Zimmer at all: every request is
+refused at the edge, before Rails or its logs see it, and the call log the app would send about it is
+refused too. The app schedules a notification for an hour into that last week to say so, which helps only if
+notifications are allowed for Zimmer, and only for the deployment in front on the phone. The phone
+asks for the renewal once each time Zimmer comes to the front, so a sheet closed unfinished is asked
+for again on the next visit, not at once. The car says *Sign in on your phone* rather than retrying, and
+opening Zimmer on the phone renews it.
+
+This is the inferred cause of the CarPlay Live Mode outage of 2026-11-26: no request from that attempt
+reached production, and two code reads found nothing in the Live changes of the days before that could
+stop a call. It is inferred, not observed, because nothing outside the phone records an edge refusal of
+the app host. Cloudflare's Access logs would, and they are not readable from this repository.
+
 ### An iOS build older than the backlog reads a backlogged session as on the board
 
 The iOS app decodes a board-visibility value it does not know as `visible`. A build installed before

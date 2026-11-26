@@ -14,6 +14,11 @@ import Foundation
 public enum LiveBlock: String, Hashable, Sendable {
     /// The OpenAI account has no credits left, or has hit its billing limit.
     case outOfCredits
+    /// The phone has to sign in again before any request reaches Zimmer: the network edge refused
+    /// its credential and could not renew it (the edge's sign-in is a sheet, and the car cannot show
+    /// one), or Zimmer's own sign-in has ended. Every retry from the car meets the same refusal, so
+    /// the tile says where to go instead.
+    case signInOnPhone
 
     /// The `error` codes and types that mean the OpenAI account cannot pay for the call.
     static let creditCodes: Set<String> = [
@@ -29,11 +34,22 @@ public enum LiveBlock: String, Hashable, Sendable {
         self = .outOfCredits
     }
 
+    /// The block a failed request reports, or nil for one a retry may get past.
+    public init?(error: Error) {
+        guard let zimmer = error as? ZimmerError else { return nil }
+        switch zimmer {
+        case .edgeRefused, .unauthorized: self = .signInOnPhone
+        default: return nil
+        }
+    }
+
     /// What the phone shows and the call's log records.
     public var message: String {
         switch self {
         case .outOfCredits:
             return "OpenAI is out of credits, so Live Mode can't connect. Add credits to the OpenAI account, then try again."
+        case .signInOnPhone:
+            return "Zimmer needs you to sign in again before Live Mode can connect. Open Zimmer on the phone and sign in, then try again."
         }
     }
 
@@ -41,6 +57,7 @@ public enum LiveBlock: String, Hashable, Sendable {
     public var titleVariants: [String] {
         switch self {
         case .outOfCredits: return ["OpenAI is out of credits", "No credits"]
+        case .signInOnPhone: return ["Sign in on your phone", "Sign in"]
         }
     }
 }

@@ -313,7 +313,7 @@ final class LiveCall: ObservableObject {
         } catch {
             // Given and left since: there is no going back to it, so the next try is a fresh New.
             if unanswered != nil, case ZimmerError.http(status: 409, _) = error { new = LiveNew() }
-            if mine == generation { fail(Self.describe(error), generation: mine) }
+            if mine == generation { fail(error, generation: mine) }
         }
         return true
     }
@@ -472,7 +472,7 @@ final class LiveCall: ObservableObject {
         } catch is CancellationError {
             return
         } catch {
-            fail(Self.describe(error), generation: mine)
+            fail(error, generation: mine)
         }
     }
 
@@ -550,7 +550,7 @@ final class LiveCall: ObservableObject {
         do {
             id = try await tellZimmer(conversation, isNew: isNew, generation: mine)
         } catch {
-            if !(error is CancellationError) { fail(Self.describe(error), generation: mine) }
+            if !(error is CancellationError) { fail(error, generation: mine) }
             return nil
         }
         // From here Zimmer has the conversation, so what was said in it goes there whatever happens.
@@ -562,7 +562,7 @@ final class LiveCall: ObservableObject {
             if !grant.isGptLive { leaveStandby("the call no longer runs on GPT-Live", on: call, to: id, generation: mine) }
         } catch {
             // Zimmer does not have the call on this engine, so it would answer no delegation.
-            if !(error is CancellationError) { fail(Self.describe(error), generation: mine) }
+            if !(error is CancellationError) { fail(error, generation: mine) }
         }
         return id
     }
@@ -641,7 +641,7 @@ final class LiveCall: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
-                fail(Self.describe(error), generation: mine)
+                fail(error, generation: mine)
             }
         }
     }
@@ -984,7 +984,7 @@ final class LiveCall: ObservableObject {
         } catch is CancellationError {
             return
         } catch {
-            fail(Self.describe(error), generation: mine)
+            fail(error, generation: mine)
         }
     }
 
@@ -1565,6 +1565,12 @@ final class LiveCall: ObservableObject {
             if result?.hangUp == true, conductor.hangingUp { armHangUpDeadline(generation: generation) }
             apply(effects, generation: generation)
         }
+    }
+
+    /// A request or a start that threw. One the phone has to sign in again for is a block: from the
+    /// car every retry meets the same refusal, and the tile says to sign in on the phone.
+    private func fail(_ error: Error, generation: Int) {
+        fail(Self.describe(error), blockedBy: LiveBlock(error: error), generation: generation)
     }
 
     private func fail(_ message: String, blockedBy block: LiveBlock? = nil, generation: Int) {

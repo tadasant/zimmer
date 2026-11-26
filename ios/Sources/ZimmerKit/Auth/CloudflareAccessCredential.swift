@@ -26,12 +26,14 @@ public final class InMemoryEdgeTokenStore: EdgeTokenStore, @unchecked Sendable {
 /// sends it as `cf-access-token` on every machine call.
 ///
 /// The JWT lives about 30 days. Re-running the handoff *is* the refresh: proactively when
-/// fewer than 24 hours are left (`refreshIfNeeded`), and reactively when the edge refuses a
-/// request (`reauthenticate`).
+/// fewer than `refreshWindow` is left (`refreshIfNeeded`), and reactively when the edge refuses a
+/// request (`reauthenticate`). Both need the sign-in sheet, so only the phone's own screen can
+/// renew it. The window is a week because a phone used from the car can go days without showing
+/// that screen, and a lapsed credential refuses every call from the car before it reaches Zimmer.
 public actor CloudflareAccessCredential: EdgeCredential {
     public static let callbackScheme = "com.tadasant.zimmer"
     public static let callbackPath = "/access/callback"
-    public static let refreshWindow: TimeInterval = 24 * 60 * 60
+    public static let refreshWindow: TimeInterval = 7 * 24 * 60 * 60
 
     /// Opens a URL in the system sign-in sheet and returns the callback it ended on.
     public typealias Presenter = @Sendable (URL) async throws -> URL
@@ -129,5 +131,22 @@ public actor CloudflareAccessCredential: EdgeCredential {
               let exp = (object["exp"] as? NSNumber)?.doubleValue
         else { return nil }
         return Date(timeIntervalSince1970: exp)
+    }
+}
+
+/// When the phone reminds its person to open Zimmer, so the edge credential is renewed before the car
+/// needs it: an hour into the renewal window, by which time any open of the phone's screen renews it.
+/// The date follows from the expiry alone, so scheduling it again after every read changes nothing, and
+/// a renewal moves it to the new credential's.
+public enum EdgeRenewalReminder {
+    /// How far into `CloudflareAccessCredential.refreshWindow` the reminder comes.
+    public static let into: TimeInterval = 60 * 60
+
+    /// Nil with no credential, or once the moment has passed: from then the phone's screen renews it the
+    /// next time it is in front, and the car says to sign in on the phone if it is refused first.
+    public static func fireDate(expiry: Date?, now: Date = Date()) -> Date? {
+        guard let expiry else { return nil }
+        let date = expiry.addingTimeInterval(into - CloudflareAccessCredential.refreshWindow)
+        return date > now ? date : nil
     }
 }
