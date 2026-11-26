@@ -98,6 +98,13 @@ final class GptLiveAPITests: XCTestCase {
         XCTAssertTrue(gptLive.isGptLive)
         let answer = try await fake.startGptLiveSession(conversation.id, sdp: "v=0")
         XCTAssertEqual(answer.sessionID, "sess_fixture")
+        do {
+            _ = try await fake.livePrewarmGrant(conversation.id)
+            XCTFail("a GPT-Live hold bills, so it is refused until paid standby is on, as on the server")
+        } catch let ZimmerError.http(status, _) {
+            XCTAssertEqual(status, 409)
+        }
+        await fake.allowPaidStandby()
         let prewarm = try await fake.livePrewarmGrant(conversation.id)
         XCTAssertTrue(prewarm.isGptLive, "standby is of whatever the call would run on")
 

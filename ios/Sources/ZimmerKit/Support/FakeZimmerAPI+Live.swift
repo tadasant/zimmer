@@ -17,6 +17,8 @@ struct FakeLiveState: Sendable {
     var telemetryBatches: [LiveTelemetryBatch] = []
     /// Every standby connection granted (`livePrewarmGrant`).
     var prewarmMints = 0
+    /// Zimmer's Live setting *Paid standby cap per day* above 0. Off, as the server's default is.
+    var paidStandby = false
     /// Every voice-engine ledger row the app reported (`reportLiveUsage`).
     var usageEvents: [LiveUsageEvent] = []
     /// Every delegation the app asked Zimmer to answer.
@@ -263,18 +265,30 @@ extension FakeZimmerAPI {
     public var usageEvents: [LiveUsageEvent] { liveState.usageEvents }
 
     /// As the server: refused on a conversation that is neither active nor kept ready;
-    /// changes nothing on the conversation, and is counted so a test can see it happened.
+    /// changes nothing on the conversation, and is counted so a test can see it happened. A
+    /// GPT-Live hold bills, so it is refused (409) until paid standby is turned on (`allowPaidStandby`),
+    /// as the server refuses it by default: every test and fixture run takes the path a phone on
+    /// production's default settings takes.
     public func livePrewarmGrant(_ id: Int) async throws -> LiveCallGrant {
         guard [.active, .standby].contains(liveState.conversations[id]?.status) else {
             throw ZimmerError.http(status: 409, message: "This conversation has ended. Start a new one.")
         }
-        liveState.prewarmMints += 1
         if liveState.settingOverrides["voice_engine"]?.string == LiveVoiceEngine.gptLive {
+            guard liveState.paidStandby else {
+                throw ZimmerError.http(status: 409, message: "Paid standby is off (its daily cap is 0).")
+            }
+            liveState.prewarmMints += 1
             return LiveCallGrant(engine: .gptLive, choice: LiveEngineChoice(engine: LiveVoiceEngine.gptLive, requested: LiveVoiceEngine.gptLive), model: "gpt-live-1")
         }
+        liveState.prewarmMints += 1
         let secret = LiveClientSecret(clientSecret: "ek_fixture_warm", model: "gpt-realtime-2.1-mini",
                                       websocketURL: URL(string: "wss://realtime.invalid/v1/realtime?model=gpt-realtime-2.1-mini")!, listening: "always")
         return LiveCallGrant(engine: .realtime(secret), model: secret.model)
+    }
+
+    /// Turn paid standby on, as raising the Live setting above 0 does on the server.
+    public func allowPaidStandby() {
+        liveState.paidStandby = true
     }
 
     /// How many standby connections were granted.

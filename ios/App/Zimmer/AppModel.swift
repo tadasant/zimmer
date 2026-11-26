@@ -1,6 +1,7 @@
 import AuthenticationServices
 import Foundation
 import SwiftUI
+import UserNotifications
 import ZimmerKit
 import os
 
@@ -259,11 +260,7 @@ final class AppModel: ObservableObject {
         signedInOrigins = signIn?.origins
         isSignedIn = signIn != nil
         guard signIn != nil else { return }
-        // Renew the edge's credential ahead of its expiry rather than on a refused call.
-        if let edge = connection.edge, await edge.needsLogin() {
-            await signInToEdge()
-        }
-        await refreshEdgeExpiry()
+        await renewEdgeAheadOfExpiry()
         await refresh()
         openFixtureScreen()
         if !environment.isFixture { await PushCoordinator.shared.enable() }
@@ -671,7 +668,9 @@ final class AppModel: ObservableObject {
         case .active:
             switch isSignedIn {
             case .some(false): await start()
-            case .some(true): await readBoardOnReturn()
+            case .some(true):
+                await renewEdgeAheadOfExpiry()
+                await readBoardOnReturn()
             case .none: break
             }
         default:
@@ -1293,6 +1292,18 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Renew the edge's credential ahead of its expiry rather than on a refused call: at launch, and
+    /// every time the phone's own screen comes to the front. Only the phone can show the sign-in sheet
+    /// the renewal needs; the car cannot. A credential left to lapse while the phone is used only from
+    /// the car refuses every call the car makes, before Zimmer hears of it, until the phone is opened.
+    /// Not while the scene is still coming up at launch: its `.active` asks again, with the sheet showable.
+    func renewEdgeAheadOfExpiry() async {
+        if WebAuthPresenter.phoneIsInFront, let edge = connection.edge, await edge.needsLogin() {
+            await signInToEdge()
+        }
+        await refreshEdgeExpiry()
+    }
+
     /// Run the edge's handoff again — proactively near expiry, or after a refusal.
     func signInToEdge() async {
         guard let edge = connection.edge else { return }
@@ -1337,6 +1348,31 @@ final class AppModel: ObservableObject {
         guard let edge = connection.edge else { edgeExpiry = nil; return }
         let token = await edge.headers()["cf-access-token"]
         edgeExpiry = token.flatMap(CloudflareAccessCredential.expiry(of:))
+        remindToRenewEdge()
+    }
+
+    /// The reminder for this deployment's edge credential, when it is not the one already asked for.
+    private var edgeReminderAt: Date??
+
+    /// Remind the person, on the phone, to open Zimmer before the edge credential lapses
+    /// (`EdgeRenewalReminder`): a phone used only from the car never shows the screen that renews it.
+    private func remindToRenewEdge() {
+        guard !environment.isFixture, let deployment else { return }
+        let date = EdgeRenewalReminder.fireDate(expiry: edgeExpiry)
+        guard edgeReminderAt != .some(date) else { return }
+        edgeReminderAt = .some(date)
+        let center = UNUserNotificationCenter.current()
+        let id = "edge-renewal.\(deployment.id)"
+        center.removePendingNotificationRequests(withIdentifiers: [id])
+        guard let date else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Open Zimmer to stay signed in"
+        content.body = "This phone's sign-in to \(deployment.origins.api.host ?? "Zimmer") ends in about a week. Open Zimmer once to renew it, so Live Mode keeps working in the car."
+        let when = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
+        let request = UNNotificationRequest(identifier: id, content: content, trigger: UNCalendarNotificationTrigger(dateMatching: when, repeats: false))
+        center.add(request) { error in
+            if let error { Logger(subsystem: "com.tadasant.zimmer", category: "edge").error("edge reminder not scheduled: \(error.localizedDescription, privacy: .public)") }
+        }
     }
 
     private func handle(_ error: Error) {

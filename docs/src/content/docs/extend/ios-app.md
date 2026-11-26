@@ -731,8 +731,17 @@ and sends it as `cf-access-token` on every machine call, never in `Authorization
 controller names with `accepts_native_app_tokens`, and `test/config/native_app_api_coverage_test.rb`
 reads the app's Swift sources and fails unless an action behind every path the app calls accepts it. Paths are joined so that none contains `//`, which the app
 host's tunnel answers with a 404. The JWT lives about 30 days. The app
-runs the handoff again when less than a day is left, or when Access refuses a call: a redirect to
+runs the handoff again when less than a week is left, checked at launch and every time the phone's
+own screen comes to the front, or when Access refuses a call: a redirect to
 `*.cloudflareaccess.com`, which the app never follows, or a 401/403 page with `cf-access-aud`.
+
+The handoff is a sign-in sheet, so only the phone's screen can run it. A request the car makes with
+the phone locked, or with Zimmer not in front on it, does not try to open one: it fails at once as the
+edge refusing the phone. A Live call from the car that fails this way, or because Zimmer's own sign-in
+has ended, is not retried. The car's tile says *Sign in on your phone* until you open Zimmer on the
+phone and the next tap goes through. So that it rarely comes to that, the app schedules a phone
+notification for an hour into that last week, *Open Zimmer to stay signed in*; opening Zimmer from it
+renews the credential. See [Limitations](/limitations/#a-phone-used-only-from-the-car-must-be-opened-once-a-month).
 
 **Then Zimmer**, as a public OAuth client of [Zimmer's authorization server](/auth/mcp-authorization-server/#tokens),
 under the built-in `zimmer-ios` client:
