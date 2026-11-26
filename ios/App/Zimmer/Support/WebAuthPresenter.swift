@@ -40,11 +40,12 @@ final class WebAuthPresenter: NSObject, ASWebAuthenticationPresentationContextPr
         }
     }
 
-    /// The phone's own screen is showing Zimmer: a scene of the app's in the foreground. The car's
-    /// scene is not a window scene and does not count.
+    /// The phone's own screen is showing Zimmer: a window scene of the app's in the foreground, active
+    /// or momentarily not (Control Center over it, one sheet closing before the next). The car's scene
+    /// is not a window scene, and a locked phone's is in the background.
     static var phoneIsInFront: Bool {
         UIApplication.shared.connectedScenes.contains { scene in
-            scene is UIWindowScene && scene.activationState == .foregroundActive
+            scene is UIWindowScene && (scene.activationState == .foregroundActive || scene.activationState == .foregroundInactive)
         }
     }
 

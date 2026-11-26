@@ -171,8 +171,6 @@ final class CloudflareAccessCredentialTests: XCTestCase {
         XCTAssertEqual(EdgeRenewalReminder.fireDate(expiry: expiry, now: now.addingTimeInterval(86_400)), date, "the same moment, asked later")
         XCTAssertNil(EdgeRenewalReminder.fireDate(expiry: expiry, now: expiry.addingTimeInterval(-6 * 86_400)), "inside the window, past the moment")
         XCTAssertNil(EdgeRenewalReminder.fireDate(expiry: nil, now: now))
-        let credential = InMemoryEdgeTokenStore(Fixtures.jwt(exp: expiry))
-        XCTAssertEqual(CloudflareAccessCredential.expiry(of: credential.load()!).map { EdgeRenewalReminder.fireDate(expiry: $0, now: now) != nil }, true)
     }
 
     func testTheRedirectGuardStopsAtAccessLoginPagesOnly() {

@@ -664,6 +664,7 @@ final class AppModel: ObservableObject {
     func sceneEntered(_ phase: ScenePhase) async {
         switch phase {
         case .background:
+            renewalAskedThisVisit = false
             await trashFixtureSessionWhileAway()
         case .active:
             switch isSignedIn {
@@ -1296,13 +1297,18 @@ final class AppModel: ObservableObject {
     /// every time the phone's own screen comes to the front. Only the phone can show the sign-in sheet
     /// the renewal needs; the car cannot. A credential left to lapse while the phone is used only from
     /// the car refuses every call the car makes, before Zimmer hears of it, until the phone is opened.
-    /// Not while the scene is still coming up at launch: its `.active` asks again, with the sheet showable.
+    /// Asked once a visit: the sheet itself sends the scene inactive and back, and a person who closed
+    /// it is not asked again until Zimmer next comes to the front.
     func renewEdgeAheadOfExpiry() async {
-        if WebAuthPresenter.phoneIsInFront, let edge = connection.edge, await edge.needsLogin() {
+        if !renewalAskedThisVisit, WebAuthPresenter.phoneIsInFront, let edge = connection.edge, await edge.needsLogin() {
+            renewalAskedThisVisit = true
             await signInToEdge()
         }
         await refreshEdgeExpiry()
     }
+
+    /// The edge's renewal sheet has been shown since Zimmer last came to the front.
+    private var renewalAskedThisVisit = false
 
     /// Run the edge's handoff again — proactively near expiry, or after a refusal.
     func signInToEdge() async {
@@ -1370,8 +1376,12 @@ final class AppModel: ObservableObject {
         content.body = "This phone's sign-in to \(deployment.origins.api.host ?? "Zimmer") ends in about a week. Open Zimmer once to renew it, so Live Mode keeps working in the car."
         let when = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
         let request = UNNotificationRequest(identifier: id, content: content, trigger: UNCalendarNotificationTrigger(dateMatching: when, repeats: false))
-        center.add(request) { error in
-            if let error { Logger(subsystem: "com.tadasant.zimmer", category: "edge").error("edge reminder not scheduled: \(error.localizedDescription, privacy: .public)") }
+        Task { [log] in
+            do {
+                try await center.add(request)
+            } catch {
+                log.error("edge reminder not scheduled: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 

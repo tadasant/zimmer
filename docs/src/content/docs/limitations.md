@@ -304,7 +304,9 @@ Zimmer comes to the front on the phone. A phone that never shows Zimmer's screen
 those 30 days lets it lapse, and from then on the car cannot reach Zimmer at all: every request is
 refused at the edge, before Rails or its logs see it, and the call log the app would send about it is
 refused too. The app schedules a notification for an hour into that last week to say so, which helps only if
-notifications are allowed for Zimmer. The car says *Sign in on your phone* rather than retrying, and
+notifications are allowed for Zimmer, and only for the deployment in front on the phone. The phone
+asks for the renewal once each time Zimmer comes to the front, so a sheet closed unfinished is asked
+for again on the next visit, not at once. The car says *Sign in on your phone* rather than retrying, and
 opening Zimmer on the phone renews it.
 
 This is the inferred cause of the CarPlay Live Mode outage of 2026-11-26: no request from that attempt

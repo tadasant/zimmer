@@ -38,7 +38,7 @@ public enum LiveBlock: String, Hashable, Sendable {
     public init?(error: Error) {
         guard let zimmer = error as? ZimmerError else { return nil }
         switch zimmer {
-        case .edgeRefused, .edgeNeedsAppHost, .unauthorized: self = .signInOnPhone
+        case .edgeRefused, .unauthorized: self = .signInOnPhone
         default: return nil
         }
     }

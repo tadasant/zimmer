@@ -28,9 +28,8 @@ public final class InMemoryEdgeTokenStore: EdgeTokenStore, @unchecked Sendable {
 /// The JWT lives about 30 days. Re-running the handoff *is* the refresh: proactively when
 /// fewer than `refreshWindow` is left (`refreshIfNeeded`), and reactively when the edge refuses a
 /// request (`reauthenticate`). Both need the sign-in sheet, so only the phone's own screen can
-/// renew it. The window is a week, not a day, because a phone used only from the car never shows
-/// that screen for days at a time, and a lapsed credential refuses every call from the car before it
-/// reaches Zimmer.
+/// renew it. The window is a week because a phone used from the car can go days without showing
+/// that screen, and a lapsed credential refuses every call from the car before it reaches Zimmer.
 public actor CloudflareAccessCredential: EdgeCredential {
     public static let callbackScheme = "com.tadasant.zimmer"
     public static let callbackPath = "/access/callback"
